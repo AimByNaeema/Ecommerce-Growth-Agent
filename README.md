@@ -1,22 +1,31 @@
 # Smart E-Commerce Growth AI Agent
 
-A single, reusable AI agent that helps grow an e-commerce business — analytics, SEO,
-marketing, product, and customer/market intelligence, all as capabilities of ONE agent.
+## Purpose
 
-It is being built and tested first against the owner's own Shopify store, then designed
-to be configurable and resellable to other e-commerce businesses.
+A single AI agent that helps grow an e-commerce business — analytics, SEO, marketing,
+product, and customer/market intelligence, all in one place.
 
-## Ground rules
+This project is a **foundation for a reusable e-commerce AI agent**. The first
+deployment will be **tested on the owner's own business**. The architecture must later
+**support other businesses without rewriting the core agent**.
 
-- **One agent.** Every capability below is a module of the same agent — never a
-  separate agent, persona, or system prompt.
-- **Configurable, not hardcoded.** Store credentials, branding, and business rules live
-  in [configuration/](configuration/), so the same agent can be repointed at a different
-  business later.
-- No runtime, framework, SDK, database, or hosting platform has been chosen yet. This
-  repo currently defines structure only.
+## One-agent architecture
 
-See [CLAUDE.md](CLAUDE.md) for the full build-process rules this project follows.
+There is exactly ONE agent — one identity, one system prompt (`prompts/`), one core
+(`agent/core/`). Every capability (SEO, marketing, analytics, products, research, etc.)
+is a module the agent uses, not a separate agent, persona, or system prompt. New
+capabilities extend the existing agent; they never fork it.
+
+## Future capabilities
+
+Planned modules, none implemented yet:
+- **Analytics** — store performance and growth metrics
+- **SEO** — search visibility analysis and recommendations
+- **Marketing** — campaign ideas, copy, and strategy
+- **Products** — catalog and listing analysis
+- **Customer/market intelligence** — customer behavior and market research
+- **Research** — competitor and trend research
+- **Workflows** — multi-step processes combining the above
 
 ## Project structure
 
@@ -40,4 +49,31 @@ See [CLAUDE.md](CLAUDE.md) for the full build-process rules this project follows
 | `verification/testing/` | Tests and verification of agent behavior |
 | `documentation/` | Deeper design notes and how-tos |
 
-Each folder contains its own short `README.md` describing its purpose in more detail.
+## Configuration concept
+
+Business-specific details — store credentials, branding, business rules, thresholds —
+live under `configuration/`, not hardcoded into the agent's logic. Pointing the agent at
+a different business is meant to be a configuration change, not a code change.
+
+## Memory/state concept
+
+`memory/state/` holds what the agent persists across runs and sessions — working
+context and progress — scoped per business, so one business's history never leaks into
+another's.
+
+## Security concept
+
+Secrets are never hardcoded or committed (`.env` is git-ignored). Actions that are
+risky or hard to reverse go through `approvals/` for human sign-off before they happen.
+Any connected store's API is accessed with least-privilege credentials.
+
+## Incremental development approach
+
+The agent is built one scoped prompt at a time. Each step is verified before the next
+begins, and a git checkpoint is created once a step is confirmed working. See
+[CLAUDE.md](CLAUDE.md) for the full build rules.
+
+## Current project status
+
+Foundation stage: the folder structure and documentation exist. No runtime, framework,
+database, or application logic has been implemented yet.
