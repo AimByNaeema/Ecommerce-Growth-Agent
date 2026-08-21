@@ -106,3 +106,10 @@ upselling, cross-selling, retention, repeat purchases, and customer re-engagemen
 Schema only — every product/offer reference must be real and already configured,
 never invented, and no customer-facing action is ever executed here. Run
 `node agent/core/growthOpportunityModel.js` to print it.
+
+[`analyticsModel.js`](analyticsModel.js) defines the shape of one analytics snapshot
+(reporting period, sales, traffic, conversion, product performance, customer behavior,
+marketing performance, SEO performance, retention, growth opportunities) — reusing
+`researchRecordModel.js`'s `RESEARCH_VERIFICATION_STATUSES` enum. Schema only — no
+analytics provider is assumed, and no integration exists yet. Run
+`node agent/core/analyticsModel.js` to print it.

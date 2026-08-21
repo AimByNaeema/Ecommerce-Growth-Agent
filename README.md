@@ -146,7 +146,12 @@ approval-required, externally executable) and the policy governing them (approva
 required by default for consequential actions unless later configuration permits
 otherwise; never silently perform a consequential external action) is defined in
 [`approvals/approvalArchitecture.js`](approvals/approvalArchitecture.js) (no external
-service is connected). No tool calling, AI API connection, autonomous behavior,
-real retrieval/research/product-hunting logic, external research API calls, automated
-recommendations/scoring, or state persistence has been implemented yet, and no database
-or hosting platform has been chosen.
+service is connected); and the shape of one analytics snapshot (reporting period,
+sales, traffic, conversion, product performance, customer behavior, marketing
+performance, SEO performance, retention, growth opportunities) is defined in
+[`agent/core/analyticsModel.js`](agent/core/analyticsModel.js) (no analytics provider
+is assumed, and no integration exists yet — every category's metrics stay empty until
+a real, configured source is connected). No tool calling, AI API connection, autonomous
+behavior, real retrieval/research/product-hunting logic, external research API calls,
+automated recommendations/scoring, or state persistence has been implemented yet, and
+no database or hosting platform has been chosen.
