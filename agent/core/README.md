@@ -21,3 +21,10 @@ pending/completed/failed work, verification status, approvals) — a schema and 
 empty-state helper only, never entire conversations, no database. Instances of this
 shape are meant to be persisted under `memory/state/` once persistence is implemented.
 Run `node agent/core/stateModel.js` to print it.
+
+[`memoryRules.js`](memoryRules.js) defines what memory must be (relevant, compact,
+structured, retrievable, safe), what to prioritize saving (reusable findings, important
+decisions, business configuration, research summaries, completed tasks, useful
+historical context), and what must never be saved by default (temporary noise, full
+conversations). Rules only — no save/prune engine. Run `node agent/core/memoryRules.js`
+to print it.

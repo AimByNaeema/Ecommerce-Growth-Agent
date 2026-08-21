@@ -82,8 +82,10 @@ exist; data is organized into business/product/task/research/state boundaries (s
 lifecycle stages — is defined in [`agent/core/agentContract.js`](agent/core/agentContract.js);
 where each kind of context lives (so the agent can retrieve a relevant slice instead
 of everything) is defined in
-[`agent/core/contextBoundaries.js`](agent/core/contextBoundaries.js); and the compact
+[`agent/core/contextBoundaries.js`](agent/core/contextBoundaries.js); the compact
 shape of one task's state is defined in
-[`agent/core/stateModel.js`](agent/core/stateModel.js). No tool calling, AI API
+[`agent/core/stateModel.js`](agent/core/stateModel.js); and the rules for what memory
+should and should not contain are defined in
+[`agent/core/memoryRules.js`](agent/core/memoryRules.js). No tool calling, AI API
 connection, autonomous behavior, real retrieval logic, or state persistence has been
 implemented yet, and no database or hosting platform has been chosen.
