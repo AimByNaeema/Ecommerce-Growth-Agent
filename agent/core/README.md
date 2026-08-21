@@ -77,3 +77,10 @@ opportunity, source, research date, confidence) — reusing
 `researchRecordModel.js`'s `RELEVANCE_LEVELS` and `CONFIDENCE_LEVELS` enums. Schema
 only — no live keyword API is called or configured today. Run
 `node agent/core/seoResearchModel.js` to print it.
+
+[`listingOptimizationModel.js`](listingOptimizationModel.js) defines the shape of one
+product/listing optimization record (product reference, product title, description,
+keywords, search intent, structure, metadata, internal optimization opportunities,
+conversion considerations). Schema only — every field is a suggestion; nothing here
+overwrites real listing content, and no field claims an SEO performance improvement
+without evidence. Run `node agent/core/listingOptimizationModel.js` to print it.

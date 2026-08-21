@@ -110,11 +110,15 @@ is defined in
 competitor data is invented); the shape of one SEO keyword research record is
 defined in
 [`agent/core/seoResearchModel.js`](agent/core/seoResearchModel.js) (no live keyword
-API is called or configured today); and the workflow that turns a product/category and
+API is called or configured today); the workflow that turns a product/category and
 customer intent signals into a concise, structured set of keyword records is defined in
 [`workflows/keywordResearchWorkflow.js`](workflows/keywordResearchWorkflow.js) (no
 search volume or competition metric is ever invented; unavailable data is marked
-unavailable, never guessed). No tool calling, AI API connection, autonomous behavior,
+unavailable, never guessed); and the shape of one product/listing optimization record
+is defined in
+[`agent/core/listingOptimizationModel.js`](agent/core/listingOptimizationModel.js)
+(every field is a suggestion — nothing overwrites real listing content, and no field
+claims an SEO performance improvement without evidence). No tool calling, AI API connection, autonomous behavior,
 real retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no database
 or hosting platform has been chosen.
