@@ -75,5 +75,7 @@ begins, and a git checkpoint is created once a step is confirmed working. See
 
 ## Current project status
 
-Foundation stage: the folder structure and documentation exist. No runtime, framework,
-database, or application logic has been implemented yet.
+Foundation stage. Runtime: Node.js (chosen for the business configuration validator).
+A structured configuration template (`configuration/business.example.yaml`) and its
+validator (`tools/configValidator.js`) exist. No database or hosting platform has been
+chosen, and no other application logic has been implemented yet.

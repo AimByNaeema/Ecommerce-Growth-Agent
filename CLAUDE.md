@@ -30,3 +30,10 @@ rules on every prompt, not just the one currently being executed.
 
 See [README.md](README.md) for the folder map. Each folder has its own `README.md`
 explaining its purpose — check it before adding files to that area.
+
+## Technical decisions made
+
+- **Runtime: Node.js.** Chosen when the first runnable code was needed (business
+  config validator), because it fits the project's first integration target (Shopify's
+  tooling/Admin API libraries are primarily JS/Node-based). No other runtime, framework,
+  database, or hosting platform has been chosen — rule 4 above still applies to those.

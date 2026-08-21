@@ -1,0 +1,13 @@
+{
+  "name": "smart-ecommerce-growth-ai-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Foundation for the Smart E-Commerce Growth AI Agent.",
+  "scripts": {
+    "validate:config": "node tools/configValidator.js",
+    "test": "node verification/testing/configValidator.test.js"
+  },
+  "dependencies": {
+    "yaml": "^2.5.1"
+  }
+}
