@@ -4,8 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const YAML = require('yaml');
 
-// The 12 fields defined for business configuration (see configuration/business.example.yaml).
-// All are required - this validator does not support per-task variability.
+// The 12 required fields for business configuration (see configuration/business.example.yaml).
+// All are required - this validator does not support per-task variability. The template's
+// 13th field, `integrations`, is intentionally not required here - a business is valid with
+// zero integrations connected (see configuration/business.example.yaml's own comment).
 const REQUIRED_FIELDS = [
   'business_name',
   'business_model',

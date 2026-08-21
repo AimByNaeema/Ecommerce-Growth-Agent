@@ -40,3 +40,10 @@ business_goals: []
 
 # Marketing channels the business uses or plans to use.
 marketing_channels: []
+
+# Integrations this business uses or plans to connect (e.g. its e-commerce platform,
+# email marketing tool, analytics provider - see integrations/README.md). Names only -
+# credentials and connection details are configured separately (see .env.example) and
+# never live here. Optional: an empty list is valid: the agent works with zero
+# integrations connected.
+integrations: []

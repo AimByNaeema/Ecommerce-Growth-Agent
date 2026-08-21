@@ -164,7 +164,14 @@ configuration is defined in
 (run with `npm run verify:controlled-agent-test`) — as of the last run, all 10
 capability areas pass structurally, but `configuration/business.yaml` does not yet
 exist, so real business data is unavailable for 9 of the 10 areas (reported plainly,
-never invented). No tool calling, AI API connection, autonomous behavior, real
+never invented). The business configuration template
+([`configuration/business.example.yaml`](configuration/business.example.yaml)) now
+also names `integrations` (13th field, optional — a business is valid with zero
+integrations connected) alongside its 12 required fields, so a new client can
+eventually configure business information, platform, product model, markets,
+countries, currencies, categories, customers, brand, goals, marketing channels, and
+integrations, all without changing core agent logic; credentials stay entirely in
+`.env` (git-ignored, never in source). No tool calling, AI API connection, autonomous behavior, real
 retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no
 database or hosting platform has been chosen.
