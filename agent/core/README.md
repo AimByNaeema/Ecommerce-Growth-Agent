@@ -28,3 +28,9 @@ decisions, business configuration, research summaries, completed tasks, useful
 historical context), and what must never be saved by default (temporary noise, full
 conversations). Rules only — no save/prune engine. Run `node agent/core/memoryRules.js`
 to print it.
+
+[`researchRecordModel.js`](researchRecordModel.js) defines the shape of one reusable
+research record (topic, market, date, source/evidence, finding, confidence, relevance,
+summary, verification status), so existing research can be recognized and reused instead
+of repeated. Schema only — no lookup/search/duplicate-detection (no research engine).
+Run `node agent/core/researchRecordModel.js` to print it.

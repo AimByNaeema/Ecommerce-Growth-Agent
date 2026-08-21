@@ -86,6 +86,9 @@ of everything) is defined in
 shape of one task's state is defined in
 [`agent/core/stateModel.js`](agent/core/stateModel.js); and the rules for what memory
 should and should not contain are defined in
-[`agent/core/memoryRules.js`](agent/core/memoryRules.js). No tool calling, AI API
-connection, autonomous behavior, real retrieval logic, or state persistence has been
-implemented yet, and no database or hosting platform has been chosen.
+[`agent/core/memoryRules.js`](agent/core/memoryRules.js); and the shape of one reusable
+research record is defined in
+[`agent/core/researchRecordModel.js`](agent/core/researchRecordModel.js). No tool
+calling, AI API connection, autonomous behavior, real retrieval/research logic, or state
+persistence has been implemented yet, and no database or hosting platform has been
+chosen.
