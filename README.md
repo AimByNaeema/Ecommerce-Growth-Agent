@@ -151,7 +151,14 @@ sales, traffic, conversion, product performance, customer behavior, marketing
 performance, SEO performance, retention, growth opportunities) is defined in
 [`agent/core/analyticsModel.js`](agent/core/analyticsModel.js) (no analytics provider
 is assumed, and no integration exists yet — every category's metrics stay empty until
-a real, configured source is connected). No tool calling, AI API connection, autonomous
-behavior, real retrieval/research/product-hunting logic, external research API calls,
-automated recommendations/scoring, or state persistence has been implemented yet, and
-no database or hosting platform has been chosen.
+a real, configured source is connected); and the workflow that turns real analytics
+data into a verified result (DATA → FINDING → INTERPRETATION → OPPORTUNITY →
+RECOMMENDATION → EXPECTED IMPACT → VERIFICATION), along with the 5-type taxonomy the
+agent must use to label every claim it makes (observed fact, calculated result,
+interpretation, hypothesis, recommendation), is defined in
+[`workflows/analyticsInsightWorkflow.js`](workflows/analyticsInsightWorkflow.js)
+(hypotheses are never presented as facts — only the verification stage confirms or
+refutes them). No tool calling, AI API connection, autonomous behavior, real
+retrieval/research/product-hunting logic, external research API calls, automated
+recommendations/scoring, or state persistence has been implemented yet, and no
+database or hosting platform has been chosen.
