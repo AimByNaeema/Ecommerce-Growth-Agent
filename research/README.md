@@ -9,3 +9,10 @@ The point of that structure is to avoid repeating valid research unnecessarily: 
 record carries enough (topic, market, date, verification_status) to judge later whether
 existing research already answers a question. No lookup/search/duplicate-detection
 logic exists yet — that's a research engine, not built here.
+
+For market-level research specifically, [`agent/core/marketResearchModel.js`](../agent/core/marketResearchModel.js)
+defines a more specific shape (country, market, category, customer segment, demand
+signals, competitors, trends, opportunities, risks, evidence, research date). Country
+and market are never hardcoded — real values come only from
+[`configuration/business.yaml`](../configuration/README.md) or explicit task
+requirements.

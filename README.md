@@ -97,7 +97,10 @@ the shape of one product opportunity analysis is defined in
 [`agent/core/opportunityAnalysisModel.js`](agent/core/opportunityAnalysisModel.js); and
 the workflow that turns gathered evidence into a structured opportunity analysis is
 defined in
-[`workflows/productOpportunityAnalysisWorkflow.js`](workflows/productOpportunityAnalysisWorkflow.js).
+[`workflows/productOpportunityAnalysisWorkflow.js`](workflows/productOpportunityAnalysisWorkflow.js);
+and the shape of one market research record is defined in
+[`agent/core/marketResearchModel.js`](agent/core/marketResearchModel.js) (no country or
+market is hardcoded — real values come only from configuration or task requirements).
 No tool calling, AI API connection, autonomous behavior, real retrieval/research/
 product-hunting logic, external research API calls, automated recommendations/scoring,
 or state persistence has been implemented yet, and no database or hosting platform has

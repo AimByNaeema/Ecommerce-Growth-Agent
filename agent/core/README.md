@@ -48,3 +48,11 @@ differentiation, market relevance, commercial potential, risks, evidence quality
 structured, evidence-based output of evaluating a candidate. Schema only — no scoring,
 ranking, or automated recommendation. Run `node agent/core/opportunityAnalysisModel.js`
 to print it.
+
+[`marketResearchModel.js`](marketResearchModel.js) defines the shape of one market
+research record (country, market, category, customer segment, demand signals,
+competitors, trends, opportunities, risks, evidence, research date) — a market-level
+specialization of `researchRecordModel.js`. Schema only — no lookup/search logic, and
+no country or market is hardcoded; real values come only from
+`configuration/business.yaml` or explicit task requirements. Run
+`node agent/core/marketResearchModel.js` to print it.
