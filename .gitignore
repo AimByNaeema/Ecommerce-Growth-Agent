@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+configuration/business.yaml
 *.pem
 *.key
 *.p12

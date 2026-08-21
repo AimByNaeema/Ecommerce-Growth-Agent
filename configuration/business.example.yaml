@@ -1,0 +1,42 @@
+# Business configuration template for the Smart E-Commerce Growth AI Agent.
+# Copy this file to business.yaml (git-ignored) and fill in the real business's values.
+# No values are pre-filled here - this defines structure only.
+
+# Name of the business.
+business_name: ""
+
+# How the business operates (e.g. B2C, B2B, D2C, marketplace, wholesale).
+business_model: ""
+
+# E-commerce platform the business runs on (e.g. Shopify).
+platform: ""
+
+# How products are sourced/fulfilled (e.g. in-house, dropshipping, print-on-demand, subscription).
+product_model: ""
+
+# Markets the business sells into.
+target_markets: []
+
+# Countries the business operates or ships in (e.g. ISO 3166-1 alpha-2 codes).
+countries: []
+
+# Currencies the business transacts in (e.g. ISO 4217 codes).
+currencies: []
+
+# Categories of products the business sells.
+product_categories: []
+
+# Distinct customer segments the business targets.
+customer_segments: []
+
+# Brand identity information.
+brand:
+  name: ""
+  tagline: ""
+  tone: ""
+
+# Business goals the agent should help pursue.
+business_goals: []
+
+# Marketing channels the business uses or plans to use.
+marketing_channels: []
