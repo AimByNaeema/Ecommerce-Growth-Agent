@@ -140,7 +140,13 @@ unnecessary calls, reuse valid existing information, avoid duplicate research, v
 results, handle failures, never invent results, stop when enough evidence exists) is
 defined in
 [`agent/core/toolSelectionRules.js`](agent/core/toolSelectionRules.js) (rules only —
-no automatic tool-selection optimization exists yet). No tool calling, AI API connection, autonomous behavior,
+no automatic tool-selection optimization exists yet); and the approval architecture
+classifying future actions into 4 classes (analysis-only, recommendation,
+approval-required, externally executable) and the policy governing them (approval
+required by default for consequential actions unless later configuration permits
+otherwise; never silently perform a consequential external action) is defined in
+[`approvals/approvalArchitecture.js`](approvals/approvalArchitecture.js) (no external
+service is connected). No tool calling, AI API connection, autonomous behavior,
 real retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no database
 or hosting platform has been chosen.
