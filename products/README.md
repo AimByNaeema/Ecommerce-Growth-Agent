@@ -19,3 +19,10 @@ here reads or writes real listing content, and applying a suggestion to a real s
 listing requires a separate, human-approved action via
 [`approvals/`](../approvals/README.md). No field claims or predicts an SEO performance
 improvement - only qualitative, evidence-checkable opportunities are captured.
+
+[`agent/core/growthOpportunityModel.js`](../agent/core/growthOpportunityModel.js)
+defines the shape of one growth opportunity record, covering upselling,
+cross-selling, retention, repeat purchases, and customer re-engagement. Every
+product/offer reference must point at real, already-configured data - never
+invented - and `recommendation` is a suggestion only: no customer-facing action is
+ever executed here.

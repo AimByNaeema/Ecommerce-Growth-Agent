@@ -91,3 +91,11 @@ objective, message, offer, timing, evidence, expected outcome, verification stat
 reusing `researchRecordModel.js`'s `RESEARCH_VERIFICATION_STATUSES` enum. Schema only
 — no external marketing action is ever executed here. Run
 `node agent/core/marketingAnalysisModel.js` to print it.
+
+[`growthOpportunityModel.js`](growthOpportunityModel.js) defines the shape of one
+growth opportunity record (opportunity type, product reference, related products,
+target segment, offer, recommendation, evidence, verification status), covering
+upselling, cross-selling, retention, repeat purchases, and customer re-engagement.
+Schema only — every product/offer reference must be real and already configured,
+never invented, and no customer-facing action is ever executed here. Run
+`node agent/core/growthOpportunityModel.js` to print it.

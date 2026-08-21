@@ -126,7 +126,12 @@ product to a content recommendation (PRODUCT → CUSTOMER → PROBLEM/NEED →
 SEARCH/INTEREST → CONTENT OPPORTUNITY → CONTENT RECOMMENDATION → VERIFICATION) is
 defined in
 [`workflows/contentMarketingWorkflow.js`](workflows/contentMarketingWorkflow.js)
-(nothing is ever published automatically, and no business fact is invented). No tool calling, AI API connection, autonomous behavior,
+(nothing is ever published automatically, and no business fact is invented); and the
+shape of one growth opportunity record (covering upselling, cross-selling, retention,
+repeat purchases, and customer re-engagement) is defined in
+[`agent/core/growthOpportunityModel.js`](agent/core/growthOpportunityModel.js) (every
+product/offer reference must be real and already configured, never invented, and no
+customer-facing action is ever executed here). No tool calling, AI API connection, autonomous behavior,
 real retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no database
 or hosting platform has been chosen.
