@@ -34,3 +34,10 @@ research record (topic, market, date, source/evidence, finding, confidence, rele
 summary, verification status), so existing research can be recognized and reused instead
 of repeated. Schema only — no lookup/search/duplicate-detection (no research engine).
 Run `node agent/core/researchRecordModel.js` to print it.
+
+[`productModel.js`](productModel.js) defines the shape of one product record (product
+identity, category, product model, description, positioning, target customer, market,
+pricing, availability, source, research status), the shape real catalog entries under
+`data/products/` are meant to conform to. Schema only — no product-hunting, scraping, or
+sourcing logic, and no real product data. Run `node agent/core/productModel.js` to print
+it.

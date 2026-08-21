@@ -8,3 +8,9 @@ Git-ignored, same as `data/business/`.
 
 Note: `products/` (top-level) holds reusable *logic* for catalog analysis, not catalog
 data — see `products/README.md`.
+
+Real entries here are meant to conform to the shape defined in
+[`agent/core/productModel.js`](../../agent/core/productModel.js) - product identity,
+category, product model, description, positioning, target customer, market, pricing,
+availability, source, and research status. Schema only - no product-hunting/scraping
+logic exists yet.
