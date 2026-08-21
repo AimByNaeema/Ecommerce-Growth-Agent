@@ -113,3 +113,15 @@ marketing performance, SEO performance, retention, growth opportunities) — reu
 `researchRecordModel.js`'s `RESEARCH_VERIFICATION_STATUSES` enum. Schema only — no
 analytics provider is assumed, and no integration exists yet. Run
 `node agent/core/analyticsModel.js` to print it.
+
+[`claudeClient.js`](claudeClient.js) is the ONE agent's connection to the Claude API
+(Anthropic Messages API) — a connection layer only: it can send a message to Claude and
+return the reply (`sendMessage`), and report whether `ANTHROPIC_API_KEY` is configured
+(`isConfigured`). It does not decide when to call Claude, does not call/dispatch tools
+(`tools/toolRegistry.js`), and is not wired into `agentContract.js`'s stages yet — that
+orchestration is later, explicitly-scoped work. No SDK dependency was added (Node's
+built-in `fetch` is enough); `.env` (git-ignored) is loaded automatically via Node's
+built-in `process.loadEnvFile`. A missing API key, a network failure, or a non-success
+API response all throw a clear error — no reply is ever invented. Run
+`node agent/core/claudeClient.js` to check configuration and, if a real
+`ANTHROPIC_API_KEY` is set, send one live test message.

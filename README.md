@@ -178,7 +178,15 @@ markets than the owner's own business) to demonstrate that the same, unmodified 
 core and validator work for any business's configuration without code changes; it is
 committed and validated by
 [`verification/testing/businessConfigSample.test.js`](verification/testing/businessConfigSample.test.js).
-No tool calling, AI API connection, autonomous behavior, real
+The agent's connection to the Claude API is now implemented — a connection layer only
+([`agent/core/claudeClient.js`](agent/core/claudeClient.js)) that can send one message
+to Claude and return its reply (`sendMessage`), and report whether `ANTHROPIC_API_KEY`
+is configured (`isConfigured`), using Node's built-in `fetch` (no SDK dependency) and
+`.env` (git-ignored; see [`.env.example`](.env.example)) for the API key. It never
+invents a reply: a missing key, a network failure, or a non-success API response all
+throw a clear error. It is not yet wired into `agentContract.js`'s stages, does not
+call/dispatch tools, and has no autonomous looping — that orchestration is later,
+explicitly-scoped work. No tool calling, autonomous behavior, real
 retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no
 database or hosting platform has been chosen.
