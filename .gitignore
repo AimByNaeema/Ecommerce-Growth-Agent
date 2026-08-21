@@ -3,6 +3,10 @@
 .env.local
 .env.*.local
 configuration/business.yaml
+data/business/*
+!data/business/README.md
+data/tasks/*
+!data/tasks/README.md
 *.pem
 *.key
 *.p12
