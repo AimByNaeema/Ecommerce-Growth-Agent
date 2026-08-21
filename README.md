@@ -158,7 +158,13 @@ agent must use to label every claim it makes (observed fact, calculated result,
 interpretation, hypothesis, recommendation), is defined in
 [`workflows/analyticsInsightWorkflow.js`](workflows/analyticsInsightWorkflow.js)
 (hypotheses are never presented as facts — only the verification stage confirms or
-refutes them). No tool calling, AI API connection, autonomous behavior, real
+refutes them). A controlled test of the agent against the owner's real business
+configuration is defined in
+[`verification/testing/controlledAgentTest.js`](verification/testing/controlledAgentTest.js)
+(run with `npm run verify:controlled-agent-test`) — as of the last run, all 10
+capability areas pass structurally, but `configuration/business.yaml` does not yet
+exist, so real business data is unavailable for 9 of the 10 areas (reported plainly,
+never invented). No tool calling, AI API connection, autonomous behavior, real
 retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no
 database or hosting platform has been chosen.
