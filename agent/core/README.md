@@ -41,3 +41,10 @@ pricing, availability, source, research status), the shape real catalog entries 
 `data/products/` are meant to conform to. Schema only — no product-hunting, scraping, or
 sourcing logic, and no real product data. Run `node agent/core/productModel.js` to print
 it.
+
+[`opportunityAnalysisModel.js`](opportunityAnalysisModel.js) defines the shape of one
+product opportunity analysis (opportunity reference, demand, competition, customer fit,
+differentiation, market relevance, commercial potential, risks, evidence quality) — the
+structured, evidence-based output of evaluating a candidate. Schema only — no scoring,
+ranking, or automated recommendation. Run `node agent/core/opportunityAnalysisModel.js`
+to print it.

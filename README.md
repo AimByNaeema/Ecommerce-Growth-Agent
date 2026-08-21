@@ -90,9 +90,15 @@ should and should not contain are defined in
 research record is defined in
 [`agent/core/researchRecordModel.js`](agent/core/researchRecordModel.js); the shape
 of one product record is defined in
-[`agent/core/productModel.js`](agent/core/productModel.js); and the conceptual pipeline
+[`agent/core/productModel.js`](agent/core/productModel.js); the conceptual pipeline
 of a future product research capability is defined in
-[`products/productResearchArchitecture.js`](products/productResearchArchitecture.js).
+[`products/productResearchArchitecture.js`](products/productResearchArchitecture.js);
+the shape of one product opportunity analysis is defined in
+[`agent/core/opportunityAnalysisModel.js`](agent/core/opportunityAnalysisModel.js); and
+the workflow that turns gathered evidence into a structured opportunity analysis is
+defined in
+[`workflows/productOpportunityAnalysisWorkflow.js`](workflows/productOpportunityAnalysisWorkflow.js).
 No tool calling, AI API connection, autonomous behavior, real retrieval/research/
-product-hunting logic, external research API calls, or state persistence has been
-implemented yet, and no database or hosting platform has been chosen.
+product-hunting logic, external research API calls, automated recommendations/scoring,
+or state persistence has been implemented yet, and no database or hosting platform has
+been chosen.
