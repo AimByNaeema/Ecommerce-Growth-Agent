@@ -171,7 +171,14 @@ integrations connected) alongside its 12 required fields, so a new client can
 eventually configure business information, platform, product model, markets,
 countries, currencies, categories, customers, brand, goals, marketing channels, and
 integrations, all without changing core agent logic; credentials stay entirely in
-`.env` (git-ignored, never in source). No tool calling, AI API connection, autonomous behavior, real
+`.env` (git-ignored, never in source). A fully filled-in, documented example —
+[`configuration/business.sample.yaml`](configuration/business.sample.yaml) — uses
+entirely fictional placeholder values (a different platform, business model, and
+markets than the owner's own business) to demonstrate that the same, unmodified agent
+core and validator work for any business's configuration without code changes; it is
+committed and validated by
+[`verification/testing/businessConfigSample.test.js`](verification/testing/businessConfigSample.test.js).
+No tool calling, AI API connection, autonomous behavior, real
 retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no
 database or hosting platform has been chosen.

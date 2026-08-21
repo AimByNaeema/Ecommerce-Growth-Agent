@@ -1,0 +1,76 @@
+# Illustrative EXAMPLE of a completed business configuration.
+#
+# Every value below is a FICTIONAL PLACEHOLDER, for illustration only - there is no
+# real company, store, or person behind any of it. This file is not meant to be
+# copied. To configure a real business, copy business.example.yaml (blank structure
+# only) to business.yaml and fill in that business's real values.
+#
+# What this file demonstrates: the same, unmodified agent core and validator
+# (tools/configValidator.js) that will run for the owner's own Shopify/D2C business
+# also works, unchanged, for a completely different fictional business below -
+# different platform, different business model, different markets, different product
+# model. Nothing in agent/core/, workflows/, or tools/ needed to change to make this
+# true - configuring a new business is a config change, not a code change.
+
+# Name of the business.
+business_name: "Meridian Goods Co. (fictional placeholder)"
+
+# How the business operates (e.g. B2C, B2B, D2C, marketplace, wholesale).
+business_model: "marketplace"
+
+# E-commerce platform the business runs on (e.g. Shopify). Shown here as a different
+# platform than the owner's own Shopify store, to demonstrate this field is not
+# hardcoded to any one platform.
+platform: "WooCommerce (example placeholder)"
+
+# How products are sourced/fulfilled (e.g. in-house, dropshipping, print-on-demand, subscription).
+product_model: "print-on-demand"
+
+# Markets the business sells into.
+target_markets:
+  - "North America"
+  - "Western Europe"
+
+# Countries the business operates or ships in (e.g. ISO 3166-1 alpha-2 codes).
+countries:
+  - "CA"
+  - "DE"
+
+# Currencies the business transacts in (e.g. ISO 4217 codes).
+currencies:
+  - "CAD"
+  - "EUR"
+
+# Categories of products the business sells.
+product_categories:
+  - "home decor"
+  - "stationery"
+
+# Distinct customer segments the business targets.
+customer_segments:
+  - "gift shoppers"
+  - "small home-office buyers"
+
+# Brand identity information.
+brand:
+  name: "Meridian Goods"
+  tagline: "Everyday objects, thoughtfully made (example placeholder tagline)"
+  tone: "warm, minimal, straightforward"
+
+# Business goals the agent should help pursue.
+business_goals:
+  - "grow repeat purchase rate"
+  - "expand into a second fictional market"
+
+# Marketing channels the business uses or plans to use.
+marketing_channels:
+  - "email"
+  - "organic search"
+
+# Integrations this business uses or plans to connect (e.g. its e-commerce platform,
+# email marketing tool, analytics provider - see integrations/README.md). Names only -
+# credentials and connection details are configured separately (see .env.example) and
+# never live here. Shown here as non-empty (unlike the blank template) to demonstrate
+# this optional field can also be populated.
+integrations:
+  - "email marketing tool (example placeholder)"
