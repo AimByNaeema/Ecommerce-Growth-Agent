@@ -14,3 +14,10 @@ API calls, no autonomous looping. Run `node agent/core/agentContract.js` to prin
 agent might need lives (task, business, product, research, memory, tool), so a future
 retrieval step can pull only the relevant slice instead of everything. Run
 `node agent/core/contextBoundaries.js` to print it.
+
+[`stateModel.js`](stateModel.js) defines the compact shape of one task's state (current
+objective, task status, relevant configuration, selected research, findings, decisions,
+pending/completed/failed work, verification status, approvals) — a schema and an
+empty-state helper only, never entire conversations, no database. Instances of this
+shape are meant to be persisted under `memory/state/` once persistence is implemented.
+Run `node agent/core/stateModel.js` to print it.

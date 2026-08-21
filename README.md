@@ -80,8 +80,10 @@ Foundation stage. Runtime: Node.js. A structured configuration template
 exist; data is organized into business/product/task/research/state boundaries (see
 [`data/README.md`](data/README.md)); the ONE agent's core contract — its conceptual
 lifecycle stages — is defined in [`agent/core/agentContract.js`](agent/core/agentContract.js);
-and where each kind of context lives (so the agent can retrieve a relevant slice instead
+where each kind of context lives (so the agent can retrieve a relevant slice instead
 of everything) is defined in
-[`agent/core/contextBoundaries.js`](agent/core/contextBoundaries.js). No tool calling, AI
-API connection, autonomous behavior, or real retrieval logic has been implemented yet,
-and no database or hosting platform has been chosen.
+[`agent/core/contextBoundaries.js`](agent/core/contextBoundaries.js); and the compact
+shape of one task's state is defined in
+[`agent/core/stateModel.js`](agent/core/stateModel.js). No tool calling, AI API
+connection, autonomous behavior, real retrieval logic, or state persistence has been
+implemented yet, and no database or hosting platform has been chosen.
