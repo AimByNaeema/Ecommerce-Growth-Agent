@@ -1,0 +1,29 @@
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Dependency directories (runtime not yet chosen)
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Build output
+dist/
+build/
+out/
+
+# Logs
+*.log
+logs/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
