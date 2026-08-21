@@ -5,6 +5,8 @@
 configuration/business.yaml
 data/business/*
 !data/business/README.md
+data/products/*
+!data/products/README.md
 data/tasks/*
 !data/tasks/README.md
 *.pem

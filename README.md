@@ -77,8 +77,11 @@ begins, and a git checkpoint is created once a step is confirmed working. See
 
 Foundation stage. Runtime: Node.js. A structured configuration template
 (`configuration/business.example.yaml`) and its validator (`tools/configValidator.js`)
-exist; data is organized into business/task/research/state boundaries (see
-[`data/README.md`](data/README.md)); and the ONE agent's core contract — its conceptual
-lifecycle stages — is defined in [`agent/core/agentContract.js`](agent/core/agentContract.js).
-No tool calling, AI API connection, or autonomous behavior has been implemented yet, and
-no database or hosting platform has been chosen.
+exist; data is organized into business/product/task/research/state boundaries (see
+[`data/README.md`](data/README.md)); the ONE agent's core contract — its conceptual
+lifecycle stages — is defined in [`agent/core/agentContract.js`](agent/core/agentContract.js);
+and where each kind of context lives (so the agent can retrieve a relevant slice instead
+of everything) is defined in
+[`agent/core/contextBoundaries.js`](agent/core/contextBoundaries.js). No tool calling, AI
+API connection, autonomous behavior, or real retrieval logic has been implemented yet,
+and no database or hosting platform has been chosen.
