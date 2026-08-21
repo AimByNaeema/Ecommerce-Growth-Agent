@@ -22,3 +22,8 @@ defines a more specific shape (competitor, market, product/category, positioning
 pricing evidence, strengths, weaknesses, marketing signals, SEO signals, opportunities,
 source, research date). No competitor data is invented — real values come only from
 cited source evidence.
+
+Real research records saved here belong to whichever business they were gathered for —
+never committed, never hardcoded into agent logic (git-ignored, mirroring
+`data/business/`). Reusable agent logic (`agent/core/`, `tools/`, `workflows/`,
+`prompts/`) must never read this folder directly or hardcode its contents.

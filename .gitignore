@@ -9,6 +9,10 @@ data/products/*
 !data/products/README.md
 data/tasks/*
 !data/tasks/README.md
+research/*
+!research/README.md
+memory/state/*
+!memory/state/README.md
 *.pem
 *.key
 *.p12
