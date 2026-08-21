@@ -118,10 +118,15 @@ unavailable, never guessed); the shape of one product/listing optimization recor
 is defined in
 [`agent/core/listingOptimizationModel.js`](agent/core/listingOptimizationModel.js)
 (every field is a suggestion — nothing overwrites real listing content, and no field
-claims an SEO performance improvement without evidence); and the shape of one marketing
+claims an SEO performance improvement without evidence); the shape of one marketing
 analysis record is defined in
 [`agent/core/marketingAnalysisModel.js`](agent/core/marketingAnalysisModel.js) (no
-external marketing action is ever executed here). No tool calling, AI API connection, autonomous behavior,
+external marketing action is ever executed here); and the workflow that connects a
+product to a content recommendation (PRODUCT → CUSTOMER → PROBLEM/NEED →
+SEARCH/INTEREST → CONTENT OPPORTUNITY → CONTENT RECOMMENDATION → VERIFICATION) is
+defined in
+[`workflows/contentMarketingWorkflow.js`](workflows/contentMarketingWorkflow.js)
+(nothing is ever published automatically, and no business fact is invented). No tool calling, AI API connection, autonomous behavior,
 real retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no database
 or hosting platform has been chosen.

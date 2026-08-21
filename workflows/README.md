@@ -19,3 +19,13 @@ into a concise, structured set of
 [`agent/core/seoResearchModel.js`](../agent/core/seoResearchModel.js) keyword records.
 Pipeline only — no search volume or competition metric is ever invented, and any field
 with no real evidence is marked unavailable rather than guessed.
+
+[`contentMarketingWorkflow.js`](contentMarketingWorkflow.js) defines the process that
+connects a product to a content recommendation: PRODUCT → CUSTOMER → PROBLEM/NEED →
+SEARCH/INTEREST → CONTENT OPPORTUNITY → CONTENT RECOMMENDATION → VERIFICATION. It
+composes [`agent/core/productModel.js`](../agent/core/productModel.js),
+[`agent/core/customerSegmentResearchModel.js`](../agent/core/customerSegmentResearchModel.js),
+[`agent/core/seoResearchModel.js`](../agent/core/seoResearchModel.js), and
+[`agent/core/marketingAnalysisModel.js`](../agent/core/marketingAnalysisModel.js).
+Pipeline only — nothing is ever published automatically, and no business fact is
+invented anywhere.
