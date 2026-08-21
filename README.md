@@ -98,10 +98,13 @@ the shape of one product opportunity analysis is defined in
 the workflow that turns gathered evidence into a structured opportunity analysis is
 defined in
 [`workflows/productOpportunityAnalysisWorkflow.js`](workflows/productOpportunityAnalysisWorkflow.js);
-and the shape of one market research record is defined in
+the shape of one market research record is defined in
 [`agent/core/marketResearchModel.js`](agent/core/marketResearchModel.js) (no country or
-market is hardcoded — real values come only from configuration or task requirements).
-No tool calling, AI API connection, autonomous behavior, real retrieval/research/
-product-hunting logic, external research API calls, automated recommendations/scoring,
-or state persistence has been implemented yet, and no database or hosting platform has
-been chosen.
+market is hardcoded — real values come only from configuration or task requirements);
+and the shape of one customer segment research record is defined in
+[`agent/core/customerSegmentResearchModel.js`](agent/core/customerSegmentResearchModel.js)
+(no customer research is invented, and confidence defaults to `unassessed` so an
+assumption is never claimed as a fact). No tool calling, AI API connection, autonomous
+behavior, real retrieval/research/product-hunting logic, external research API calls,
+automated recommendations/scoring, or state persistence has been implemented yet, and
+no database or hosting platform has been chosen.

@@ -56,3 +56,11 @@ specialization of `researchRecordModel.js`. Schema only — no lookup/search log
 no country or market is hardcoded; real values come only from
 `configuration/business.yaml` or explicit task requirements. Run
 `node agent/core/marketResearchModel.js` to print it.
+
+[`customerSegmentResearchModel.js`](customerSegmentResearchModel.js) defines the shape
+of one customer segment research record (segment definition, needs, problems, buying
+motivations, objections, preferences, market, evidence, confidence). Schema only — no
+survey/interview/lookup logic. No customer research is invented; `confidence` (reusing
+`researchRecordModel.js`'s `CONFIDENCE_LEVELS`) defaults to `unassessed`, so an
+assumption is never claimed as a fact. Run
+`node agent/core/customerSegmentResearchModel.js` to print it.

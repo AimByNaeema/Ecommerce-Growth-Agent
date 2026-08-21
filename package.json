@@ -15,7 +15,8 @@
     "agent:opportunity-analysis-model": "node agent/core/opportunityAnalysisModel.js",
     "workflows:product-opportunity-analysis": "node workflows/productOpportunityAnalysisWorkflow.js",
     "agent:market-research-model": "node agent/core/marketResearchModel.js",
-    "test": "node verification/testing/configValidator.test.js && node verification/testing/agentContract.test.js && node verification/testing/contextBoundaries.test.js && node verification/testing/stateModel.test.js && node verification/testing/memoryRules.test.js && node verification/testing/researchRecordModel.test.js && node verification/testing/productModel.test.js && node verification/testing/productResearchArchitecture.test.js && node verification/testing/opportunityAnalysisModel.test.js && node verification/testing/productOpportunityAnalysisWorkflow.test.js && node verification/testing/marketResearchModel.test.js"
+    "agent:customer-segment-research-model": "node agent/core/customerSegmentResearchModel.js",
+    "test": "node verification/testing/configValidator.test.js && node verification/testing/agentContract.test.js && node verification/testing/contextBoundaries.test.js && node verification/testing/stateModel.test.js && node verification/testing/memoryRules.test.js && node verification/testing/researchRecordModel.test.js && node verification/testing/productModel.test.js && node verification/testing/productResearchArchitecture.test.js && node verification/testing/opportunityAnalysisModel.test.js && node verification/testing/productOpportunityAnalysisWorkflow.test.js && node verification/testing/marketResearchModel.test.js && node verification/testing/customerSegmentResearchModel.test.js"
   },
   "dependencies": {
     "yaml": "^2.5.1"
