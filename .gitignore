@@ -2,6 +2,13 @@
 .env
 .env.local
 .env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+*.secret
+credentials.json
 
 # Dependency directories (runtime not yet chosen)
 node_modules/
@@ -15,13 +22,21 @@ dist/
 build/
 out/
 
+# Temporary / generated files
+tmp/
+temp/
+*.tmp
+*.bak
+.cache/
+
 # Logs
 *.log
 logs/
 
-# OS cruft
+# OS files
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Editor/IDE
 .vscode/
