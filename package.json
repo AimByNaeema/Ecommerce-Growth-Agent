@@ -11,7 +11,8 @@
     "agent:memory-rules": "node agent/core/memoryRules.js",
     "agent:research-model": "node agent/core/researchRecordModel.js",
     "agent:product-model": "node agent/core/productModel.js",
-    "test": "node verification/testing/configValidator.test.js && node verification/testing/agentContract.test.js && node verification/testing/contextBoundaries.test.js && node verification/testing/stateModel.test.js && node verification/testing/memoryRules.test.js && node verification/testing/researchRecordModel.test.js && node verification/testing/productModel.test.js"
+    "products:research-architecture": "node products/productResearchArchitecture.js",
+    "test": "node verification/testing/configValidator.test.js && node verification/testing/agentContract.test.js && node verification/testing/contextBoundaries.test.js && node verification/testing/stateModel.test.js && node verification/testing/memoryRules.test.js && node verification/testing/researchRecordModel.test.js && node verification/testing/productModel.test.js && node verification/testing/productResearchArchitecture.test.js"
   },
   "dependencies": {
     "yaml": "^2.5.1"
