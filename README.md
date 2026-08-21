@@ -186,7 +186,17 @@ is configured (`isConfigured`), using Node's built-in `fetch` (no SDK dependency
 invents a reply: a missing key, a network failure, or a non-success API response all
 throw a clear error. It is not yet wired into `agentContract.js`'s stages, does not
 call/dispatch tools, and has no autonomous looping — that orchestration is later,
-explicitly-scoped work. No tool calling, autonomous behavior, real
-retrieval/research/product-hunting logic, external research API calls, automated
-recommendations/scoring, or state persistence has been implemented yet, and no
-database or hosting platform has been chosen.
+explicitly-scoped work. The agent's connection to the owner's Shopify store is now
+also implemented — a connection layer only
+([`integrations/adapters/shopifyClient.js`](integrations/adapters/shopifyClient.js))
+that can reach the store's Admin GraphQL API and confirm the connection works
+(`getShopInfo`), and report whether `SHOPIFY_STORE_DOMAIN`/`SHOPIFY_ADMIN_API_ACCESS_TOKEN`
+are configured (`isConfigured`), using Node's built-in `fetch` (no SDK dependency) and
+`.env` for the store domain and access token. It never invents a result: a missing
+config, a network failure, or a non-success/GraphQL-error response all throw a clear
+error. It does not read/write products, orders, or inventory, and is not yet wired
+into `agentContract.js`'s stages — that orchestration is later, explicitly-scoped
+work. No tool calling, autonomous behavior, real retrieval/research/product-hunting
+logic, external research API calls, automated recommendations/scoring, or state
+persistence has been implemented yet, and no database or hosting platform has been
+chosen.
