@@ -84,3 +84,10 @@ keywords, search intent, structure, metadata, internal optimization opportunitie
 conversion considerations). Schema only — every field is a suggestion; nothing here
 overwrites real listing content, and no field claims an SEO performance improvement
 without evidence. Run `node agent/core/listingOptimizationModel.js` to print it.
+
+[`marketingAnalysisModel.js`](marketingAnalysisModel.js) defines the shape of one
+marketing analysis record (marketing channel, target segment, product, campaign,
+objective, message, offer, timing, evidence, expected outcome, verification status) —
+reusing `researchRecordModel.js`'s `RESEARCH_VERIFICATION_STATUSES` enum. Schema only
+— no external marketing action is ever executed here. Run
+`node agent/core/marketingAnalysisModel.js` to print it.
