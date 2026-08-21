@@ -134,7 +134,13 @@ product/offer reference must be real and already configured, never invented, and
 customer-facing action is ever executed here); and the registry of tools the ONE agent
 may eventually call (12 tools across 9 categories) is defined in
 [`tools/toolRegistry.js`](tools/toolRegistry.js) (registry foundation only — every
-entry is `not_implemented`, and no register/execute/dispatch logic exists). No tool calling, AI API connection, autonomous behavior,
+entry is `not_implemented`, and no register/execute/dispatch logic exists); and how
+the agent should select and use those tools (use only relevant tools, avoid
+unnecessary calls, reuse valid existing information, avoid duplicate research, verify
+results, handle failures, never invent results, stop when enough evidence exists) is
+defined in
+[`agent/core/toolSelectionRules.js`](agent/core/toolSelectionRules.js) (rules only —
+no automatic tool-selection optimization exists yet). No tool calling, AI API connection, autonomous behavior,
 real retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no database
 or hosting platform has been chosen.

@@ -14,4 +14,6 @@ product research, market research, customer research, competitor research, keywo
 research, SEO analysis, marketing analysis, analytics, memory retrieval,
 verification). Registry foundation only — every entry is `not_implemented`, and there
 is no register/execute/dispatch logic anywhere in the file. Run
-`node tools/toolRegistry.js` to print it.
+`node tools/toolRegistry.js` to print it. How the agent selects and uses these tools
+is governed by
+[`agent/core/toolSelectionRules.js`](../agent/core/toolSelectionRules.js).

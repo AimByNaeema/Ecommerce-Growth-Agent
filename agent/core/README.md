@@ -85,6 +85,13 @@ conversion considerations). Schema only — every field is a suggestion; nothing
 overwrites real listing content, and no field claims an SEO performance improvement
 without evidence. Run `node agent/core/listingOptimizationModel.js` to print it.
 
+[`toolSelectionRules.js`](toolSelectionRules.js) defines the ONE agent's tool
+selection rules (use only relevant tools, avoid unnecessary tool calls, reuse valid
+existing information, avoid duplicate research, verify tool results, handle tool
+failures, never invent tool results, stop when enough evidence exists). Rules only —
+no automatic tool-selection optimization exists yet. Run
+`node agent/core/toolSelectionRules.js` to print it.
+
 [`marketingAnalysisModel.js`](marketingAnalysisModel.js) defines the shape of one
 marketing analysis record (marketing channel, target segment, product, campaign,
 objective, message, offer, timing, evidence, expected outcome, verification status) —
