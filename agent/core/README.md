@@ -70,3 +70,10 @@ competitor research record (competitor, market, product/category, positioning, p
 evidence, strengths, weaknesses, marketing signals, SEO signals, opportunities, source,
 research date). Schema only — no scraping/lookup logic, and no competitor data is
 invented. Run `node agent/core/competitorResearchModel.js` to print it.
+
+[`seoResearchModel.js`](seoResearchModel.js) defines the shape of one SEO keyword
+research record (keyword, search intent, market, language, relevance, competition,
+opportunity, source, research date, confidence) — reusing
+`researchRecordModel.js`'s `RELEVANCE_LEVELS` and `CONFIDENCE_LEVELS` enums. Schema
+only — no live keyword API is called or configured today. Run
+`node agent/core/seoResearchModel.js` to print it.

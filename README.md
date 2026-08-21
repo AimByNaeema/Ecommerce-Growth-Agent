@@ -104,10 +104,13 @@ market is hardcoded — real values come only from configuration or task require
 the shape of one customer segment research record is defined in
 [`agent/core/customerSegmentResearchModel.js`](agent/core/customerSegmentResearchModel.js)
 (no customer research is invented, and confidence defaults to `unassessed` so an
-assumption is never claimed as a fact); and the shape of one competitor research record
+assumption is never claimed as a fact); the shape of one competitor research record
 is defined in
 [`agent/core/competitorResearchModel.js`](agent/core/competitorResearchModel.js) (no
-competitor data is invented). No tool calling, AI API connection, autonomous behavior,
+competitor data is invented); and the shape of one SEO keyword research record is
+defined in
+[`agent/core/seoResearchModel.js`](agent/core/seoResearchModel.js) (no live keyword
+API is called or configured today). No tool calling, AI API connection, autonomous behavior,
 real retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no database
 or hosting platform has been chosen.

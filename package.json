@@ -17,7 +17,8 @@
     "agent:market-research-model": "node agent/core/marketResearchModel.js",
     "agent:customer-segment-research-model": "node agent/core/customerSegmentResearchModel.js",
     "agent:competitor-research-model": "node agent/core/competitorResearchModel.js",
-    "test": "node verification/testing/configValidator.test.js && node verification/testing/agentContract.test.js && node verification/testing/contextBoundaries.test.js && node verification/testing/stateModel.test.js && node verification/testing/memoryRules.test.js && node verification/testing/researchRecordModel.test.js && node verification/testing/productModel.test.js && node verification/testing/productResearchArchitecture.test.js && node verification/testing/opportunityAnalysisModel.test.js && node verification/testing/productOpportunityAnalysisWorkflow.test.js && node verification/testing/marketResearchModel.test.js && node verification/testing/customerSegmentResearchModel.test.js && node verification/testing/competitorResearchModel.test.js"
+    "agent:seo-research-model": "node agent/core/seoResearchModel.js",
+    "test": "node verification/testing/configValidator.test.js && node verification/testing/agentContract.test.js && node verification/testing/contextBoundaries.test.js && node verification/testing/stateModel.test.js && node verification/testing/memoryRules.test.js && node verification/testing/researchRecordModel.test.js && node verification/testing/productModel.test.js && node verification/testing/productResearchArchitecture.test.js && node verification/testing/opportunityAnalysisModel.test.js && node verification/testing/productOpportunityAnalysisWorkflow.test.js && node verification/testing/marketResearchModel.test.js && node verification/testing/customerSegmentResearchModel.test.js && node verification/testing/competitorResearchModel.test.js && node verification/testing/seoResearchModel.test.js"
   },
   "dependencies": {
     "yaml": "^2.5.1"
