@@ -16,3 +16,9 @@ signals, competitors, trends, opportunities, risks, evidence, research date). Co
 and market are never hardcoded — real values come only from
 [`configuration/business.yaml`](../configuration/README.md) or explicit task
 requirements.
+
+For competitor research specifically, [`agent/core/competitorResearchModel.js`](../agent/core/competitorResearchModel.js)
+defines a more specific shape (competitor, market, product/category, positioning,
+pricing evidence, strengths, weaknesses, marketing signals, SEO signals, opportunities,
+source, research date). No competitor data is invented — real values come only from
+cited source evidence.

@@ -64,3 +64,9 @@ survey/interview/lookup logic. No customer research is invented; `confidence` (r
 `researchRecordModel.js`'s `CONFIDENCE_LEVELS`) defaults to `unassessed`, so an
 assumption is never claimed as a fact. Run
 `node agent/core/customerSegmentResearchModel.js` to print it.
+
+[`competitorResearchModel.js`](competitorResearchModel.js) defines the shape of one
+competitor research record (competitor, market, product/category, positioning, pricing
+evidence, strengths, weaknesses, marketing signals, SEO signals, opportunities, source,
+research date). Schema only — no scraping/lookup logic, and no competitor data is
+invented. Run `node agent/core/competitorResearchModel.js` to print it.
