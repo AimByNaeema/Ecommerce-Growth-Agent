@@ -107,10 +107,14 @@ the shape of one customer segment research record is defined in
 assumption is never claimed as a fact); the shape of one competitor research record
 is defined in
 [`agent/core/competitorResearchModel.js`](agent/core/competitorResearchModel.js) (no
-competitor data is invented); and the shape of one SEO keyword research record is
+competitor data is invented); the shape of one SEO keyword research record is
 defined in
 [`agent/core/seoResearchModel.js`](agent/core/seoResearchModel.js) (no live keyword
-API is called or configured today). No tool calling, AI API connection, autonomous behavior,
+API is called or configured today); and the workflow that turns a product/category and
+customer intent signals into a concise, structured set of keyword records is defined in
+[`workflows/keywordResearchWorkflow.js`](workflows/keywordResearchWorkflow.js) (no
+search volume or competition metric is ever invented; unavailable data is marked
+unavailable, never guessed). No tool calling, AI API connection, autonomous behavior,
 real retrieval/research/product-hunting logic, external research API calls, automated
 recommendations/scoring, or state persistence has been implemented yet, and no database
 or hosting platform has been chosen.
