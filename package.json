@@ -5,7 +5,8 @@
   "description": "Foundation for the Smart E-Commerce Growth AI Agent.",
   "scripts": {
     "validate:config": "node tools/configValidator.js",
-    "test": "node verification/testing/configValidator.test.js"
+    "agent:contract": "node agent/core/agentContract.js",
+    "test": "node verification/testing/configValidator.test.js && node verification/testing/agentContract.test.js"
   },
   "dependencies": {
     "yaml": "^2.5.1"

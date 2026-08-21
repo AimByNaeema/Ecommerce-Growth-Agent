@@ -75,7 +75,10 @@ begins, and a git checkpoint is created once a step is confirmed working. See
 
 ## Current project status
 
-Foundation stage. Runtime: Node.js (chosen for the business configuration validator).
-A structured configuration template (`configuration/business.example.yaml`) and its
-validator (`tools/configValidator.js`) exist. No database or hosting platform has been
-chosen, and no other application logic has been implemented yet.
+Foundation stage. Runtime: Node.js. A structured configuration template
+(`configuration/business.example.yaml`) and its validator (`tools/configValidator.js`)
+exist; data is organized into business/task/research/state boundaries (see
+[`data/README.md`](data/README.md)); and the ONE agent's core contract — its conceptual
+lifecycle stages — is defined in [`agent/core/agentContract.js`](agent/core/agentContract.js).
+No tool calling, AI API connection, or autonomous behavior has been implemented yet, and
+no database or hosting platform has been chosen.
