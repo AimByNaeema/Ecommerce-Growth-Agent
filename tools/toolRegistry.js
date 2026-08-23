@@ -1,12 +1,12 @@
 'use strict';
 
 // The registry of tools the ONE Smart E-Commerce Growth AI Agent may eventually call.
-// This is a registry FOUNDATION only: a descriptive list plus small read-only lookup
-// helpers - there is no register/execute/dispatch function anywhere in this file, so
-// no tool is ever actually called from here. Every entry's status is
-// 'not_implemented' - none of these 12 tools do real work yet, including
-// business_configuration_retrieval, even though tools/configValidator.js already
-// exists (it validates a config file; it isn't wired up as a callable tool here).
+// This is a registry FOUNDATION plus one real, callable tool: a descriptive list plus
+// small read-only lookup helpers - there is still no register/execute/dispatch
+// function anywhere in this file, so tools are not called *from here*.
+// business_configuration_retrieval is the first entry actually implemented (see
+// tools/businessConfigurationRetrieval.js) - the other 11 tools remain
+// 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -32,9 +32,9 @@ const TOOL_REGISTRY = [
     id: 'business_configuration_retrieval',
     title: 'Business configuration retrieval',
     description:
-      'Retrieve the business configuration (configuration/business.yaml) - see tools/configValidator.js for validating that same file.',
+      "Retrieve the connected Shopify store's shop identity (name, domain, email) via integrations/adapters/shopifyClient.js's getShopInfo() - see tools/businessConfigurationRetrieval.js.",
     category: 'configuration',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'product_data_retrieval',

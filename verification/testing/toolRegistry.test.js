@@ -66,10 +66,15 @@ test('every entry has a valid category and status', () => {
   }
 });
 
-test('every entry is not_implemented - do not implement all tools yet', () => {
+test('every entry except business_configuration_retrieval is not_implemented - do not implement other tools yet', () => {
   for (const tool of TOOL_REGISTRY) {
+    if (tool.id === 'business_configuration_retrieval') continue;
     assert.strictEqual(tool.status, 'not_implemented', `${tool.id} should not be implemented yet`);
   }
+});
+
+test('business_configuration_retrieval is implemented', () => {
+  assert.strictEqual(getToolById('business_configuration_retrieval').status, 'implemented');
 });
 
 test('getToolById() finds a known tool and returns undefined for an unknown one', () => {
@@ -82,9 +87,9 @@ test('getToolsByCategory() filters correctly', () => {
   assert.deepStrictEqual(seoTools.map((tool) => tool.id), ['keyword_research', 'seo_analysis']);
 });
 
-test('getToolsByStatus() returns all tools when all are not_implemented', () => {
-  assert.strictEqual(getToolsByStatus('not_implemented').length, TOOL_REGISTRY.length);
-  assert.strictEqual(getToolsByStatus('implemented').length, 0);
+test('getToolsByStatus() returns the correct counts for each status', () => {
+  assert.strictEqual(getToolsByStatus('not_implemented').length, TOOL_REGISTRY.length - 1);
+  assert.strictEqual(getToolsByStatus('implemented').length, 1);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
