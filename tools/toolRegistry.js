@@ -1,12 +1,13 @@
 'use strict';
 
-// The registry of tools the ONE Smart E-Commerce Growth AI Agent may eventually call.
-// This is a registry FOUNDATION plus one real, callable tool: a descriptive list plus
-// small read-only lookup helpers - there is still no register/execute/dispatch
-// function anywhere in this file, so tools are not called *from here*.
-// business_configuration_retrieval is the first entry actually implemented (see
-// tools/businessConfigurationRetrieval.js) - the other 11 tools remain
-// 'not_implemented'.
+// The registry of tools the Chief/Orchestrator may call. This is a registry
+// FOUNDATION plus two real, callable tools: a descriptive list plus small read-only
+// lookup helpers - there is still no register/execute/dispatch function anywhere in
+// this file (that lives in agent/core/orchestratorExecutionContract.js, gated by
+// agent/core/toolPermissions.js), so tools are not called *from here*.
+// business_configuration_retrieval and ai_reasoning_completion are the two entries
+// actually implemented (see tools/businessConfigurationRetrieval.js and
+// tools/aiReasoningCompletion.js) - the other 11 tools remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -21,6 +22,7 @@ const TOOL_CATEGORIES = [
   'seo',
   'marketing',
   'analytics',
+  'ai_reasoning',
   'memory',
   'verification',
 ];
@@ -109,6 +111,14 @@ const TOOL_REGISTRY = [
     status: 'not_implemented',
   },
   {
+    id: 'ai_reasoning_completion',
+    title: 'AI reasoning completion',
+    description:
+      "Run one structured Claude completion (instruction + optional context) via agent/core/claudeClient.js's sendMessage() - see tools/aiReasoningCompletion.js. Every call is capped/budgeted by agent/core/tokenControls.js.",
+    category: 'ai_reasoning',
+    status: 'implemented',
+  },
+  {
     id: 'memory_retrieval',
     title: 'Memory retrieval',
     description:
@@ -163,6 +173,7 @@ if (require.main === module) {
       console.log(`      ${tool.description}`);
     }
   }
-  console.log(`\n${TOOL_REGISTRY.length} tools registered, 0 implemented - registry foundation only.`);
-  console.log('No tool is ever called from this file - there is no execute/dispatch logic here.');
+  const implementedCount = getToolsByStatus('implemented').length;
+  console.log(`\n${TOOL_REGISTRY.length} tools registered, ${implementedCount} implemented - registry foundation only.`);
+  console.log('No tool is ever called from this file - dispatch lives in agent/core/orchestratorExecutionContract.js, gated by agent/core/toolPermissions.js.');
 }

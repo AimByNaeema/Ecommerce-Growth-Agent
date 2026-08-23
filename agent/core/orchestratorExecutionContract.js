@@ -8,7 +8,21 @@
 // Deterministic only - no AI/Claude API call is made here. agentContract.js's own
 // header reserves "no AI API calls" for a later, explicitly-scoped prompt, so
 // capability identification is plain keyword matching against the existing
-// tools/toolRegistry.js entries.
+// tools/toolRegistry.js and agent/core/specialistRegistry.js entries.
+//
+// STRUCTURED ROUTING (this revision): a single objective can require more than one
+// of the 7 approved specialists, or none of the 12 registered tools at all (Listing
+// and Social & Advertising have no TOOL_REGISTRY category today). Routing therefore
+// happens at the specialist level first (ROUTING_TARGETS, built from
+// specialistRegistry.js + the shared-infrastructure tool categories), producing a
+// controlled, ordered execution plan rather than a single silent pick - and when a
+// request is genuinely ambiguous (two or more targets tie for the best match), routing
+// stops and reports a clarification requirement instead of guessing. See
+// planRouting()/routeClause() below. Every existing single-capability function
+// (understandObjective, identifyRequiredCapability, needsMoreInformation,
+// createExecutionRequest, selectSpecialist, gatherMinimumContext,
+// executeSelectedCapability, validateResult) is reused unchanged - the plan is built
+// by calling them once per routed target, not by reimplementing their logic.
 //
 // No autonomous or write-capable external action - the only real tool call available
 // today is the existing read-only tools/businessConfigurationRetrieval.js, and it only
@@ -20,48 +34,42 @@
 // in-memory and returned to the caller; it is never written to memory/state/ (no
 // storage mechanism has been chosen yet).
 
-const { TOOL_REGISTRY, getToolById } = require('../../tools/toolRegistry');
-const { getSpecialistById } = require('./specialistRegistry');
+const { TOOL_REGISTRY, getToolsByCategory } = require('../../tools/toolRegistry');
+const { SPECIALIST_REGISTRY, getSpecialistById } = require('./specialistRegistry');
 const { getContextBoundaries } = require('./contextBoundaries');
-const { getClassificationById } = require('../../approvals/approvalArchitecture');
 const { createEmptyState } = require('./stateModel');
+const { deriveExecutionState } = require('./executionState');
+const {
+  CATEGORY_TO_SPECIALIST,
+  SPECIALIST_TO_CATEGORIES,
+  SHARED_INFRASTRUCTURE_CATEGORIES,
+  checkToolAccess,
+} = require('./toolPermissions');
 const businessConfigurationRetrieval = require('../../tools/businessConfigurationRetrieval');
-
-// Categories in tools/toolRegistry.js that belong to a specialist agent, per
-// CLAUDE.md section 2's 7 approved specialists. Categories not listed here
-// (configuration, memory, verification) are Orchestrator/shared infrastructure,
-// handled directly rather than delegated (CLAUDE.md section 3). 'listing' and
-// 'social_advertising' have no category in TOOL_REGISTRY today, so a task needing
-// them cannot be matched to an existing tool - it correctly falls through to
-// "no capability available" rather than being invented here.
-const CATEGORY_TO_SPECIALIST = {
-  products: 'product',
-  research: 'research',
-  customer_market_intelligence: 'research',
-  seo: 'seo',
-  marketing: 'marketing',
-  analytics: 'analytics_optimization',
-};
+const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 
 // Tool ids this orchestrator knows how to actually call. Each entry maps a
 // TOOL_REGISTRY id to the real function that performs the work - the only sanctioned
-// way execution happens, never a generic/dynamic call.
+// way execution happens, never a generic/dynamic call. Which tool is required is
+// decided by routing (planRouting/buildPlanStep below); whether it's available,
+// permitted for the requesting specialist, and whether it needs approval is decided
+// exclusively by agent/core/toolPermissions.js's checkToolAccess() - this map is only
+// consulted after that gate has already said 'allowed'.
+//
+// Every executor receives (executionRequest, runTokenTracker). Most ignore both
+// (business_configuration_retrieval takes no input); ai_reasoning_completion uses
+// executionRequest.objective as its instruction and runTokenTracker to enforce this
+// run's token budget (agent/core/tokenControls.js) - see executeSelectedCapability
+// and buildPlanStep below for where runTokenTracker is created and updated.
 const TOOL_EXECUTORS = {
   business_configuration_retrieval: () =>
     businessConfigurationRetrieval.retrieveBusinessConfiguration(),
+  ai_reasoning_completion: (executionRequest, runTokenTracker) =>
+    aiReasoningCompletion.runReasoningCompletion({
+      instruction: executionRequest.objective,
+      tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
+    }),
 };
-
-// The one real tool implemented today is a read-only GET against Shopify (no writes,
-// no side effects) - classified analysis_only for approval purposes, distinct from a
-// future write-capable tool that would need approval_required/externally_executable.
-const TOOL_CLASSIFICATIONS = {
-  business_configuration_retrieval: 'analysis_only',
-};
-
-// Approval classifications that may proceed automatically. Anything else
-// (approval_required, externally_executable) must stop and surface an approval
-// requirement rather than execute - see approvals/approvalArchitecture.js.
-const AUTO_APPROVED_CLASSIFICATIONS = ['analysis_only', 'recommendation'];
 
 const STOPWORDS = new Set([
   'a', 'an', 'the', 'of', 'for', 'to', 'and', 'or', 'is', 'are', 'my', 'me', 'i',
@@ -86,6 +94,8 @@ function understandObjective(rawTask) {
 
 // Identify the required capability: deterministic word-overlap match against
 // tools/toolRegistry.js's existing entries - no external call, no invented category.
+// Kept for single-tool lookups and backward compatibility; structured, multi-target
+// routing below (planRouting) is what runOrchestratorContract actually uses now.
 function identifyRequiredCapability(objective) {
   const objectiveWords = new Set(tokenize(objective));
   if (objectiveWords.size === 0) {
@@ -167,51 +177,61 @@ function gatherMinimumContext(executionRequest) {
   return boundaries.filter((boundary) => relevantIds.includes(boundary.id));
 }
 
-// Receive the specialist result - the real dispatch point. Never fabricates a result:
-// an unimplemented tool or a missing approval both return an explicit, honest outcome
-// instead of executing or guessing.
-async function executeSelectedCapability(executionRequest) {
-  const tool = getToolById(executionRequest.tool_id);
+// Receive the specialist result - the real dispatch point, and the ONLY place a tool
+// executor is ever invoked. Every call is gated by
+// agent/core/toolPermissions.js's checkToolAccess() first - which tool is required
+// comes from the caller (executionRequest.tool_id, decided by routing above);
+// whether it's available, whether this specialist has permission, and whether
+// approval is required are all decided there, not here. There is no path that skips
+// this gate - the Chief has no unrestricted execution access. Never fabricates a
+// result: a denied, unavailable, or approval-required tool all return an explicit,
+// honest outcome instead of executing or guessing. runTokenTracker (see buildPlanStep
+// and runOrchestratorContract below) is passed straight through to the executor -
+// only ai_reasoning_completion's executor actually uses it, to enforce
+// agent/core/tokenControls.js's run budget before ever calling Claude.
+async function executeSelectedCapability(executionRequest, runTokenTracker = { tokensUsedThisRun: 0 }) {
+  const access = checkToolAccess({
+    specialistId: executionRequest.specialist_id,
+    toolId: executionRequest.tool_id,
+  });
 
-  if (!tool) {
-    return { status: 'error', data: null, error: `Unknown tool: ${executionRequest.tool_id}`, classification: null };
-  }
-
-  if (tool.status !== 'implemented') {
+  if (access.decision === 'unavailable') {
     return {
-      status: 'not_available',
+      status: access.tool_id ? 'not_available' : 'error',
       data: null,
-      error: `Capability '${tool.id}' is registered but not yet implemented.`,
+      error: access.tool_id ? access.reason : `Unknown tool: ${executionRequest.tool_id}`,
       classification: null,
     };
   }
 
-  const classification = TOOL_CLASSIFICATIONS[tool.id] || null;
-  if (!classification || !AUTO_APPROVED_CLASSIFICATIONS.includes(classification)) {
-    const classificationInfo = classification ? getClassificationById(classification) : null;
+  if (access.decision === 'denied') {
+    return { status: 'denied', data: null, error: access.reason, classification: null };
+  }
+
+  if (access.decision === 'approval_required') {
     return {
       status: 'approval_required',
       data: null,
-      error: `Executing '${tool.id}' requires explicit approval before it can proceed.`,
-      classification: classificationInfo ? classificationInfo.id : classification,
+      error: access.reason,
+      classification: access.classification,
     };
   }
 
-  const executor = TOOL_EXECUTORS[tool.id];
+  const executor = TOOL_EXECUTORS[access.tool_id];
   if (!executor) {
     return {
       status: 'error',
       data: null,
-      error: `No executor is wired for implemented tool '${tool.id}'.`,
-      classification,
+      error: `No executor is wired for implemented tool '${access.tool_id}'.`,
+      classification: access.classification,
     };
   }
 
   try {
-    const data = await executor();
-    return { status: 'success', data, error: null, classification };
+    const data = await executor(executionRequest, runTokenTracker);
+    return { status: 'success', data, error: null, classification: access.classification };
   } catch (err) {
-    return { status: 'error', data: null, error: err.message, classification };
+    return { status: 'error', data: null, error: err.message, classification: access.classification };
   }
 }
 
@@ -229,94 +249,363 @@ function validateResult(outcome) {
   return 'unverified';
 }
 
-// Return the final structured response - assembles state (in-memory only, never
-// persisted, see module header) plus every field the caller needs.
-function buildFinalResponse({ objective, infoCheck, capability, executionRequest, specialist, outcome, verificationStatus }) {
-  const state = createEmptyState(objective || '');
-  if (infoCheck.needs_more_information) {
-    state.task_status = 'blocked';
-  } else if (verificationStatus === 'passed') {
-    state.task_status = 'complete';
-  } else if (verificationStatus === 'failed') {
-    state.task_status = 'failed';
-  } else {
-    state.task_status = 'in_progress';
-  }
-  state.verification_status = verificationStatus === 'passed' || verificationStatus === 'failed'
-    ? verificationStatus
-    : 'unverified';
-  if (outcome && outcome.error) {
-    state.failed_work = [outcome.error];
+// ---------------------------------------------------------------------------------
+// Structured routing
+// ---------------------------------------------------------------------------------
+//
+// SPECIALIST_TO_CATEGORIES and SHARED_INFRASTRUCTURE_CATEGORIES are imported from
+// agent/core/toolPermissions.js above - that module is now the single owner of "which
+// specialist may use which tool category" (CLAUDE.md section 3's Permissions
+// component), reused here for routing rather than duplicated.
+
+// One routing target per approved specialist (all 7, including Listing and Social &
+// Advertising, which have no TOOL_REGISTRY category - their keyword text comes from
+// specialistRegistry.js instead, which is what makes them routable at all), plus one
+// per shared-infrastructure category (keyword text derived from the tools already
+// registered under that category). Built once at module load from the existing
+// registries - not new data.
+function buildRoutingTargets() {
+  const specialistTargets = SPECIALIST_REGISTRY.map((specialist) => ({
+    type: 'specialist',
+    id: specialist.id,
+    title: specialist.title,
+    text: `${specialist.id} ${specialist.title} ${specialist.description}`,
+  }));
+
+  const sharedInfrastructureTargets = SHARED_INFRASTRUCTURE_CATEGORIES.map((category) => {
+    const toolsInCategory = getToolsByCategory(category);
+    const text = [
+      category,
+      ...toolsInCategory.flatMap((tool) => [tool.id, tool.title, tool.description]),
+    ].join(' ');
+    return { type: 'shared_infrastructure', id: category, title: category, text };
+  });
+
+  return [...specialistTargets, ...sharedInfrastructureTargets];
+}
+
+const ROUTING_TARGETS = buildRoutingTargets();
+
+// Scores every routing target against a piece of text using the same word-overlap
+// approach as identifyRequiredCapability, generalized to specialists + shared
+// infrastructure. Returns only targets that scored above zero, highest first.
+function scoreRoutingTargets(text) {
+  const words = new Set(tokenize(text));
+  if (words.size === 0) return [];
+
+  return ROUTING_TARGETS.map((target) => {
+    const targetWords = tokenize(target.text);
+    let score = 0;
+    for (const word of targetWords) {
+      if (words.has(word)) score += 1;
+    }
+    return { target, score };
+  })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
+// Splits an objective into independent clauses on common conjunctions/list
+// separators, so a multi-part request ("research X and optimize Y") can be routed to
+// more than one target instead of forcing a single pick.
+const CLAUSE_SPLIT_REGEX = /\s*(?:,|;|\band\b|\balso\b|\bas well as\b|\bthen\b|\bplus\b)\s*/i;
+
+function splitIntoClauses(objective) {
+  return objective
+    .split(CLAUSE_SPLIT_REGEX)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length > 0);
+}
+
+// Routes a single clause: unmatched (nothing scored), matched (exactly one target has
+// the top score), or ambiguous (two or more targets tie for the top score - the
+// clause genuinely could mean more than one thing, so it is never silently resolved).
+function routeClause(clauseText) {
+  const scored = scoreRoutingTargets(clauseText);
+  if (scored.length === 0) {
+    return { status: 'unmatched', segment: clauseText };
   }
 
+  const topScore = scored[0].score;
+  const tied = scored.filter((entry) => entry.score === topScore);
+  if (tied.length > 1) {
+    return {
+      status: 'ambiguous',
+      segment: clauseText,
+      candidates: tied.map((entry) => ({
+        type: entry.target.type,
+        id: entry.target.id,
+        title: entry.target.title,
+      })),
+    };
+  }
+
+  return { status: 'matched', segment: clauseText, target: tied[0].target };
+}
+
+// Routes a full objective into a controlled, ordered execution plan: splits into
+// clauses, routes each one, and combines the results. Any ambiguous or unmatched
+// clause stops the whole request and reports a clarification requirement instead of
+// guessing at the rest. Matched clauses are deduped by target and ordered to match
+// ROUTING_TARGETS's fixed order, so the same objective always produces the same plan.
+function planRouting(objective) {
+  const clauses = splitIntoClauses(objective);
+
+  if (clauses.length === 0) {
+    return {
+      status: 'clarification_required',
+      clarification_type: 'unmatched',
+      reason: 'The task is too short to act on.',
+      candidates: null,
+      unmatched_segment: objective,
+    };
+  }
+
+  const orderedEntries = [];
+  const seen = new Set();
+
+  for (const clause of clauses) {
+    const result = routeClause(clause);
+
+    if (result.status === 'unmatched') {
+      return {
+        status: 'clarification_required',
+        clarification_type: 'unmatched',
+        reason: `No known capability matches "${result.segment}" - please clarify what you need.`,
+        candidates: null,
+        unmatched_segment: result.segment,
+      };
+    }
+
+    if (result.status === 'ambiguous') {
+      return {
+        status: 'clarification_required',
+        clarification_type: 'ambiguous',
+        reason: `"${result.segment}" could belong to more than one capability - please clarify which one you mean.`,
+        candidates: result.candidates,
+        unmatched_segment: null,
+      };
+    }
+
+    const key = `${result.target.type}:${result.target.id}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      orderedEntries.push({ target: result.target, segment: result.segment });
+    }
+  }
+
+  orderedEntries.sort((a, b) => ROUTING_TARGETS.indexOf(a.target) - ROUTING_TARGETS.indexOf(b.target));
+
   return {
-    objective: objective || null,
-    needs_more_information: infoCheck.needs_more_information,
-    clarification_reason: infoCheck.reason,
-    capability: capability ? { category: capability.category, tool_id: capability.tool.id } : null,
-    execution_request: executionRequest,
-    specialist,
-    outcome,
-    verification_status: verificationStatus,
-    state,
+    status: 'planned',
+    targets: orderedEntries.map((entry) => entry.target),
+    // Parallel to `targets` - the clause text that matched each target, so a plan
+    // step's current_task can be the specific piece of the request it's handling
+    // rather than the whole objective. See agent/core/executionState.js.
+    segments: orderedEntries.map((entry) => entry.segment),
   };
 }
 
-// The single entry point: runs every step in order. Never throws - all failures
-// become structured outcomes inside the returned response.
-async function runOrchestratorContract(rawTask) {
-  let objective;
-  try {
-    objective = understandObjective(rawTask);
-  } catch (err) {
-    return buildFinalResponse({
-      objective: typeof rawTask === 'string' ? rawTask : null,
-      infoCheck: { needs_more_information: true, reason: err.message },
-      capability: null,
-      executionRequest: null,
-      specialist: null,
-      outcome: null,
-      verificationStatus: 'unverified',
-    });
+// Builds and executes one plan step for a routed target, reusing the existing
+// single-capability pipeline (createExecutionRequest, selectSpecialist,
+// gatherMinimumContext, executeSelectedCapability, validateResult) unchanged, and
+// returns it as a shared execution state (agent/core/executionState.js) rather than
+// an ad hoc object - one minimal, self-contained state per specialist, so nothing
+// from this step leaks into any other step's state. Finds the best-scoring tool among
+// the categories that map to this target; if none maps (Listing, Social &
+// Advertising today) or none scores, reports an honest not_available outcome rather
+// than inventing a tool call.
+async function buildPlanStep(target, objective, currentTask, runTokenTracker = { tokensUsedThisRun: 0 }) {
+  const categories = target.type === 'specialist'
+    ? (SPECIALIST_TO_CATEGORIES[target.id] || [])
+    : [target.id];
+
+  const objectiveWords = new Set(tokenize(objective));
+  let toolMatch = null;
+  let matchedCategory = null;
+  let bestScore = 0;
+
+  for (const category of categories) {
+    for (const tool of getToolsByCategory(category)) {
+      const toolWords = tokenize(`${tool.id} ${tool.title} ${tool.description} ${tool.category}`);
+      let score = 0;
+      for (const word of toolWords) {
+        if (objectiveWords.has(word)) score += 1;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        toolMatch = tool;
+        matchedCategory = category;
+      }
+    }
   }
 
-  const capability = identifyRequiredCapability(objective);
-  const infoCheck = needsMoreInformation(objective, capability);
+  // No tool scored against the objective's own wording, but a category does exist for
+  // this target - fall back to its first registered tool so execution can still report
+  // an honest, specific status (e.g. not_available) instead of a generic "no tool".
+  if (!toolMatch && categories.length > 0) {
+    matchedCategory = categories[0];
+    const toolsInCategory = getToolsByCategory(matchedCategory);
+    toolMatch = toolsInCategory.length > 0 ? toolsInCategory[0] : null;
+  }
 
-  if (infoCheck.needs_more_information) {
-    return buildFinalResponse({
+  let executionRequest;
+  let outcome;
+
+  if (!toolMatch) {
+    executionRequest = {
       objective,
-      infoCheck,
-      capability,
-      executionRequest: null,
-      specialist: null,
-      outcome: null,
-      verificationStatus: 'unverified',
-    });
+      category: null,
+      tool_id: null,
+      specialist_id: target.type === 'specialist' ? target.id : null,
+      is_shared_infrastructure: target.type === 'shared_infrastructure',
+    };
+    outcome = {
+      status: 'not_available',
+      data: null,
+      error: `No tool is registered yet for the '${target.id}' ${target.type === 'specialist' ? 'specialist' : 'capability'}.`,
+      classification: null,
+    };
+  } else {
+    executionRequest = createExecutionRequest(objective, { category: matchedCategory, tool: toolMatch });
+    outcome = await executeSelectedCapability(executionRequest, runTokenTracker);
   }
 
-  const executionRequest = createExecutionRequest(objective, capability);
-  const specialist = selectSpecialist(executionRequest);
-  // Computed for completeness/traceability - no retrieval step consumes it yet
-  // (retrieve_context is still conceptual, per agent/core/agentContract.js).
-  gatherMinimumContext(executionRequest);
+  // Only ai_reasoning_completion's structured output carries tokensUsed - every other
+  // tool's outcome.data simply doesn't have that field, so this has no effect on them.
+  if (outcome && outcome.data && typeof outcome.data.tokensUsed === 'number') {
+    runTokenTracker.tokensUsedThisRun += outcome.data.tokensUsed;
+  }
 
-  const outcome = await executeSelectedCapability(executionRequest);
+  const requiredContextIds = gatherMinimumContext(executionRequest).map((boundary) => boundary.id);
   const verificationStatus = validateResult(outcome);
 
-  return buildFinalResponse({
-    objective,
-    infoCheck,
-    capability,
-    executionRequest,
-    specialist,
+  return deriveExecutionState({
+    request: objective,
+    currentTask,
+    target,
+    category: toolMatch ? matchedCategory : null,
+    toolId: toolMatch ? toolMatch.id : null,
+    requiredContextIds,
     outcome,
     verificationStatus,
   });
 }
 
+// Aggregates a plan's per-step completion states (reusing stateModel.js's
+// TASK_STATUSES via each step's completion_state) into one overall
+// verification/task status: any failed step fails the whole plan; every step must
+// complete for the plan to pass; any blocked step blocks the whole plan; anything else
+// is honestly in_progress/unverified.
+function aggregatePlanState(plan) {
+  if (!plan || plan.length === 0) {
+    return { verification_status: 'unverified', task_status: 'not_started' };
+  }
+  if (plan.some((step) => step.completion_state === 'failed')) {
+    return { verification_status: 'failed', task_status: 'failed' };
+  }
+  if (plan.every((step) => step.completion_state === 'complete')) {
+    return { verification_status: 'passed', task_status: 'complete' };
+  }
+  if (plan.some((step) => step.completion_state === 'blocked')) {
+    return { verification_status: 'unverified', task_status: 'blocked' };
+  }
+  return { verification_status: 'unverified', task_status: 'in_progress' };
+}
+
+// Assembles the final structured response around a routing result - state (in-memory
+// only, never persisted, see module header) plus every field the caller needs.
+// tokensUsedThisRun surfaces agent/core/tokenControls.js's running total so token
+// usage is visible in the response, not just enforced silently inside execution.
+function buildRoutingResponse({ objective, routing, tokensUsedThisRun = 0 }) {
+  const needsMoreInfo = routing.status === 'clarification_required';
+  const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
+    ? aggregatePlanState(routing.plan)
+    : { verification_status: 'unverified', task_status: 'blocked' };
+
+  const state = createEmptyState(objective || '');
+  state.task_status = needsMoreInfo ? 'blocked' : taskStatus;
+  state.verification_status = verificationStatus === 'passed' || verificationStatus === 'failed'
+    ? verificationStatus
+    : 'unverified';
+  if (routing.plan) {
+    const errors = routing.plan.flatMap((step) => step.errors || []);
+    if (errors.length > 0) {
+      state.failed_work = errors;
+    }
+  }
+
+  return {
+    objective: objective || null,
+    routing,
+    needs_more_information: needsMoreInfo,
+    verification_status: verificationStatus,
+    tokens_used: tokensUsedThisRun,
+    state,
+  };
+}
+
+// The single entry point: normalizes the task, routes it into a controlled execution
+// plan (or a clarification requirement), executes every planned step, and returns the
+// final structured response. Never throws - all failures become structured outcomes.
+async function runOrchestratorContract(rawTask) {
+  let objective;
+  try {
+    objective = understandObjective(rawTask);
+  } catch (err) {
+    return buildRoutingResponse({
+      objective: typeof rawTask === 'string' ? rawTask : null,
+      routing: {
+        status: 'clarification_required',
+        clarification_type: 'unmatched',
+        reason: err.message,
+        candidates: null,
+        unmatched_segment: null,
+        plan: null,
+      },
+    });
+  }
+
+  const routingResult = planRouting(objective);
+
+  if (routingResult.status === 'clarification_required') {
+    return buildRoutingResponse({
+      objective,
+      routing: { ...routingResult, plan: null },
+    });
+  }
+
+  // One tracker per run, threaded through every plan step - see buildPlanStep and
+  // executeSelectedCapability above. This is what lets agent/core/tokenControls.js
+  // enforce a budget across the whole run, not just per call.
+  const runTokenTracker = { tokensUsedThisRun: 0 };
+
+  const plan = [];
+  for (let i = 0; i < routingResult.targets.length; i += 1) {
+    plan.push(
+      await buildPlanStep(routingResult.targets[i], objective, routingResult.segments[i], runTokenTracker)
+    );
+  }
+
+  return buildRoutingResponse({
+    objective,
+    routing: {
+      status: 'planned',
+      clarification_type: null,
+      reason: null,
+      candidates: null,
+      unmatched_segment: null,
+      plan,
+    },
+    tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
+  });
+}
+
 module.exports = {
   CATEGORY_TO_SPECIALIST,
+  SPECIALIST_TO_CATEGORIES,
+  SHARED_INFRASTRUCTURE_CATEGORIES,
+  ROUTING_TARGETS,
   understandObjective,
   identifyRequiredCapability,
   needsMoreInformation,
@@ -325,19 +614,28 @@ module.exports = {
   gatherMinimumContext,
   executeSelectedCapability,
   validateResult,
-  buildFinalResponse,
+  scoreRoutingTargets,
+  splitIntoClauses,
+  routeClause,
+  planRouting,
+  buildPlanStep,
+  aggregatePlanState,
+  buildRoutingResponse,
   runOrchestratorContract,
 };
 
 if (require.main === module) {
   const sampleTasks = [
     '',
-    'find me trending products to sell',
+    'keyword search visibility',
+    'improve my listing content',
+    'market competitor research and social media advertising',
+    'I need content optimization help',
     "check my shop's business configuration",
   ];
 
   (async () => {
-    console.log('Smart E-Commerce Growth AI Agent - orchestrator execution contract:\n');
+    console.log('Smart E-Commerce Growth AI Agent - orchestrator structured routing:\n');
     for (const task of sampleTasks) {
       console.log(`--- Task: ${JSON.stringify(task)} ---`);
       const response = await runOrchestratorContract(task);
