@@ -44,6 +44,7 @@ Planned modules, none implemented yet:
 | `products/` | Product catalog analysis and listing recommendations |
 | `listing/` | Listing content generation and marketplace formatting |
 | `customer-market-intelligence/` | Customer behavior and market intelligence |
+| `social-advertising/` | Social media content ideas and paid advertising strategy |
 | `analytics/` | Store performance and growth metrics |
 | `integrations/adapters/` | Per-platform adapters (starting with Shopify) |
 | `approvals/` | Human-in-the-loop approval requests and records |
@@ -200,4 +201,62 @@ into `agentContract.js`'s stages — that orchestration is later, explicitly-sco
 work. No tool calling, autonomous behavior, real retrieval/research/product-hunting
 logic, external research API calls, automated recommendations/scoring, or state
 persistence has been implemented yet, and no database or hosting platform has been
-chosen.
+chosen. The Research, SEO, Listing, and Marketing specialists (CLAUDE.md section 2)
+are now fully implemented and wired into the Chief/Orchestrator
+(`agent/core/orchestratorExecutionContract.js`), and the Social & Advertising
+specialist (#6) now joins them: the shape of one social media content record is
+defined in
+[`agent/core/socialContentModel.js`](agent/core/socialContentModel.js) (platform,
+content reference, content type, objective, target audience, caption, hashtags,
+posting schedule, evidence, expected outcome, verification status; `platform` is a
+narrow, validated enum of only the 5 in-scope social platforms - Instagram, Facebook,
+TikTok, Pinterest, YouTube); the shape of one paid ad campaign record is defined in
+[`agent/core/adCampaignModel.js`](agent/core/adCampaignModel.js) (platform, campaign
+reference, objective, audience, budget, ad creative, bidding strategy, CTA, KPI,
+measurement plan, evidence, verification status; `platform` is a narrow, validated
+enum of only the 3 in-scope advertising platforms - Meta Ads, Google Ads, TikTok Ads;
+no campaign is ever launched, and no budget is ever spent, by this schema); and
+[`agent/core/socialAdvertisingAgent.js`](agent/core/socialAdvertisingAgent.js) is the
+deterministic, evidence-only agent (no AI API call, no external fetch, no live
+social/ads platform API) supporting all 8 capabilities, composing those two schemas
+and returning one common result shape,
+[`agent/core/socialAdvertisingAgentResultModel.js`](agent/core/socialAdvertisingAgentResultModel.js).
+Two tools connect it to the orchestrator -
+[`tools/socialContentTool.js`](tools/socialContentTool.js) (the 5 social capabilities)
+and [`tools/paidAdvertisingTool.js`](tools/paidAdvertisingTool.js) (the 3 advertising
+capabilities) - both registered in
+[`tools/toolRegistry.js`](tools/toolRegistry.js) under a new `social_advertising`
+category, permitted to the `social_advertising` specialist in
+[`agent/core/toolPermissions.js`](agent/core/toolPermissions.js), and wired into
+`orchestratorExecutionContract.js`'s `TOOL_EXECUTORS`, so a routed objective can reach
+this specialist end-to-end. No Instagram/Facebook/TikTok/Pinterest/YouTube/Meta/Google/
+TikTok Ads integration adapter exists - deliberately out of scope for this build, per
+every other specialist's no-external-fetch philosophy. The Social & Advertising
+specialist now also generates cross-platform social media strategies: the shape of one
+strategy record (strategy reference, objective, audience, content pillars, platform
+selection, posting strategy, content themes, campaign themes, KPIs, evidence,
+verification status) is defined in
+[`agent/core/socialMediaStrategyModel.js`](agent/core/socialMediaStrategyModel.js) -
+its own dedicated schema, since a cross-platform strategy needs fields neither organic
+content nor a single ad campaign needs; `platform_selection` reuses the same platform
+enums the other 2 schemas already define. `socialAdvertisingAgent.js`'s 9th capability,
+`analyzeSocialMediaStrategy`, composes it the same deterministic, evidence-only way as
+every other capability, returning only caller-supplied structured recommendations -
+never an invented pillar, theme, or KPI. A third tool,
+[`tools/socialMediaStrategyTool.js`](tools/socialMediaStrategyTool.js), connects it to
+the orchestrator the same way the other two social/advertising tools do. The
+specialist's 10th capability, platform-aware ecommerce content generation, produces
+hooks, captions, CTAs, content ideas, short-form video concepts, carousel concepts, and
+creative briefs, all tagged to one selected platform: the shape of one content record
+is defined in
+[`agent/core/platformContentModel.js`](agent/core/platformContentModel.js) - its own
+dedicated schema (7 creative-element dimensions the existing social content schema was
+never meant to carry), with `platform` reusing the same 5-platform enum
+`socialContentModel.js` already defines. `socialAdvertisingAgent.js`'s
+`analyzeContentGeneration` composes it the same deterministic, evidence-only way as
+every other capability - it never synthesizes or rewrites a hook, caption, or concept
+to fit a platform on its own, only requires the platform to be named so the adaptation
+is explicit; a `platform_adaptation_notes` field records the caller's own explanation
+of that fit. Nothing is ever published automatically. A fourth tool,
+[`tools/platformContentTool.js`](tools/platformContentTool.js), connects it to the
+orchestrator the same way.

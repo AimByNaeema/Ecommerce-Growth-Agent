@@ -481,6 +481,8 @@ function checkListingQuality({
 
 module.exports = {
   checkListingQuality,
+  CLAIM_TRIGGER_PHRASES,
+  containsText,
 };
 
 if (require.main === module) {

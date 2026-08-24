@@ -5,15 +5,16 @@
 // This is a registry FOUNDATION only, mirroring tools/toolRegistry.js's pattern: a
 // descriptive list plus small read-only lookup helpers - there is no
 // select/dispatch/execute logic anywhere in this file. 'research', 'seo', 'listing',
-// and 'marketing' are now implemented specialists (see agent/core/researchAgent.js,
-// connected to the tool system via tools/marketResearchTool.js,
-// tools/competitorResearchTool.js, and tools/customerResearchTool.js;
-// agent/core/seoAgent.js, connected via tools/keywordResearchTool.js and
-// tools/seoAnalysisTool.js; agent/core/listingAgent.js, connected via
-// tools/listingContentTool.js; and agent/core/marketingAgent.js, connected via
-// tools/marketingAnalysisTool.js) - the other 3 specialists remain 'not_implemented',
-// with only the schema/pipeline foundations described in agent/core/*Model.js and
-// workflows/*.js.
+// 'marketing', and 'social_advertising' are now implemented specialists (see
+// agent/core/researchAgent.js, connected to the tool system via
+// tools/marketResearchTool.js, tools/competitorResearchTool.js, and
+// tools/customerResearchTool.js; agent/core/seoAgent.js, connected via
+// tools/keywordResearchTool.js and tools/seoAnalysisTool.js; agent/core/listingAgent.js,
+// connected via tools/listingContentTool.js; agent/core/marketingAgent.js, connected
+// via tools/marketingAnalysisTool.js; and agent/core/socialAdvertisingAgent.js,
+// connected via tools/socialContentTool.js and tools/paidAdvertisingTool.js) - the
+// other 2 specialists remain 'not_implemented', with only the schema/pipeline
+// foundations described in agent/core/*Model.js and workflows/*.js.
 //
 // This is a single shared list for the Orchestrator to select from - it does not
 // itself select anything. See agent/core/orchestratorExecutionContract.js's
@@ -56,7 +57,7 @@ const SPECIALIST_REGISTRY = [
     id: 'social_advertising',
     title: 'Social & Advertising',
     description: 'Social media and paid advertising.',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'analytics_optimization',

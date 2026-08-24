@@ -20,8 +20,6 @@ const { TOOL_CATEGORIES } = require('../../tools/toolRegistry');
 // agent/core/specialistRegistry.js) is permitted to use. Categories not listed here
 // (configuration, memory, verification) are shared infrastructure - handled directly
 // by the orchestrator, not owned by any specialist (CLAUDE.md section 3).
-// 'social_advertising' has no category in TOOL_REGISTRY today, so that specialist is
-// not granted any tool category yet - a real, honest gap, not an oversight.
 const CATEGORY_TO_SPECIALIST = {
   products: 'product',
   research: 'research',
@@ -29,6 +27,7 @@ const CATEGORY_TO_SPECIALIST = {
   seo: 'seo',
   listing: 'listing',
   marketing: 'marketing',
+  social_advertising: 'social_advertising',
   analytics: 'analytics_optimization',
 };
 
@@ -72,6 +71,10 @@ const TOOL_CLASSIFICATIONS = {
   seo_analysis: 'analysis_only',
   listing_content_generation: 'analysis_only',
   marketing_analysis: 'analysis_only',
+  social_content_planning: 'analysis_only',
+  paid_advertising_planning: 'analysis_only',
+  social_media_strategy_generation: 'analysis_only',
+  platform_content_generation: 'analysis_only',
 };
 
 // Approval classifications that may proceed automatically. Anything else

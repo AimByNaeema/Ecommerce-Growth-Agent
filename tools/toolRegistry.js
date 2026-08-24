@@ -7,13 +7,17 @@
 // agent/core/toolPermissions.js), so tools are not called *from here*.
 // business_configuration_retrieval, ai_reasoning_completion, market_research,
 // competitor_research, customer_research, product_data_retrieval, keyword_research,
-// seo_analysis, listing_content_generation, and marketing_analysis are the ten
+// seo_analysis, listing_content_generation, marketing_analysis,
+// social_content_planning, paid_advertising_planning,
+// social_media_strategy_generation, and platform_content_generation are the fourteen
 // entries actually implemented (see tools/businessConfigurationRetrieval.js,
 // tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
 // tools/competitorResearchTool.js, tools/customerResearchTool.js,
 // tools/productDataRetrievalTool.js, tools/keywordResearchTool.js,
-// tools/seoAnalysisTool.js, tools/listingContentTool.js, and
-// tools/marketingAnalysisTool.js) - the other 3 tools remain 'not_implemented'.
+// tools/seoAnalysisTool.js, tools/listingContentTool.js,
+// tools/marketingAnalysisTool.js, tools/socialContentTool.js,
+// tools/paidAdvertisingTool.js, tools/socialMediaStrategyTool.js, and
+// tools/platformContentTool.js) - the other 2 tools remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -28,6 +32,7 @@ const TOOL_CATEGORIES = [
   'seo',
   'listing',
   'marketing',
+  'social_advertising',
   'analytics',
   'ai_reasoning',
   'memory',
@@ -115,6 +120,38 @@ const TOOL_REGISTRY = [
     description:
       "Produce agent/core/marketingAnalysisModel.js, agent/core/growthOpportunityModel.js, and agent/core/customerSegmentResearchModel.js records via agent/core/marketingAgent.js's 8 capabilities (marketing strategy, audience segmentation, offers, promotions, retention, campaign planning, email strategy, conversion opportunities) - see tools/marketingAnalysisTool.js.",
     category: 'marketing',
+    status: 'implemented',
+  },
+  {
+    id: 'social_content_planning',
+    title: 'Social content planning',
+    description:
+      "Compose agent/core/socialContentModel.js social media content records via agent/core/socialAdvertisingAgent.js's 5 social capabilities (instagram, facebook, tiktok, pinterest, youtube) - see tools/socialContentTool.js.",
+    category: 'social_advertising',
+    status: 'implemented',
+  },
+  {
+    id: 'paid_advertising_planning',
+    title: 'Paid advertising planning',
+    description:
+      "Compose agent/core/adCampaignModel.js paid ad campaign records via agent/core/socialAdvertisingAgent.js's 3 advertising capabilities (meta_ads, google_ads, tiktok_ads) - see tools/paidAdvertisingTool.js.",
+    category: 'social_advertising',
+    status: 'implemented',
+  },
+  {
+    id: 'social_media_strategy_generation',
+    title: 'Social media strategy generation',
+    description:
+      "Compose agent/core/socialMediaStrategyModel.js cross-platform strategy records (content pillars, audience, platform selection, posting strategy, content themes, campaign themes, KPIs) via agent/core/socialAdvertisingAgent.js's social_media_strategy capability - see tools/socialMediaStrategyTool.js.",
+    category: 'social_advertising',
+    status: 'implemented',
+  },
+  {
+    id: 'platform_content_generation',
+    title: 'Platform-aware ecommerce content generation',
+    description:
+      "Compose agent/core/platformContentModel.js content records (hooks, captions, CTAs, content ideas, short-form video concepts, carousel concepts, creative briefs, all adapted to one selected platform) via agent/core/socialAdvertisingAgent.js's content_generation capability - see tools/platformContentTool.js.",
+    category: 'social_advertising',
     status: 'implemented',
   },
   {

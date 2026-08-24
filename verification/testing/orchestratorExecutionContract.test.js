@@ -186,7 +186,7 @@ test('routeClause can now route to Listing, which has no TOOL_REGISTRY category 
   assert.strictEqual(result.target.id, 'listing');
 });
 
-test('routeClause can now route to Social & Advertising, which has no TOOL_REGISTRY category at all', () => {
+test('routeClause routes to Social & Advertising, which now has a real TOOL_REGISTRY category', () => {
   const result = routeClause('social media advertising');
   assert.strictEqual(result.status, 'matched');
   assert.strictEqual(result.target.id, 'social_advertising');
@@ -350,7 +350,16 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.strictEqual(socialStep.current_task, 'social media advertising');
     // Neither step's state carries the other specialist's tool_calls/outputs - each is
     // independently minimal (the whole point of the shared execution state design).
-    assert.strictEqual(socialStep.tool_calls.length, 0);
+    // social_content_planning is implemented and now scores highest against this
+    // clause's own wording ("social", "media"), but no research_params were supplied
+    // for this free-text-only call - the tool itself reports that honestly (never a
+    // fabricated result), the same pattern as the SEO/Listing/Marketing/market_research
+    // 'without researchParams' cases.
+    assert.deepStrictEqual(socialStep.tool_calls, ['social_content_planning']);
+    assert.strictEqual(socialStep.completion_state, 'complete');
+    assert.strictEqual(socialStep.outputs.status, 'failed');
+    assert.strictEqual(socialStep.outputs.result, null);
+    assert.ok(socialStep.outputs.error.includes('No structured research input was supplied'));
     assert.strictEqual(researchStep.selected_specialist.id !== socialStep.selected_specialist.id, true);
   });
 

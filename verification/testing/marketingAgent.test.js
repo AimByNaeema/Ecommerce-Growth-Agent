@@ -140,17 +140,48 @@ test('analyzeRetention composes a growthOpportunityModel.js record', () => {
 
 // --- campaign_planning -------------------------------------------------------------------
 
-test('analyzeCampaignPlanning composes a marketingAnalysisModel.js record with timing/objective', () => {
+test('analyzeCampaignPlanning requires a non-empty campaignReference', () => {
+  assert.throws(() => analyzeCampaignPlanning({}), /requires a non-empty `campaignReference`/);
+});
+
+test('analyzeCampaignPlanning composes a dedicated campaignPlanModel.js record with all 9 fields', () => {
   const result = analyzeCampaignPlanning({
-    marketingChannel: 'email',
-    campaign: '(Example launch)',
-    timing: 'Early November',
+    campaignReference: '(Example launch)',
     objective: 'Drive first-week sales.',
+    audience: 'Budget-conscious weekend hikers.',
+    offer: '15% off insulated jackets.',
+    message: 'Stay warm this winter.',
+    channel: 'email',
+    creativeDirection: 'Lifestyle photography, warm color palette.',
+    cta: 'Shop the winter collection.',
+    kpi: ['Click-through rate', 'Conversion rate'],
+    measurementPlan: ['Weekly UTM-tagged tracking in GA4'],
   });
   assert.strictEqual(result.capability, 'campaign_planning');
+  assertValidResult(result);
   const record = result.specialized_records[0];
-  assert.strictEqual(record.timing, 'Early November');
+  assert.strictEqual(record.campaign_reference, '(Example launch)');
   assert.strictEqual(record.objective, 'Drive first-week sales.');
+  assert.strictEqual(record.audience, 'Budget-conscious weekend hikers.');
+  assert.strictEqual(record.channel, 'email');
+  assert.strictEqual(record.creative_direction, 'Lifestyle photography, warm color palette.');
+  assert.strictEqual(record.cta, 'Shop the winter collection.');
+  assert.deepStrictEqual(record.kpi, ['Click-through rate', 'Conversion rate']);
+  assert.deepStrictEqual(record.measurement_plan, ['Weekly UTM-tagged tracking in GA4']);
+  assert.ok(result.findings.includes('Click-through rate'));
+});
+
+test('analyzeCampaignPlanning never invents a KPI, measurement plan, or creative direction that was not supplied', () => {
+  const result = analyzeCampaignPlanning({ campaignReference: '(Example launch)' });
+  const record = result.specialized_records[0];
+  assert.deepStrictEqual(record.kpi, []);
+  assert.deepStrictEqual(record.measurement_plan, []);
+  assert.strictEqual(record.creative_direction, '');
+});
+
+test('analyzeCampaignPlanning never launches a campaign - the result always carries that limitation', () => {
+  const result = analyzeCampaignPlanning({ campaignReference: '(Example launch)' });
+  assert.ok(result.limitations.some((l) => l.includes('not launched automatically')));
 });
 
 // --- email_strategy ----------------------------------------------------------------------
@@ -215,11 +246,13 @@ test('retrieveMarketingData delegates generic-kind entries to researchAgent.js',
   assert.strictEqual(records[0].finding, 'y');
 });
 
-test('retrieveMarketingData builds marketing_analysis and growth_opportunity records directly', () => {
+test('retrieveMarketingData builds marketing_analysis, growth_opportunity, and campaign_plan records directly', () => {
   const marketingRecords = retrieveMarketingData('marketing_analysis', [{ marketingChannel: 'email' }], 'test');
   assert.strictEqual(marketingRecords[0].marketing_channel, 'email');
   const growthRecords = retrieveMarketingData('growth_opportunity', [{ productReference: 'x' }], 'test');
   assert.strictEqual(growthRecords[0].product_reference, 'x');
+  const campaignRecords = retrieveMarketingData('campaign_plan', [{ campaignReference: 'x' }], 'test');
+  assert.strictEqual(campaignRecords[0].campaign_reference, 'x');
 });
 
 test('retrieveMarketingData throws on an unknown record kind', () => {

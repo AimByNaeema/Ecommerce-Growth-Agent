@@ -17,16 +17,26 @@
 // findings/evidence/source, derive honest limitations), and recommendation (relay only
 // what the caller supplied) stay distinct, composed by one thin composeResult().
 //
-// Capability -> schema mapping (reuse-only - no new *Model.js file needed):
-//   - marketing strategy, offers, promotions, campaign planning, and email strategy
-//     all compose one agent/core/marketingAnalysisModel.js record (marketing_channel,
-//     target_segment, product, campaign, objective, message, offer, timing, evidence,
+// Capability -> schema mapping:
+//   - marketing strategy, offers, promotions, and email strategy all compose one
+//     agent/core/marketingAnalysisModel.js record (marketing_channel, target_segment,
+//     product, campaign, objective, message, offer, timing, evidence,
 //     expected_outcome, verification_status) - the same schema, differing only in
 //     which fields the capability's topic/label emphasizes, exactly the way SEO's
 //     product/collection/content SEO share one composeSuggestionResult over 3 record
 //     builders. email_strategy pins marketing_channel to 'email' (always, not just a
 //     default) - the same pinning pattern SEO's collection_seo/content_seo use for
 //     subject_type.
+//   - campaign planning composes its own dedicated agent/core/campaignPlanModel.js
+//     record (objective, audience, offer, message, channel, creative_direction, cta,
+//     kpi, measurement_plan) instead - a full campaign plan needs fields none of the 4
+//     capabilities above need, so it gets its own schema rather than further widening
+//     the shared one, the same dedicated-schema-when-the-field-set-genuinely-differs
+//     precedent agent/core/listingContentModel.js already established relative to
+//     agent/core/listingOptimizationModel.js. No campaign is ever launched
+//     automatically - agent/core/campaignPlanModel.js has no execute/send/launch
+//     function of any kind; acting on a plan is a separate, human-approved action via
+//     approvals/.
 //   - audience segmentation reuses agent/core/customerSegmentResearchModel.js records
 //     directly - not rebuilt here at all. It delegates straight to
 //     agent/core/researchAgent.js's retrieveResearchData('customer_segment', ...) and
@@ -62,6 +72,10 @@ const {
   createEmptyGrowthOpportunityRecord,
   validateGrowthOpportunityShape,
 } = require('./growthOpportunityModel');
+const {
+  createEmptyCampaignPlanRecord,
+  validateCampaignPlanShape,
+} = require('./campaignPlanModel');
 const {
   MARKETING_CAPABILITIES,
   createEmptyMarketingAgentResult,
@@ -142,9 +156,32 @@ function buildGrowthOpportunityRecord(entry, fnName) {
   return record;
 }
 
+function buildCampaignPlanRecord(entry, fnName) {
+  requireNonEmptyString(entry.campaignReference, 'campaignReference', fnName);
+  const record = createEmptyCampaignPlanRecord(entry.campaignReference);
+  record.objective = entry.objective || '';
+  record.audience = entry.audience || '';
+  record.offer = entry.offer || '';
+  record.message = entry.message || '';
+  record.channel = entry.channel || '';
+  record.creative_direction = entry.creativeDirection || '';
+  record.cta = entry.cta || '';
+  record.kpi = normalizeArray(entry.kpi);
+  record.measurement_plan = normalizeArray(entry.measurementPlan);
+  record.evidence = normalizeArray(entry.evidence);
+  record.verification_status = entry.verificationStatus || 'unverified';
+
+  const validation = validateCampaignPlanShape(record);
+  if (!validation.valid) {
+    throw new Error(`${fnName} produced an invalid campaign plan record: ${validation.errors.join('; ')}`);
+  }
+  return record;
+}
+
 const RECORD_BUILDERS = {
   marketing_analysis: buildMarketingAnalysisRecord,
   growth_opportunity: buildGrowthOpportunityRecord,
+  campaign_plan: buildCampaignPlanRecord,
 };
 
 // Exported for reuse, mirroring agent/core/seoAgent.js's retrieveSeoData /
@@ -188,9 +225,28 @@ function extractGrowthOpportunityRecord(record) {
   };
 }
 
+function extractCampaignPlanRecord(record) {
+  return {
+    findings: [
+      record.objective,
+      record.audience,
+      record.offer,
+      record.message,
+      record.creative_direction,
+      record.cta,
+      ...record.kpi,
+      ...record.measurement_plan,
+    ].filter(Boolean),
+    evidence: [...record.evidence],
+    source: [],
+    label: record.campaign_reference || '(unspecified campaign)',
+  };
+}
+
 const RECORD_KIND_EXTRACTORS = {
   marketing_analysis: extractMarketingAnalysisRecord,
   growth_opportunity: extractGrowthOpportunityRecord,
+  campaign_plan: extractCampaignPlanRecord,
 };
 
 function analyzeMarketingRecords(records, kind, limitationHeader) {
@@ -268,6 +324,8 @@ const MARKETING_ANALYSIS_LIMITATION_HEADER =
   'No live marketing platform is configured; this result reflects only caller-supplied evidence.';
 const GROWTH_OPPORTUNITY_LIMITATION_HEADER =
   'No live sales/customer data platform is configured; this result reflects only caller-supplied evidence.';
+const CAMPAIGN_PLAN_LIMITATION_HEADER =
+  'This plan is not launched automatically - no live marketing platform is configured, and this result reflects only caller-supplied evidence.';
 
 // Shared by marketing strategy, offers, promotions, campaign planning, and email
 // strategy - all 5 build one agent/core/marketingAnalysisModel.js record and honest
@@ -328,15 +386,28 @@ function analyzePromotions(params = {}) {
   );
 }
 
+// Composes a dedicated agent/core/campaignPlanModel.js record - not
+// composeMarketingAnalysisResult, since a full campaign plan is a different, richer
+// schema than the shared marketing_analysis one the other 4 marketing-analysis-based
+// capabilities use (see module header).
 function analyzeCampaignPlanning(params = {}) {
   const fnName = 'analyzeCampaignPlanning';
-  const record = buildMarketingAnalysisRecord(params, fnName);
-  return composeMarketingAnalysisResult(
-    record,
-    params,
-    'campaign_planning',
-    `Campaign planning: ${record.campaign || record.marketing_channel}`
-  );
+  const record = buildCampaignPlanRecord(params, fnName);
+  const analysis = analyzeMarketingRecords([record], 'campaign_plan', CAMPAIGN_PLAN_LIMITATION_HEADER);
+  return composeResult({
+    capability: 'campaign_planning',
+    topic: params.topic || `Campaign plan: ${record.campaign_reference}`,
+    market: params.market || '',
+    findings: analysis.findings,
+    evidence: analysis.evidence,
+    source: analysis.source,
+    confidence: params.confidence,
+    limitations: analysis.limitations,
+    recommendations: params.recommendations,
+    verificationStatus: params.verificationStatus,
+    researchDate: params.researchDate || todayIsoDate(),
+    specializedRecords: [record],
+  });
 }
 
 // Pins marketing_channel to 'email' - always, not just a default - the same pinning
@@ -514,10 +585,17 @@ if (require.main === module) {
       }),
     () =>
       analyzeCampaignPlanning({
-        marketingChannel: 'email',
-        campaign: '(Example winter jacket launch)',
-        timing: 'Launch in early November (caller-supplied placeholder).',
+        campaignReference: '(Example winter jacket launch)',
         objective: 'Drive first-week sales (caller-supplied placeholder).',
+        audience: 'Budget-conscious weekend hikers (caller-supplied placeholder).',
+        offer: '15% off insulated jackets (caller-supplied placeholder).',
+        message: 'Stay warm this winter with our new insulated jacket line (caller-supplied placeholder).',
+        channel: 'email',
+        creativeDirection: 'Lifestyle photography in cold-weather outdoor settings, warm color palette (caller-supplied placeholder).',
+        cta: 'Shop the winter collection (caller-supplied placeholder).',
+        kpi: ['Click-through rate (caller-supplied placeholder).', 'Conversion rate (caller-supplied placeholder).'],
+        measurementPlan: ['Track via UTM-tagged links reviewed weekly in GA4 (caller-supplied placeholder).'],
+        evidence: ['(placeholder prior-campaign result)'],
       }),
     () =>
       analyzeEmailStrategy({

@@ -58,16 +58,16 @@ test('every entry has a valid status', () => {
   }
 });
 
-const IMPLEMENTED_IDS = ['research', 'seo', 'listing', 'marketing'];
+const IMPLEMENTED_IDS = ['research', 'seo', 'listing', 'marketing', 'social_advertising'];
 
-test('every entry except research, seo, listing, and marketing is not_implemented - do not implement other specialists yet', () => {
+test('every entry except research, seo, listing, marketing, and social_advertising is not_implemented - do not implement other specialists yet', () => {
   for (const specialist of SPECIALIST_REGISTRY) {
     if (IMPLEMENTED_IDS.includes(specialist.id)) continue;
     assert.strictEqual(specialist.status, 'not_implemented', `${specialist.id} should not be implemented yet`);
   }
 });
 
-test('research, seo, listing, and marketing are implemented', () => {
+test('research, seo, listing, marketing, and social_advertising are implemented', () => {
   for (const id of IMPLEMENTED_IDS) {
     assert.strictEqual(getSpecialistById(id).status, 'implemented', `${id} should be implemented`);
   }

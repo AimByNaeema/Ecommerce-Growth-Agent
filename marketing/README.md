@@ -28,14 +28,25 @@ record(s) it was composed from.
 Capability → schema mapping (**zero new schema surface** — every capability reuses an
 existing model as-is):
 
-- **Marketing strategy**, **offers**, **promotions**, **campaign planning**, and
-  **email strategy** all compose one
+- **Marketing strategy**, **offers**, **promotions**, and **email strategy** all
+  compose one
   [`agent/core/marketingAnalysisModel.js`](../agent/core/marketingAnalysisModel.js)
   record — the same schema, differing only in which fields the capability's topic/
   label emphasizes, the same way SEO's product/collection/content SEO share one
   composition helper over 3 record builders. **Email strategy** pins
   `marketing_channel` to `'email'` — always, not just a default — mirroring how SEO's
   collection/content SEO pin `subject_type`.
+- **Campaign planning** composes its own dedicated
+  [`agent/core/campaignPlanModel.js`](../agent/core/campaignPlanModel.js) record —
+  objective, audience, offer, message, channel, creative direction, CTA, KPI, and
+  measurement plan — instead of the shared `marketingAnalysisModel.js` record above. A
+  full campaign plan needs fields none of the other 4 marketing-analysis-based
+  capabilities need, so it gets its own schema rather than further widening the shared
+  one, the same dedicated-schema precedent
+  [`agent/core/listingContentModel.js`](../agent/core/listingContentModel.js) already
+  established relative to SEO's `listingOptimizationModel.js`. No campaign is ever
+  launched automatically — `campaignPlanModel.js` has no execute/send/launch function
+  of any kind; acting on a plan is a separate, human-approved action via `approvals/`.
 - **Audience segmentation** reuses
   [`agent/core/customerSegmentResearchModel.js`](../agent/core/customerSegmentResearchModel.js)
   records directly — not rebuilt here at all. It delegates straight to
