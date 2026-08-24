@@ -1,12 +1,16 @@
 'use strict';
 
 // The Social & Advertising Agent (CLAUDE.md section 2, specialist #6: "Social media
-// and paid advertising"). Supports 11 capabilities: instagram, facebook, tiktok,
+// and paid advertising"). Supports 13 capabilities: instagram, facebook, tiktok,
 // pinterest, youtube (social), meta_ads, google_ads, tiktok_ads (advertising),
 // social_media_strategy (cross-platform strategy generation), content_generation
-// (platform-aware ecommerce content generation), and content_calendar (structured
+// (platform-aware ecommerce content generation), content_calendar (structured
 // social content calendar entries, optionally informed by Marketing Agent campaign
-// context).
+// context), advertising_strategy (pre-launch advertising strategy planning:
+// campaign objective, audience, offer, creative angle, ad copy, CTA, budget
+// recommendation, KPI, testing plan), and advertising_performance (advertising
+// performance analysis: impressions, CTR, CPC, CPM, conversions, CPA, ROAS - actual
+// metrics kept separate from calculated metrics and from recommendations).
 //
 // Deterministic only - no AI API call, no external fetch, no live social/ads platform
 // API (none is configured or called anywhere in this project). Callers supply
@@ -79,12 +83,39 @@
 //     the campaign plan record is included alongside the calendar entry in
 //     specialized_records so the provided context stays visible and auditable, not
 //     hidden.
+//   - advertising_strategy composes its own dedicated
+//     agent/core/advertisingStrategyModel.js record (strategy_reference,
+//     campaign_objective, audience, offer, creative_angle, ad_copy, cta,
+//     budget_recommendation, kpi, testing_plan) - a pre-launch strategic plan for one
+//     advertising campaign, needing fields neither agent/core/adCampaignModel.js
+//     (platform-pinned, execution-ready: bidding_strategy, measurement_plan) nor
+//     agent/core/socialMediaStrategyModel.js (cross-platform organic+paid: content
+//     pillars, posting cadence) carries, so it gets its own schema too, the same
+//     dedicated-schema precedent every other capability here established.
+//     `budget_recommendation` is always a caller-supplied description, never a
+//     fabricated or committed number - no budget is ever spent and no campaign is ever
+//     launched automatically; acting on a strategy is a separate, human-approved
+//     action via approvals/.
+//   - advertising_performance composes its own dedicated
+//     agent/core/advertisingPerformanceModel.js record (performance_reference,
+//     campaign_reference, actual_metrics, calculated_metrics) - analyzing a
+//     campaign's *actual, already-measured* results is a distinct concern from
+//     planning one (advertising_strategy) or executing one (meta_ads/google_ads/
+//     tiktok_ads), so it gets its own schema too. `actual_metrics` is whatever the
+//     caller directly supplies as already-known values; `calculated_metrics` is
+//     derived from it via agent/core/advertisingPerformanceCalculator.js's standard
+//     ad-metric formulas (CTR, CPC, CPM, CPA, ROAS) - reused, not reimplemented here -
+//     and only ever populated when the required inputs are present, never fabricated.
+//     Recommendations are never mixed into either metrics object - they stay only in
+//     this envelope's own `recommendations` field below, the same structural
+//     separation every other capability here already uses.
 //
 // socialContentModel.js, adCampaignModel.js, socialMediaStrategyModel.js,
-// platformContentModel.js, and contentCalendarModel.js all already carry their own
-// `evidence` array field - so, exactly like agent/core/marketingAgent.js's own record
-// builders, evidence is assigned directly from caller-supplied input inside each
-// record builder, with no separate evidence-composition step layered on top.
+// platformContentModel.js, contentCalendarModel.js, advertisingStrategyModel.js, and
+// advertisingPerformanceModel.js all already carry their own `evidence` array field -
+// so, exactly like agent/core/marketingAgent.js's own record builders, evidence is
+// assigned directly from caller-supplied input inside each record builder, with no
+// separate evidence-composition step layered on top.
 //
 // Confidence: caller-asserted only, defaulting to 'unassessed' - same convention as
 // every other module in this project. A 'verified' claim asserted without evidence is
@@ -110,6 +141,16 @@ const {
   createEmptyContentCalendarRecord,
   validateContentCalendarShape,
 } = require('./contentCalendarModel');
+const {
+  createEmptyAdvertisingStrategyRecord,
+  validateAdvertisingStrategyShape,
+} = require('./advertisingStrategyModel');
+const {
+  CALCULABLE_METRICS,
+  createEmptyAdvertisingPerformanceRecord,
+  validateAdvertisingPerformanceShape,
+} = require('./advertisingPerformanceModel');
+const { calculateAdvertisingPerformanceMetrics } = require('./advertisingPerformanceCalculator');
 const {
   SOCIAL_ADVERTISING_CAPABILITIES,
   createEmptySocialAdvertisingAgentResult,
@@ -256,12 +297,57 @@ function buildContentCalendarRecord(entry, fnName) {
   return record;
 }
 
+function buildAdvertisingStrategyRecord(entry, fnName) {
+  requireNonEmptyString(entry.strategyReference, 'strategyReference', fnName);
+  const record = createEmptyAdvertisingStrategyRecord(entry.strategyReference);
+  record.campaign_objective = entry.campaignObjective || '';
+  record.audience = entry.audience || '';
+  record.offer = entry.offer || '';
+  record.creative_angle = entry.creativeAngle || '';
+  record.ad_copy = normalizeArray(entry.adCopy);
+  record.cta = entry.cta || '';
+  record.budget_recommendation = entry.budgetRecommendation || '';
+  record.kpi = normalizeArray(entry.kpi);
+  record.testing_plan = normalizeArray(entry.testingPlan);
+  record.evidence = normalizeArray(entry.evidence);
+  record.verification_status = entry.verificationStatus || 'unverified';
+
+  const validation = validateAdvertisingStrategyShape(record);
+  if (!validation.valid) {
+    throw new Error(`${fnName} produced an invalid advertising strategy record: ${validation.errors.join('; ')}`);
+  }
+  return record;
+}
+
+// Unlike every other builder here, this one also computes calculated_metrics - via
+// agent/core/advertisingPerformanceCalculator.js's calculateAdvertisingPerformanceMetrics(),
+// reused directly, never reimplemented - from whatever actual_metrics the caller
+// supplied. actual_metrics itself is relayed untouched (shape-validated below, not
+// pre-coerced), so an invalid type surfaces as a normal validation error rather than
+// being silently swallowed.
+function buildAdvertisingPerformanceRecord(entry, fnName) {
+  requireNonEmptyString(entry.performanceReference, 'performanceReference', fnName);
+  const record = createEmptyAdvertisingPerformanceRecord(entry.performanceReference, entry.campaignReference || '');
+  record.actual_metrics = entry.actualMetrics === undefined ? {} : entry.actualMetrics;
+  record.calculated_metrics = calculateAdvertisingPerformanceMetrics(record.actual_metrics);
+  record.evidence = normalizeArray(entry.evidence);
+  record.verification_status = entry.verificationStatus || 'unverified';
+
+  const validation = validateAdvertisingPerformanceShape(record);
+  if (!validation.valid) {
+    throw new Error(`${fnName} produced an invalid advertising performance record: ${validation.errors.join('; ')}`);
+  }
+  return record;
+}
+
 const RECORD_BUILDERS = {
   social_content: buildSocialContentRecord,
   ad_campaign: buildAdCampaignRecord,
   social_media_strategy: buildSocialMediaStrategyRecord,
   platform_content: buildPlatformContentRecord,
   content_calendar: buildContentCalendarRecord,
+  advertising_strategy: buildAdvertisingStrategyRecord,
+  advertising_performance: buildAdvertisingPerformanceRecord,
 };
 
 // Exported for reuse, mirroring agent/core/marketingAgent.js's retrieveMarketingData /
@@ -357,12 +443,51 @@ function extractContentCalendarRecord(record) {
   };
 }
 
+function extractAdvertisingStrategyRecord(record) {
+  return {
+    findings: [
+      record.campaign_objective,
+      record.audience,
+      record.offer,
+      record.creative_angle,
+      record.cta,
+      record.budget_recommendation,
+      ...record.ad_copy,
+      ...record.kpi,
+      ...record.testing_plan,
+    ].filter(Boolean),
+    evidence: [...record.evidence],
+    source: [],
+    label: record.strategy_reference || '(unspecified strategy)',
+  };
+}
+
+// Findings are labeled Actual/Calculated so the distinction survives flattening into
+// the envelope's own findings array - not just held in the specialized record.
+function formatMetricEntries(metrics) {
+  return Object.entries(metrics).map(([key, value]) => `${key}: ${value}`);
+}
+
+function extractAdvertisingPerformanceRecord(record) {
+  return {
+    findings: [
+      ...formatMetricEntries(record.actual_metrics).map((entry) => `Actual - ${entry}`),
+      ...formatMetricEntries(record.calculated_metrics).map((entry) => `Calculated - ${entry}`),
+    ],
+    evidence: [...record.evidence],
+    source: [],
+    label: record.performance_reference || '(unspecified performance analysis)',
+  };
+}
+
 const RECORD_KIND_EXTRACTORS = {
   social_content: extractSocialContentRecord,
   ad_campaign: extractAdCampaignRecord,
   social_media_strategy: extractSocialMediaStrategyRecord,
   platform_content: extractPlatformContentRecord,
   content_calendar: extractContentCalendarRecord,
+  advertising_strategy: extractAdvertisingStrategyRecord,
+  advertising_performance: extractAdvertisingPerformanceRecord,
 };
 
 function analyzeSocialAdvertisingRecords(records, kind, limitationHeader) {
@@ -444,6 +569,10 @@ const PLATFORM_CONTENT_LIMITATION_HEADER =
   'This content is not published automatically - no live social platform is configured, and this result reflects only caller-supplied evidence.';
 const CONTENT_CALENDAR_LIMITATION_HEADER =
   'This entry is not posted or scheduled automatically - no live social platform is configured, and this result reflects only caller-supplied evidence.';
+const ADVERTISING_STRATEGY_LIMITATION_HEADER =
+  'No advertising budget is spent and no campaign is launched automatically - no live advertising platform is configured, and this result reflects only caller-supplied evidence.';
+const ADVERTISING_PERFORMANCE_LIMITATION_HEADER =
+  'No metric is fetched or estimated automatically - no live advertising platform is configured, and this result reflects only caller-supplied actual metrics and metrics calculated from them.';
 
 // Shared by instagram, facebook, tiktok, pinterest, and youtube - all 5 build one
 // agent/core/socialContentModel.js record and honest limitations the same way,
@@ -661,6 +790,77 @@ function analyzeContentCalendar(params = {}) {
   });
 }
 
+// Composes a dedicated agent/core/advertisingStrategyModel.js record - not
+// composeAdCampaignResult, since a pre-launch advertising strategy is a different,
+// platform-agnostic schema (see module header), the same direct-composeResult
+// approach analyzeSocialMediaStrategy and analyzeContentGeneration use for their own
+// dedicated records.
+function analyzeAdvertisingStrategy(params = {}) {
+  const fnName = 'analyzeAdvertisingStrategy';
+  const record = buildAdvertisingStrategyRecord(params, fnName);
+  const analysis = analyzeSocialAdvertisingRecords(
+    [record],
+    'advertising_strategy',
+    ADVERTISING_STRATEGY_LIMITATION_HEADER
+  );
+  return composeResult({
+    capability: 'advertising_strategy',
+    topic: params.topic || `Advertising strategy: ${record.strategy_reference}`,
+    market: params.market || '',
+    findings: analysis.findings,
+    evidence: analysis.evidence,
+    source: analysis.source,
+    confidence: params.confidence,
+    limitations: analysis.limitations,
+    recommendations: params.recommendations,
+    verificationStatus: params.verificationStatus,
+    researchDate: params.researchDate || todayIsoDate(),
+    specializedRecords: [record],
+  });
+}
+
+// Composes a dedicated agent/core/advertisingPerformanceModel.js record - not any of
+// the other composers, since analyzing a campaign's actual, already-measured results
+// is a different concern from planning or executing one (see module header). Adds an
+// explicit, honest limitation naming any calculable metric that could NOT be derived
+// from the supplied actual_metrics (insufficient inputs) - the concrete form
+// "do not fabricate unavailable metrics" takes here: every gap is named, not silently
+// omitted.
+function analyzeAdvertisingPerformance(params = {}) {
+  const fnName = 'analyzeAdvertisingPerformance';
+  const record = buildAdvertisingPerformanceRecord(params, fnName);
+  const analysis = analyzeSocialAdvertisingRecords(
+    [record],
+    'advertising_performance',
+    ADVERTISING_PERFORMANCE_LIMITATION_HEADER
+  );
+  const limitations = [...analysis.limitations];
+
+  const uncalculatedMetrics = CALCULABLE_METRICS.filter(
+    (metric) => !(metric in record.actual_metrics) && !(metric in record.calculated_metrics)
+  );
+  if (uncalculatedMetrics.length > 0) {
+    limitations.push(
+      `The following metric(s) could not be calculated from the supplied actual metrics (insufficient inputs): ${uncalculatedMetrics.join(', ')}.`
+    );
+  }
+
+  return composeResult({
+    capability: 'advertising_performance',
+    topic: params.topic || `Advertising performance: ${record.performance_reference}`,
+    market: params.market || '',
+    findings: analysis.findings,
+    evidence: analysis.evidence,
+    source: analysis.source,
+    confidence: params.confidence,
+    limitations,
+    recommendations: params.recommendations,
+    verificationStatus: params.verificationStatus,
+    researchDate: params.researchDate || todayIsoDate(),
+    specializedRecords: [record],
+  });
+}
+
 const SOCIAL_ADVERTISING_CAPABILITY_HANDLERS = {
   instagram: analyzeInstagram,
   facebook: analyzeFacebook,
@@ -673,6 +873,8 @@ const SOCIAL_ADVERTISING_CAPABILITY_HANDLERS = {
   social_media_strategy: analyzeSocialMediaStrategy,
   content_generation: analyzeContentGeneration,
   content_calendar: analyzeContentCalendar,
+  advertising_strategy: analyzeAdvertisingStrategy,
+  advertising_performance: analyzeAdvertisingPerformance,
 };
 
 // The single entry point: dispatches by capability to the matching function above.
@@ -697,6 +899,8 @@ module.exports = {
   analyzeSocialMediaStrategy,
   analyzeContentGeneration,
   analyzeContentCalendar,
+  analyzeAdvertisingStrategy,
+  analyzeAdvertisingPerformance,
   runSocialAdvertisingAgent,
   retrieveSocialAdvertisingData,
 };
@@ -817,6 +1021,37 @@ if (require.main === module) {
           audience: 'Budget-conscious weekend hikers (caller-supplied placeholder).',
           evidence: ['(placeholder prior-campaign result)'],
         },
+      }),
+    () =>
+      analyzeAdvertisingStrategy({
+        strategyReference: '(Example winter jacket launch strategy)',
+        campaignObjective: 'Drive first-week sales of the new insulated jacket line (caller-supplied placeholder).',
+        audience: 'Budget-conscious weekend hikers (caller-supplied placeholder).',
+        offer: '15% off for the first week (caller-supplied placeholder).',
+        creativeAngle: 'Warmth without the premium price tag (caller-supplied placeholder).',
+        adCopy: ['The warmest $80 jacket on the internet (caller-supplied placeholder).'],
+        cta: 'Shop the winter collection (caller-supplied placeholder).',
+        budgetRecommendation: '$500/month, reviewed weekly (caller-supplied placeholder).',
+        kpi: ['Return on ad spend (caller-supplied placeholder).'],
+        testingPlan: ['A/B test 2 creative angles against the same audience for 1 week (caller-supplied placeholder).'],
+        evidence: ['(placeholder prior-campaign result)'],
+      }),
+    () =>
+      analyzeAdvertisingPerformance({
+        performanceReference: '(Example winter jacket launch - week 1 performance)',
+        campaignReference: '(Example winter jacket launch campaign)',
+        // impressions/clicks/spend/conversions/revenue are actual, caller-supplied
+        // values (caller-supplied placeholder figures); CTR/CPC/CPM/CPA/ROAS below are
+        // NOT supplied here, so calculateAdvertisingPerformanceMetrics() derives them
+        // - never fabricated, only ever computed from what was actually supplied.
+        actualMetrics: {
+          impressions: 10000,
+          clicks: 250,
+          spend: 500,
+          conversions: 20,
+          revenue: 1000,
+        },
+        evidence: ['(placeholder Meta Ads Manager export)'],
       }),
   ];
 

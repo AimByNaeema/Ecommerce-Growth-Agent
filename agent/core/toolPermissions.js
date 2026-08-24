@@ -76,6 +76,8 @@ const TOOL_CLASSIFICATIONS = {
   social_media_strategy_generation: 'analysis_only',
   platform_content_generation: 'analysis_only',
   content_calendar_generation: 'analysis_only',
+  advertising_strategy_planning: 'analysis_only',
+  advertising_performance_analysis: 'analysis_only',
 };
 
 // Approval classifications that may proceed automatically. Anything else

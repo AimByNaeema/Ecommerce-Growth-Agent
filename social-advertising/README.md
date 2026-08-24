@@ -23,7 +23,15 @@ notes, evidence, verification status) is defined in
 The shape of one social content calendar entry (entry reference, date, platform,
 content type, topic, hook, CTA, campaign, product, KPI, evidence, verification status)
 is defined in
-[`agent/core/contentCalendarModel.js`](../agent/core/contentCalendarModel.js).
+[`agent/core/contentCalendarModel.js`](../agent/core/contentCalendarModel.js). The
+shape of one pre-launch advertising strategy record (strategy reference, campaign
+objective, audience, offer, creative angle, ad copy, CTA, budget recommendation, KPI,
+testing plan, evidence, verification status) is defined in
+[`agent/core/advertisingStrategyModel.js`](../agent/core/advertisingStrategyModel.js).
+The shape of one advertising performance analysis record (performance reference,
+campaign reference, actual metrics, calculated metrics, evidence, verification status)
+is defined in
+[`agent/core/advertisingPerformanceModel.js`](../agent/core/advertisingPerformanceModel.js).
 No external social or advertising action (posting, scheduling, boosting, launching a
 campaign, spending budget, publishing content) is ever executed here.
 
@@ -38,14 +46,14 @@ evidence-only, the same philosophy and structure as
 external fetch, no live social-media or paid-advertising platform API. Callers supply
 already-structured evidence; the agent validates it, composes it into existing schemas,
 and grades it honestly — never synthesizing or guessing a caption, a targeting claim,
-or a performance figure. It supports 11 capabilities, returning one common structured
+or a performance figure. It supports 13 capabilities, returning one common structured
 result shape,
 [`agent/core/socialAdvertisingAgentResultModel.js`](../agent/core/socialAdvertisingAgentResultModel.js):
 capability, topic, market, findings, evidence, source, confidence, limitations,
 recommendations, verification status, research date, and the underlying specialized
 record(s) it was composed from.
 
-Capability → schema mapping (**zero new schema surface beyond the 5 dedicated
+Capability → schema mapping (**zero new schema surface beyond the 7 dedicated
 records below** — every capability reuses one of them as-is):
 
 - **Instagram**, **Facebook**, **TikTok**, **Pinterest**, and **YouTube** all compose
@@ -111,12 +119,53 @@ records below** — every capability reuses one of them as-is):
   in `specialized_records` — the provided context stays visible and auditable, never
   silently absorbed. No entry is ever posted or scheduled automatically — acting on it
   is a separate, human-approved action via [`approvals/`](../approvals/README.md).
+- **Advertising strategy** composes its own dedicated
+  [`agent/core/advertisingStrategyModel.js`](../agent/core/advertisingStrategyModel.js)
+  record — campaign objective, audience, offer, creative angle, ad copy, CTA, budget
+  recommendation, KPI, and testing plan: a pre-launch strategic plan for one
+  advertising campaign, distinct from every record above. Unlike
+  `adCampaignModel.js`, it is not pinned to one of the 3 ad platforms (a strategy
+  precedes platform selection); unlike `socialMediaStrategyModel.js`, it is not a
+  cross-platform organic+paid content plan (content pillars, posting cadence) — it is
+  advertising-only, with creative and testing dimensions neither existing schema
+  carries. `budget_recommendation` is always a caller-supplied description, never a
+  fabricated or committed number. No advertising budget is ever spent and no campaign
+  is ever launched automatically — `advertisingStrategyModel.js` has no
+  execute/launch/spend function of any kind; acting on a strategy is a separate,
+  human-approved action via [`approvals/`](../approvals/README.md).
+- **Advertising performance** composes its own dedicated
+  [`agent/core/advertisingPerformanceModel.js`](../agent/core/advertisingPerformanceModel.js)
+  record — analyzing a campaign's *actual, already-measured* results is a distinct
+  concern from planning one (advertising strategy) or executing one (Meta/Google/
+  TikTok Ads), so it gets its own schema too. Supports impressions, CTR, CPC, CPM,
+  conversions, CPA, and ROAS, split across two object fields:
+  `actual_metrics` (whatever the caller directly supplies as already-known — e.g.
+  straight off an ad platform's own reporting) and `calculated_metrics` (derived from
+  `actual_metrics` by
+  [`agent/core/advertisingPerformanceCalculator.js`](../agent/core/advertisingPerformanceCalculator.js)'s
+  standard formulas — CTR = clicks/impressions, CPC = spend/clicks, CPM =
+  spend/impressions×1000, CPA = spend/conversions, ROAS = revenue/spend). Recommendations
+  are never mixed into either metrics object — they live only in the common result
+  envelope's own `recommendations` field, the same structural separation every other
+  capability here already uses, satisfying "separate actual metrics from calculated
+  metrics and recommendations" directly. A formula is only evaluated when every input
+  it needs is present as a finite, non-negative number (denominator strictly greater
+  than zero) — otherwise that metric is simply omitted, never defaulted to 0/null/NaN,
+  and `analyzeAdvertisingPerformance()` names every calculable metric it could *not*
+  derive in an explicit limitation, so a gap is always visible, never silently
+  fabricated. `clicks`, `spend`, and `revenue` are also accepted as actual-only inputs
+  alongside the 7 named metrics, since the 5 ratio metrics mathematically require them
+  as inputs — a mechanical consequence of supporting the requested calculation, not a
+  new business assumption (see the model file's own header for the full reasoning). No
+  metric is ever fetched or estimated automatically — no live advertising platform is
+  configured.
 
 `socialContentModel.js`, `adCampaignModel.js`, `socialMediaStrategyModel.js`,
-`platformContentModel.js`, and `contentCalendarModel.js` all carry their own `evidence`
-array field (like Marketing's schemas, unlike SEO's/Listing's) — so evidence is
-assigned directly from caller-supplied input inside each record builder, with no
-separate evidence-composition step layered on top.
+`platformContentModel.js`, `contentCalendarModel.js`, `advertisingStrategyModel.js`,
+and `advertisingPerformanceModel.js` all carry their own `evidence` array field (like
+Marketing's schemas, unlike SEO's/Listing's) — so evidence is assigned directly from
+caller-supplied input inside each record builder, with no separate
+evidence-composition step layered on top.
 
 The `platform`/`platform_selection` fields are narrow, validated enums (`instagram |
 facebook | tiktok | pinterest | youtube` for social content, content generation, and
@@ -125,20 +174,23 @@ of both 8 for strategy's platform selection) — no platform beyond these 8 is a
 capability today, matching the explicit scope of this build (no unnecessary platform
 integrations added).
 
-Five tool ids (`tools/toolRegistry.js`) are wired to this agent, mirroring the task's
+Seven tool ids (`tools/toolRegistry.js`) are wired to this agent, mirroring the task's
 own social/advertising split and SEO's precedent of multiple tool ids sharing 1
 category — [`tools/socialContentTool.js`](../tools/socialContentTool.js) wraps the 5
 social capabilities, dispatching on a `socialPlatform` parameter;
 [`tools/paidAdvertisingTool.js`](../tools/paidAdvertisingTool.js) wraps the 3
 advertising capabilities, dispatching on an `adPlatform` parameter;
 [`tools/socialMediaStrategyTool.js`](../tools/socialMediaStrategyTool.js),
-[`tools/platformContentTool.js`](../tools/platformContentTool.js), and
-[`tools/contentCalendarTool.js`](../tools/contentCalendarTool.js) each wrap a single
-capability (no platform-dispatch key needed — `platform` is a required field on the
-record itself for the latter two, and `contentCalendarTool.js` passes an optional
-`campaignContext` straight through). All five return `{ status, result, error }` with
-`status` one of `success`, `empty`, `partial`, or `failed` — never fabricating a result
-when structured input is missing or incomplete. The Social & Advertising specialist is
+[`tools/platformContentTool.js`](../tools/platformContentTool.js),
+[`tools/contentCalendarTool.js`](../tools/contentCalendarTool.js),
+[`tools/advertisingStrategyTool.js`](../tools/advertisingStrategyTool.js), and
+[`tools/advertisingPerformanceTool.js`](../tools/advertisingPerformanceTool.js) each
+wrap a single capability (no platform-dispatch key needed — `platform` is a required
+field on the record itself for the middle two, and `contentCalendarTool.js` passes an
+optional `campaignContext` straight through). All seven return
+`{ status, result, error }` with `status` one of `success`, `empty`, `partial`, or
+`failed` — never fabricating a result when structured input is missing or incomplete.
+The Social & Advertising specialist is
 fully wired into the Chief/Orchestrator
 (`agent/core/orchestratorExecutionContract.js`'s `TOOL_EXECUTORS`), so a routed
 objective can reach it end-to-end via `runOrchestratorContract()`.

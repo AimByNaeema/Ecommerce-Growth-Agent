@@ -11,7 +11,7 @@
 // tools/toolRegistry.js and agent/core/specialistRegistry.js entries.
 //
 // STRUCTURED ROUTING (this revision): a single objective can require more than one
-// of the 7 approved specialists, or none of the 19 registered tools at all (Product
+// of the 7 approved specialists, or none of the 21 registered tools at all (Product
 // and Analytics & Optimization still have no TOOL_REGISTRY category today). Routing
 // therefore happens at the specialist level first (ROUTING_TARGETS, built from
 // specialistRegistry.js + the shared-infrastructure tool categories), producing a
@@ -59,6 +59,8 @@ const paidAdvertisingTool = require('../../tools/paidAdvertisingTool');
 const socialMediaStrategyTool = require('../../tools/socialMediaStrategyTool');
 const platformContentTool = require('../../tools/platformContentTool');
 const contentCalendarTool = require('../../tools/contentCalendarTool');
+const advertisingStrategyTool = require('../../tools/advertisingStrategyTool');
+const advertisingPerformanceTool = require('../../tools/advertisingPerformanceTool');
 
 // Tool ids this orchestrator knows how to actually call. Each entry maps a
 // TOOL_REGISTRY id to the real function that performs the work - the only sanctioned
@@ -112,6 +114,10 @@ const TOOL_EXECUTORS = {
     platformContentTool.runPlatformContentTool(executionRequest.research_params),
   content_calendar_generation: (executionRequest) =>
     contentCalendarTool.runContentCalendarTool(executionRequest.research_params),
+  advertising_strategy_planning: (executionRequest) =>
+    advertisingStrategyTool.runAdvertisingStrategyTool(executionRequest.research_params),
+  advertising_performance_analysis: (executionRequest) =>
+    advertisingPerformanceTool.runAdvertisingPerformanceTool(executionRequest.research_params),
 };
 
 const STOPWORDS = new Set([

@@ -13,6 +13,8 @@ const {
   analyzeSocialMediaStrategy,
   analyzeContentGeneration,
   analyzeContentCalendar,
+  analyzeAdvertisingStrategy,
+  analyzeAdvertisingPerformance,
   runSocialAdvertisingAgent,
   retrieveSocialAdvertisingData,
 } = require('../../agent/core/socialAdvertisingAgent');
@@ -458,6 +460,173 @@ test('analyzeContentCalendar works with no campaignContext at all - campaign sta
   assert.strictEqual(result.specialized_records[0].campaign, '');
 });
 
+// --- advertising_strategy --------------------------------------------------------------------
+
+test('analyzeAdvertisingStrategy requires a non-empty strategyReference', () => {
+  assert.throws(
+    () => analyzeAdvertisingStrategy({ campaignObjective: 'Drive sales.' }),
+    /requires a non-empty `strategyReference`/
+  );
+});
+
+test('analyzeAdvertisingStrategy produces a valid result composing an advertisingStrategyModel.js record', () => {
+  const result = analyzeAdvertisingStrategy({
+    strategyReference: '(Example winter jacket launch strategy)',
+    campaignObjective: 'Drive first-week sales.',
+    audience: 'Budget-conscious weekend hikers.',
+    offer: '15% off for the first week.',
+    creativeAngle: 'Warmth without the premium price tag.',
+    adCopy: ['The warmest $80 jacket on the internet.'],
+    cta: 'Shop the winter collection.',
+    budgetRecommendation: '$500/month, reviewed weekly.',
+    kpi: ['Return on ad spend'],
+    testingPlan: ['A/B test 2 creative angles for 1 week.'],
+  });
+  assert.strictEqual(result.capability, 'advertising_strategy');
+  assertValidResult(result);
+  const record = result.specialized_records[0];
+  assert.strictEqual(record.campaign_objective, 'Drive first-week sales.');
+  assert.strictEqual(record.audience, 'Budget-conscious weekend hikers.');
+  assert.strictEqual(record.offer, '15% off for the first week.');
+  assert.strictEqual(record.creative_angle, 'Warmth without the premium price tag.');
+  assert.deepStrictEqual(record.ad_copy, ['The warmest $80 jacket on the internet.']);
+  assert.strictEqual(record.cta, 'Shop the winter collection.');
+  assert.strictEqual(record.budget_recommendation, '$500/month, reviewed weekly.');
+  assert.deepStrictEqual(record.kpi, ['Return on ad spend']);
+  assert.deepStrictEqual(record.testing_plan, ['A/B test 2 creative angles for 1 week.']);
+  assert.ok(result.findings.includes('The warmest $80 jacket on the internet.'));
+});
+
+test('analyzeAdvertisingStrategy never invents an objective, audience, offer, creative angle, ad copy, CTA, budget, KPI, or testing plan that was not supplied', () => {
+  const result = analyzeAdvertisingStrategy({ strategyReference: '(Example strategy)' });
+  const record = result.specialized_records[0];
+  assert.strictEqual(record.campaign_objective, '');
+  assert.strictEqual(record.audience, '');
+  assert.strictEqual(record.offer, '');
+  assert.strictEqual(record.creative_angle, '');
+  assert.deepStrictEqual(record.ad_copy, []);
+  assert.strictEqual(record.cta, '');
+  assert.strictEqual(record.budget_recommendation, '');
+  assert.deepStrictEqual(record.kpi, []);
+  assert.deepStrictEqual(record.testing_plan, []);
+});
+
+test('analyzeAdvertisingStrategy never spends budget or launches a campaign - the result always carries that limitation', () => {
+  const result = analyzeAdvertisingStrategy({ strategyReference: '(Example strategy)' });
+  assert.ok(result.limitations.some((l) => l.includes('No advertising budget is spent') && l.includes('no campaign is launched automatically')));
+});
+
+test('analyzeAdvertisingStrategy reports empty when no evidence is supplied, and surfaces supplied evidence otherwise', () => {
+  const withoutEvidence = analyzeAdvertisingStrategy({ strategyReference: '(Example strategy)' });
+  assert.ok(withoutEvidence.limitations.some((l) => l.startsWith('No evidence was supplied for')));
+
+  const withEvidence = analyzeAdvertisingStrategy({
+    strategyReference: '(Example strategy)',
+    evidence: ['prior campaign result'],
+  });
+  assert.deepStrictEqual(withEvidence.evidence, ['prior campaign result']);
+});
+
+// --- advertising_performance ------------------------------------------------------------------
+
+test('analyzeAdvertisingPerformance requires a non-empty performanceReference', () => {
+  assert.throws(
+    () => analyzeAdvertisingPerformance({ actualMetrics: { impressions: 10000 } }),
+    /requires a non-empty `performanceReference`/
+  );
+});
+
+test('analyzeAdvertisingPerformance rejects an unknown metric key', () => {
+  assert.throws(
+    () => analyzeAdvertisingPerformance({ performanceReference: '(Example)', actualMetrics: { likes: 500 } }),
+    /invalid advertising performance record/
+  );
+});
+
+test('analyzeAdvertisingPerformance produces a valid result composing an advertisingPerformanceModel.js record', () => {
+  const result = analyzeAdvertisingPerformance({
+    performanceReference: '(Example winter jacket launch - week 1 performance)',
+    campaignReference: '(Example winter jacket launch campaign)',
+    actualMetrics: {
+      impressions: 10000,
+      clicks: 250,
+      spend: 500,
+      conversions: 20,
+      revenue: 1000,
+    },
+  });
+  assert.strictEqual(result.capability, 'advertising_performance');
+  assertValidResult(result);
+  const record = result.specialized_records[0];
+  assert.strictEqual(record.campaign_reference, '(Example winter jacket launch campaign)');
+  assert.deepStrictEqual(record.actual_metrics, {
+    impressions: 10000,
+    clicks: 250,
+    spend: 500,
+    conversions: 20,
+    revenue: 1000,
+  });
+  assert.ok(result.findings.includes('Actual - impressions: 10000'));
+});
+
+test('analyzeAdvertisingPerformance keeps actual metrics, calculated metrics, and recommendations structurally separate', () => {
+  const result = analyzeAdvertisingPerformance({
+    performanceReference: '(Example)',
+    actualMetrics: { impressions: 10000, clicks: 250, spend: 500, conversions: 20, revenue: 1000 },
+    recommendations: ['Increase budget - the campaign is beating its ROAS target.'],
+  });
+  const record = result.specialized_records[0];
+  assert.deepStrictEqual(record.actual_metrics, {
+    impressions: 10000,
+    clicks: 250,
+    spend: 500,
+    conversions: 20,
+    revenue: 1000,
+  });
+  assert.deepStrictEqual(record.calculated_metrics, { ctr: 0.025, cpc: 2, cpm: 50, cpa: 25, roas: 2 });
+  // Recommendations never leak into either metrics object - they only ever live in
+  // the envelope's own `recommendations` field.
+  assert.ok(!('recommendations' in record));
+  assert.deepStrictEqual(result.recommendations, ['Increase budget - the campaign is beating its ROAS target.']);
+});
+
+test('analyzeAdvertisingPerformance never fabricates a metric it cannot calculate - the gap is named honestly', () => {
+  const result = analyzeAdvertisingPerformance({
+    performanceReference: '(Example)',
+    actualMetrics: { impressions: 10000, clicks: 250 },
+  });
+  const record = result.specialized_records[0];
+  assert.deepStrictEqual(record.calculated_metrics, { ctr: 0.025 });
+  assert.ok(
+    result.limitations.some(
+      (l) => l.includes('could not be calculated') && l.includes('cpc') && l.includes('cpm') && l.includes('cpa') && l.includes('roas')
+    )
+  );
+});
+
+test('analyzeAdvertisingPerformance never invents an actual metric that was not supplied', () => {
+  const result = analyzeAdvertisingPerformance({ performanceReference: '(Example)' });
+  const record = result.specialized_records[0];
+  assert.deepStrictEqual(record.actual_metrics, {});
+  assert.deepStrictEqual(record.calculated_metrics, {});
+});
+
+test('analyzeAdvertisingPerformance never fetches/estimates automatically - the result always carries that limitation', () => {
+  const result = analyzeAdvertisingPerformance({ performanceReference: '(Example)' });
+  assert.ok(result.limitations.some((l) => l.includes('No metric is fetched or estimated automatically')));
+});
+
+test('analyzeAdvertisingPerformance reports empty when no evidence is supplied, and surfaces supplied evidence otherwise', () => {
+  const withoutEvidence = analyzeAdvertisingPerformance({ performanceReference: '(Example)' });
+  assert.ok(withoutEvidence.limitations.some((l) => l.startsWith('No evidence was supplied for')));
+
+  const withEvidence = analyzeAdvertisingPerformance({
+    performanceReference: '(Example)',
+    evidence: ['prior report'],
+  });
+  assert.deepStrictEqual(withEvidence.evidence, ['prior report']);
+});
+
 // --- dispatcher / reuse helper ------------------------------------------------------------
 
 test('runSocialAdvertisingAgent dispatches by capability', () => {
@@ -503,6 +672,18 @@ test('retrieveSocialAdvertisingData builds social_content and ad_campaign record
     'test'
   );
   assert.strictEqual(calendarRecords[0].entry_reference, 'x');
+  const advertisingStrategyRecords = retrieveSocialAdvertisingData(
+    'advertising_strategy',
+    [{ strategyReference: 'x' }],
+    'test'
+  );
+  assert.strictEqual(advertisingStrategyRecords[0].strategy_reference, 'x');
+  const advertisingPerformanceRecords = retrieveSocialAdvertisingData(
+    'advertising_performance',
+    [{ performanceReference: 'x' }],
+    'test'
+  );
+  assert.strictEqual(advertisingPerformanceRecords[0].performance_reference, 'x');
 });
 
 test('retrieveSocialAdvertisingData throws on an unknown record kind', () => {

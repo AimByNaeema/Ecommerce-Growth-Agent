@@ -1,7 +1,7 @@
 'use strict';
 
 // The compact shape of one Social & Advertising Agent result - the structured envelope
-// agent/core/socialAdvertisingAgent.js returns for any of its 8 supported
+// agent/core/socialAdvertisingAgent.js returns for any of its 13 supported
 // capabilities. Schema and a couple of pure helpers only - no lookup/search/synthesis
 // logic, matching every other *Model.js file in agent/core/ and mirroring
 // agent/core/marketingAgentResultModel.js's own design exactly.
@@ -29,6 +29,8 @@ const SOCIAL_ADVERTISING_CAPABILITIES = [
   'social_media_strategy',
   'content_generation',
   'content_calendar',
+  'advertising_strategy',
+  'advertising_performance',
 ];
 
 const SOCIAL_ADVERTISING_AGENT_RESULT_FIELDS = [
@@ -102,7 +104,7 @@ const SOCIAL_ADVERTISING_AGENT_RESULT_FIELDS = [
     id: 'specialized_records',
     title: 'Specialized records',
     type: 'array',
-    description: 'The underlying per-capability model record(s) this result was composed from (e.g. agent/core/socialContentModel.js, agent/core/adCampaignModel.js, agent/core/socialMediaStrategyModel.js, agent/core/platformContentModel.js, or agent/core/contentCalendarModel.js records - the latter optionally alongside an agent/core/campaignPlanModel.js record when Marketing Agent campaign context was supplied) - so this envelope wraps existing schemas rather than duplicating them.',
+    description: 'The underlying per-capability model record(s) this result was composed from (e.g. agent/core/socialContentModel.js, agent/core/adCampaignModel.js, agent/core/socialMediaStrategyModel.js, agent/core/platformContentModel.js, agent/core/contentCalendarModel.js, agent/core/advertisingStrategyModel.js, or agent/core/advertisingPerformanceModel.js records - the content_calendar one optionally alongside an agent/core/campaignPlanModel.js record when Marketing Agent campaign context was supplied) - so this envelope wraps existing schemas rather than duplicating them.',
   },
 ];
 

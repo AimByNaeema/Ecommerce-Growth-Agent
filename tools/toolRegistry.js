@@ -9,16 +9,18 @@
 // competitor_research, customer_research, product_data_retrieval, keyword_research,
 // seo_analysis, listing_content_generation, marketing_analysis,
 // social_content_planning, paid_advertising_planning,
-// social_media_strategy_generation, platform_content_generation, and
-// content_calendar_generation are the fifteen entries actually implemented (see
+// social_media_strategy_generation, platform_content_generation,
+// content_calendar_generation, advertising_strategy_planning, and
+// advertising_performance_analysis are the seventeen entries actually implemented (see
 // tools/businessConfigurationRetrieval.js, tools/aiReasoningCompletion.js,
 // tools/marketResearchTool.js, tools/competitorResearchTool.js,
 // tools/customerResearchTool.js, tools/productDataRetrievalTool.js,
 // tools/keywordResearchTool.js, tools/seoAnalysisTool.js, tools/listingContentTool.js,
 // tools/marketingAnalysisTool.js, tools/socialContentTool.js,
 // tools/paidAdvertisingTool.js, tools/socialMediaStrategyTool.js,
-// tools/platformContentTool.js, and tools/contentCalendarTool.js) - the other 2 tools
-// remain 'not_implemented'.
+// tools/platformContentTool.js, tools/contentCalendarTool.js,
+// tools/advertisingStrategyTool.js, and tools/advertisingPerformanceTool.js) - the
+// other 2 tools remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -160,6 +162,22 @@ const TOOL_REGISTRY = [
     title: 'Social content calendar generation',
     description:
       "Compose agent/core/contentCalendarModel.js calendar entries (date, platform, content type, topic, hook, CTA, campaign, product, KPI) via agent/core/socialAdvertisingAgent.js's content_calendar capability, optionally informed by Marketing Agent campaign context via agent/core/marketingAgent.js's campaign_plan builder - see tools/contentCalendarTool.js.",
+    category: 'social_advertising',
+    status: 'implemented',
+  },
+  {
+    id: 'advertising_strategy_planning',
+    title: 'Advertising strategy planning',
+    description:
+      "Compose agent/core/advertisingStrategyModel.js pre-launch advertising strategy records (campaign objective, audience, offer, creative angle, ad copy, CTA, budget recommendation, KPI, testing plan) via agent/core/socialAdvertisingAgent.js's advertising_strategy capability - see tools/advertisingStrategyTool.js.",
+    category: 'social_advertising',
+    status: 'implemented',
+  },
+  {
+    id: 'advertising_performance_analysis',
+    title: 'Advertising performance analysis',
+    description:
+      "Compose agent/core/advertisingPerformanceModel.js performance records (impressions, CTR, CPC, CPM, conversions, CPA, ROAS) via agent/core/socialAdvertisingAgent.js's advertising_performance capability, separating caller-supplied actual metrics from metrics agent/core/advertisingPerformanceCalculator.js derives from them, and from recommendations - see tools/advertisingPerformanceTool.js.",
     category: 'social_advertising',
     status: 'implemented',
   },

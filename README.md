@@ -273,4 +273,35 @@ explicitly, and the campaign plan record travels alongside the entry in the resu
 that context stays visible rather than silently absorbed. Nothing is ever posted or
 scheduled automatically. A fifth tool,
 [`tools/contentCalendarTool.js`](tools/contentCalendarTool.js), connects it to the
-orchestrator the same way.
+orchestrator the same way. The specialist's 12th capability, pre-launch advertising
+strategy planning, is defined in
+[`agent/core/advertisingStrategyModel.js`](agent/core/advertisingStrategyModel.js)
+(campaign objective, audience, offer, creative angle, ad copy, CTA, budget
+recommendation, KPI, testing plan) - its own dedicated schema, distinct from the
+platform-pinned, execution-ready ad campaign schema (`adCampaignModel.js`) and from the
+cross-platform organic+paid strategy schema (`socialMediaStrategyModel.js`), since a
+pre-launch strategy needs creative and testing fields neither carries and isn't pinned
+to one of the 3 ad platforms. `budget_recommendation` is always a caller-supplied
+description, never a fabricated or committed number - no advertising budget is ever
+spent and no campaign is ever launched automatically. A sixth tool,
+[`tools/advertisingStrategyTool.js`](tools/advertisingStrategyTool.js), connects it to
+the orchestrator the same way. The specialist's 13th capability, advertising
+performance analysis, is defined in
+[`agent/core/advertisingPerformanceModel.js`](agent/core/advertisingPerformanceModel.js)
+(performance reference, campaign reference, actual metrics, calculated metrics,
+evidence, verification status), supporting impressions, CTR, CPC, CPM, conversions,
+CPA, and ROAS. `actual_metrics` and `calculated_metrics` are kept as two separate
+object fields, never merged: `actual_metrics` is whatever the caller directly supplies
+as already-known; `calculated_metrics` is derived from it by
+[`agent/core/advertisingPerformanceCalculator.js`](agent/core/advertisingPerformanceCalculator.js)
+(reused by the agent, not reimplemented) via the standard formulas - CTR =
+clicks/impressions, CPC = spend/clicks, CPM = spend/impressions×1000, CPA =
+spend/conversions, ROAS = revenue/spend - and only ever populated when the required
+inputs are present; a metric that can't be calculated is simply omitted, never
+defaulted to 0/null/NaN, and `analyzeAdvertisingPerformance` names every such gap in an
+explicit limitation instead of leaving it unexplained. Recommendations are never mixed
+into either metrics object - they stay only in the common result envelope's own
+`recommendations` field, the same separation every other capability here already uses.
+No metric is ever fetched or estimated automatically. A seventh tool,
+[`tools/advertisingPerformanceTool.js`](tools/advertisingPerformanceTool.js), connects
+it to the orchestrator the same way.
