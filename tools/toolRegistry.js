@@ -10,17 +10,19 @@
 // seo_analysis, listing_content_generation, marketing_analysis,
 // social_content_planning, paid_advertising_planning,
 // social_media_strategy_generation, platform_content_generation,
-// content_calendar_generation, advertising_strategy_planning, and
-// advertising_performance_analysis are the seventeen entries actually implemented (see
-// tools/businessConfigurationRetrieval.js, tools/aiReasoningCompletion.js,
-// tools/marketResearchTool.js, tools/competitorResearchTool.js,
-// tools/customerResearchTool.js, tools/productDataRetrievalTool.js,
-// tools/keywordResearchTool.js, tools/seoAnalysisTool.js, tools/listingContentTool.js,
+// content_calendar_generation, advertising_strategy_planning,
+// advertising_performance_analysis, analytics, and analytics_data_retrieval are the
+// nineteen entries actually implemented (see tools/businessConfigurationRetrieval.js,
+// tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
+// tools/competitorResearchTool.js, tools/customerResearchTool.js,
+// tools/productDataRetrievalTool.js, tools/keywordResearchTool.js,
+// tools/seoAnalysisTool.js, tools/listingContentTool.js,
 // tools/marketingAnalysisTool.js, tools/socialContentTool.js,
 // tools/paidAdvertisingTool.js, tools/socialMediaStrategyTool.js,
 // tools/platformContentTool.js, tools/contentCalendarTool.js,
-// tools/advertisingStrategyTool.js, and tools/advertisingPerformanceTool.js) - the
-// other 2 tools remain 'not_implemented'.
+// tools/advertisingStrategyTool.js, tools/advertisingPerformanceTool.js,
+// tools/analyticsTool.js, and tools/analyticsDataTool.js) - the other 3 tools
+// (product_research, memory_retrieval, verification) remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -185,9 +187,17 @@ const TOOL_REGISTRY = [
     id: 'analytics',
     title: 'Analytics',
     description:
-      'Retrieve or compute store performance/growth metrics (see analytics/README.md).',
+      "Compose agent/core/analyticsModel.js snapshot records (sales, products, customers, conversion, traffic, marketing, advertising, inventory) and agent/core/growthOpportunityModel.js records (growth opportunities) from CALLER-SUPPLIED evidence, via agent/core/analyticsAgent.js's 9 capabilities - see tools/analyticsTool.js.",
     category: 'analytics',
-    status: 'not_implemented',
+    status: 'implemented',
+  },
+  {
+    id: 'analytics_data_retrieval',
+    title: 'Analytics data retrieval',
+    description:
+      "Retrieve read-only LIVE data (orders, products, customers, inventory) from the connected Shopify store via integrations/adapters/shopifyClient.js, compute agent/core/analyticsMetricsCalculator.js's calculated/estimated metrics from it, and compose the result via agent/core/analyticsAgent.js's sales/products/customers/inventory capabilities - see tools/analyticsDataTool.js. No writes; customers uses non-PII fields only.",
+    category: 'analytics',
+    status: 'implemented',
   },
   {
     id: 'ai_reasoning_completion',

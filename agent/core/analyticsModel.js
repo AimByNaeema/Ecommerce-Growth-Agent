@@ -1,15 +1,57 @@
 'use strict';
 
 // The shape of one analytics snapshot, covering the requested categories: sales,
-// traffic, conversion, product performance, customer behavior, marketing performance,
-// SEO performance, retention, growth opportunities. Schema and a couple of pure
-// helpers only - no fetch/pull/sync logic, no scoring, no dashboards.
+// traffic, conversion, product performance, inventory, customer behavior, marketing
+// performance, advertising performance, SEO performance, retention, growth
+// opportunities. Schema and a couple of pure helpers only - no fetch/pull/sync logic,
+// no scoring, no dashboards (the pull itself lives in
+// integrations/adapters/shopifyClient.js and tools/analyticsDataTool.js; this file
+// only defines the shape the pulled/caller-supplied data is composed into).
 //
-// No analytics provider (e.g. Google Analytics, Shopify Analytics, Meta) is named or
-// assumed anywhere in this file, and no integration exists yet - nothing to gate.
-// Each category's `metrics` array stays empty by default; real metric values only get
-// filled in once a specific, explicitly-configured integration exists, in a later,
-// explicitly-scoped prompt - never invented here.
+// No analytics provider (e.g. Google Analytics, Meta) is named or assumed anywhere in
+// this file - agent/core/ never depends on integrations/ or tools/ (see
+// tools/productDataRetrievalTool.js's own header for this project's standing rule).
+// The only live connection is the read-only Shopify Admin API via
+// integrations/adapters/shopifyClient.js, reached through tools/analyticsDataTool.js.
+//
+// Each category's sub-shape distinguishes 4 kinds of statement, per
+// workflows/analyticsInsightWorkflow.js's own STATEMENT_TYPES taxonomy - never blurred
+// together, and never presented as more certain than its kind allows:
+//   - `actual_metrics`    - observed_fact: a value read directly off a real source
+//                           (a live Shopify pull, or caller-supplied), with no
+//                           arithmetic applied.
+//   - `calculated_metrics` - calculated_result: a value mechanically derived from
+//                           actual_metrics by a defined formula (e.g.
+//                           agent/core/analyticsMetricsCalculator.js's
+//                           calculateSalesMetrics) - objective, but derived, and only
+//                           as complete as the actual data it was computed from (a
+//                           capped/paginated pull may undercount; see that module's
+//                           own header).
+//   - `estimated_metrics`  - hypothesis: a value that additionally requires an
+//                           assumption or extrapolation beyond the literal calculated
+//                           data (e.g. a monthly revenue projection scaled from a
+//                           partial period, or days-of-inventory-remaining assuming a
+//                           steady sales rate) - always labeled as approximate, and the
+//                           assumption is always caller-supplied (e.g. `periodDays`),
+//                           never invented internally.
+//   - "recommended" is deliberately NOT a 4th sub-field here - it stays only in
+//                           agent/core/analyticsAgentResultModel.js's own
+//                           `recommendations` field, the same separation
+//                           agent/core/advertisingPerformanceModel.js's header already
+//                           established for actual/calculated vs. recommendations.
+// Each metrics array stays empty by default; real values only get filled in by a
+// caller (agent/core/analyticsAgent.js) - never invented here.
+//
+// `advertising_performance` and `inventory` are additive fields (this file originally
+// shipped with 9 categories, then gained `advertising_performance` as a 10th; this is
+// the next later, explicitly-scoped prompt its own header already anticipated).
+// `advertising_performance` is kept distinct from `marketing_performance`: Marketing
+// and Social & Advertising are already two separate specialists in this project with
+// two separate schemas (agent/core/marketingAnalysisModel.js vs.
+// agent/core/advertisingStrategyModel.js/agent/core/advertisingPerformanceModel.js),
+// so their analytics stay equally separate here. `inventory` is kept distinct from
+// `product_performance`: inventory (stock levels, per location) was named as its own
+// requested category, separate from product-level performance.
 //
 // `verification_status` reuses agent/core/researchRecordModel.js's existing
 // RESEARCH_VERIFICATION_STATUSES enum rather than redefining it, following the same
@@ -19,10 +61,12 @@
 
 const { RESEARCH_VERIFICATION_STATUSES } = require('./researchRecordModel');
 
-// All 9 category fields share this uniform sub-shape, kept simple on purpose so one
+// All category fields share this uniform sub-shape, kept simple on purpose so one
 // validator rule covers all of them:
-//   { summary: string, metrics: array, verification_status: enum }
-const CATEGORY_SUB_KEYS = ['summary', 'metrics', 'verification_status'];
+//   { summary: string, actual_metrics: array, calculated_metrics: array,
+//     estimated_metrics: array, verification_status: enum }
+const CATEGORY_SUB_KEYS = ['summary', 'actual_metrics', 'calculated_metrics', 'estimated_metrics', 'verification_status'];
+const METRICS_SUB_KEYS = ['actual_metrics', 'calculated_metrics', 'estimated_metrics'];
 
 const ANALYTICS_FIELDS = [
   {
@@ -35,7 +79,7 @@ const ANALYTICS_FIELDS = [
     id: 'sales',
     title: 'Sales',
     type: 'object',
-    description: 'Sales data for the reporting period.',
+    description: 'Sales data for the reporting period (orders and revenue).',
   },
   {
     id: 'traffic',
@@ -56,6 +100,12 @@ const ANALYTICS_FIELDS = [
     description: 'Per-product or catalog-wide performance data, echoing agent/core/productModel.js records.',
   },
   {
+    id: 'inventory',
+    title: 'Inventory',
+    type: 'object',
+    description: 'Stock-level data (per product/variant, per location), echoing integrations/adapters/shopifyClient.js\'s getInventoryLevels().',
+  },
+  {
     id: 'customer_behavior',
     title: 'Customer behavior',
     type: 'object',
@@ -66,6 +116,12 @@ const ANALYTICS_FIELDS = [
     title: 'Marketing performance',
     type: 'object',
     description: 'Marketing performance data, echoing agent/core/marketingAnalysisModel.js campaigns/channels.',
+  },
+  {
+    id: 'advertising_performance',
+    title: 'Advertising performance',
+    type: 'object',
+    description: 'Paid advertising performance data, echoing agent/core/advertisingPerformanceModel.js actual/calculated metrics.',
   },
   {
     id: 'seo_performance',
@@ -92,7 +148,13 @@ const CATEGORY_FIELD_IDS = ANALYTICS_FIELDS.filter((field) => field.type === 'ob
 );
 
 function createEmptyCategory() {
-  return { summary: '', metrics: [], verification_status: 'unverified' };
+  return {
+    summary: '',
+    actual_metrics: [],
+    calculated_metrics: [],
+    estimated_metrics: [],
+    verification_status: 'unverified',
+  };
 }
 
 // Returns a blank analytics snapshot conforming to ANALYTICS_FIELDS. No real metric
@@ -151,8 +213,10 @@ function validateAnalyticsSnapshotShape(record) {
       }
     }
 
-    if ('metrics' in value && !Array.isArray(value.metrics)) {
-      errors.push(`${id}.metrics must be an array`);
+    for (const metricsKey of METRICS_SUB_KEYS) {
+      if (metricsKey in value && !Array.isArray(value[metricsKey])) {
+        errors.push(`${id}.${metricsKey} must be an array`);
+      }
     }
     if (
       'verification_status' in value &&
@@ -169,6 +233,7 @@ module.exports = {
   ANALYTICS_FIELDS,
   CATEGORY_FIELD_IDS,
   CATEGORY_SUB_KEYS,
+  METRICS_SUB_KEYS,
   createEmptyAnalyticsSnapshot,
   validateAnalyticsSnapshotShape,
 };
@@ -181,5 +246,5 @@ if (require.main === module) {
   });
   console.log('\nExample empty record:');
   console.log(JSON.stringify(createEmptyAnalyticsSnapshot('(no reporting period set)'), null, 2));
-  console.log('\nNo analytics provider is assumed and no integration exists - all metrics stay empty until a real, configured source is connected.');
+  console.log('\nNo analytics provider is assumed here - all metrics stay empty until a real, configured source is connected (see integrations/adapters/shopifyClient.js and tools/analyticsDataTool.js).');
 }

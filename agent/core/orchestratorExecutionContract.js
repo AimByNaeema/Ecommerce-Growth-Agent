@@ -61,6 +61,8 @@ const platformContentTool = require('../../tools/platformContentTool');
 const contentCalendarTool = require('../../tools/contentCalendarTool');
 const advertisingStrategyTool = require('../../tools/advertisingStrategyTool');
 const advertisingPerformanceTool = require('../../tools/advertisingPerformanceTool');
+const analyticsTool = require('../../tools/analyticsTool');
+const analyticsDataTool = require('../../tools/analyticsDataTool');
 
 // Tool ids this orchestrator knows how to actually call. Each entry maps a
 // TOOL_REGISTRY id to the real function that performs the work - the only sanctioned
@@ -118,6 +120,10 @@ const TOOL_EXECUTORS = {
     advertisingStrategyTool.runAdvertisingStrategyTool(executionRequest.research_params),
   advertising_performance_analysis: (executionRequest) =>
     advertisingPerformanceTool.runAdvertisingPerformanceTool(executionRequest.research_params),
+  analytics: (executionRequest) =>
+    analyticsTool.runAnalyticsTool(executionRequest.research_params),
+  analytics_data_retrieval: (executionRequest) =>
+    analyticsDataTool.runAnalyticsDataTool(executionRequest.research_params),
 };
 
 const STOPWORDS = new Set([

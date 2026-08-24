@@ -78,6 +78,8 @@ const TOOL_CLASSIFICATIONS = {
   content_calendar_generation: 'analysis_only',
   advertising_strategy_planning: 'analysis_only',
   advertising_performance_analysis: 'analysis_only',
+  analytics: 'analysis_only',
+  analytics_data_retrieval: 'analysis_only',
 };
 
 // Approval classifications that may proceed automatically. Anything else

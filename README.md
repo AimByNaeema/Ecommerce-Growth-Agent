@@ -149,8 +149,9 @@ required by default for consequential actions unless later configuration permits
 otherwise; never silently perform a consequential external action) is defined in
 [`approvals/approvalArchitecture.js`](approvals/approvalArchitecture.js) (no external
 service is connected); and the shape of one analytics snapshot (reporting period,
-sales, traffic, conversion, product performance, customer behavior, marketing
-performance, SEO performance, retention, growth opportunities) is defined in
+sales, traffic, conversion, product performance, inventory, customer behavior,
+marketing performance, advertising performance, SEO performance, retention, growth
+opportunities) is defined in
 [`agent/core/analyticsModel.js`](agent/core/analyticsModel.js) (no analytics provider
 is assumed, and no integration exists yet — every category's metrics stay empty until
 a real, configured source is connected); and the workflow that turns real analytics
@@ -304,4 +305,65 @@ into either metrics object - they stay only in the common result envelope's own
 `recommendations` field, the same separation every other capability here already uses.
 No metric is ever fetched or estimated automatically. A seventh tool,
 [`tools/advertisingPerformanceTool.js`](tools/advertisingPerformanceTool.js), connects
-it to the orchestrator the same way.
+it to the orchestrator the same way. The Analytics & Optimization specialist (#7, the
+last of the 7 approved specialists) is now also implemented:
+[`agent/core/analyticsAgent.js`](agent/core/analyticsAgent.js) supports 8 capabilities
+(sales, products, customers, conversion, traffic, marketing, advertising, growth
+opportunities), returning one common result shape,
+[`agent/core/analyticsAgentResultModel.js`](agent/core/analyticsAgentResultModel.js).
+The 7 "data" capabilities each compose one
+[`agent/core/analyticsModel.js`](agent/core/analyticsModel.js) snapshot record,
+populating only their own category and leaving every other category at its untouched
+empty/unverified default; `analyticsModel.js` gained one additive field,
+`advertising_performance` (it originally shipped with 9 categories with this exact
+addition already anticipated in its own header), kept distinct from
+`marketing_performance` since Marketing and Social & Advertising are already separate
+specialists with separate schemas. Growth opportunities composes
+[`agent/core/growthOpportunityModel.js`](agent/core/growthOpportunityModel.js) records
+directly instead, since it's an OPPORTUNITY-stage hypothesis
+(see [`workflows/analyticsInsightWorkflow.js`](workflows/analyticsInsightWorkflow.js)),
+not a DATA-stage observed fact. Zero new schema surface beyond that one field — no
+metric, trend, or opportunity is ever synthesized or guessed; a metric or category with
+no caller-supplied evidence is reported as such, never invented. An eighth tool,
+[`tools/analyticsTool.js`](tools/analyticsTool.js), connects it to the orchestrator the
+same way as every other specialist, completing all 7 approved specialists' wiring into
+the Chief/Orchestrator. The Analytics & Optimization specialist is now also connected
+to real, read-only ecommerce data: `analyticsModel.js`'s category sub-shape now
+distinguishes `actual_metrics` (an observed fact, straight off a real source),
+`calculated_metrics` (mechanically derived from actual_metrics by a defined formula),
+and `estimated_metrics` (additionally requires a caller-stated assumption or
+extrapolation, e.g. a monthly revenue projection) — recommendations stay only in the
+common result envelope, never mixed into any of the three. A 9th category, `inventory`,
+was added alongside the existing 10. Two new modules connect this to reality:
+[`integrations/adapters/shopifyClient.js`](integrations/adapters/shopifyClient.js)
+gained 3 read-only GraphQL functions — `getOrders()`, `getCustomers()` (deliberately
+non-PII fields only — no name/email/phone/address, "customers where permitted" per
+CLAUDE.md's security-first design), and `getInventoryLevels()` — alongside its existing
+`getProducts()`; and
+[`agent/core/analyticsMetricsCalculator.js`](agent/core/analyticsMetricsCalculator.js)
+is a pure, Shopify-agnostic calculator (mirroring
+[`agent/core/advertisingPerformanceCalculator.js`](agent/core/advertisingPerformanceCalculator.js)'s
+precedent) computing calculated/estimated metrics from plain order/product/inventory
+arrays — never fabricating a figure whose inputs are missing. A ninth tool,
+[`tools/analyticsDataTool.js`](tools/analyticsDataTool.js) (the `analytics_data_retrieval`
+tool id), is the actual read-only connection: it pulls live sales/products/customers/
+inventory data and calls the same `analyticsAgent.js` capability functions
+`tools/analyticsTool.js` already used for caller-supplied evidence. A denied/unavailable
+customer-data pull degrades to an honest `partial` status instead of failing the whole
+call. Both tools are wired into the orchestrator, classified `analysis_only`. The
+Analytics & Optimization specialist's 10th capability, `insights`, is the analytics
+insight engine: for each significant insight it returns exactly 8 fields — metric,
+current state, comparison, possible cause, opportunity, recommendation, confidence,
+evidence — via [`agent/core/insightModel.js`](agent/core/insightModel.js).
+[`agent/core/insightEngine.js`](agent/core/insightEngine.js) is a pure calculator that
+mechanically computes each metric's percent change from caller-supplied raw values and
+decides whether it clears a significance threshold (10% by default, adjustable) —
+never a judgment call; only significant metrics are composed into records, the rest
+are named as excluded in `limitations`. `possible_cause`/`opportunity`/`recommendation`
+are always caller-supplied hypotheses, never invented. Correlation is never asserted as
+causation without evidence: a `possible_cause` stated with no evidence can never carry
+`'high'` confidence — it's capped at `'medium'`, with an explicit limitation naming the
+downgrade (a presence-only guard, the same honest limit every other verification guard
+in this project already accepts). `insights` is reached through the existing
+`tools/analyticsTool.js`, wired into the orchestrator the same way as every other
+analytics capability.

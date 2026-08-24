@@ -4,6 +4,9 @@ const assert = require('node:assert');
 const {
   getShopInfo,
   getProducts,
+  getOrders,
+  getCustomers,
+  getInventoryLevels,
   isConfigured,
   loadEnvOnce,
   DEFAULT_API_VERSION,
@@ -249,6 +252,199 @@ test('exports the expected connection-layer functions and constants', () => {
       withMockedFetch(
         async () => jsonResponse(200, { data: {} }),
         () => assert.rejects(() => getProducts(), /did not include product data/)
+      )
+    );
+  });
+
+  // --- getOrders --------------------------------------------------------------------
+
+  const SAMPLE_ORDER_GRAPHQL_NODE = {
+    id: 'gid://shopify/Order/1',
+    name: '#1001',
+    createdAt: '2026-01-15T10:00:00Z',
+    displayFinancialStatus: 'PAID',
+    displayFulfillmentStatus: 'FULFILLED',
+    currentTotalPriceSet: { shopMoney: { amount: '89.00', currencyCode: 'USD' } },
+    lineItems: { edges: [{ node: { title: 'Insulated Jacket', quantity: 1, sku: 'JCK-001' } }] },
+  };
+
+  await testAsync('getOrders rejects clearly when not configured, without calling fetch', async () => {
+    const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
+    const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    delete process.env.SHOPIFY_STORE_DOMAIN;
+    delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    let fetchCalled = false;
+    try {
+      await withMockedFetch(
+        async () => {
+          fetchCalled = true;
+          throw new Error('fetch should never be called when not configured');
+        },
+        () => assert.rejects(() => getOrders(), /SHOPIFY_STORE_DOMAIN/)
+      );
+      assert.strictEqual(fetchCalled, false);
+    } finally {
+      if (savedDomain === undefined) delete process.env.SHOPIFY_STORE_DOMAIN;
+      else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
+      if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+      else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+    }
+  });
+
+  await testAsync('getOrders normalizes a successful mocked response (id/name/status/total/lineItems)', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { orders: { edges: [{ node: SAMPLE_ORDER_GRAPHQL_NODE }] } } }),
+        async () => {
+          const orders = await getOrders();
+          assert.strictEqual(orders.length, 1);
+          const [order] = orders;
+          assert.strictEqual(order.id, 'gid://shopify/Order/1');
+          assert.strictEqual(order.name, '#1001');
+          assert.strictEqual(order.financialStatus, 'PAID');
+          assert.strictEqual(order.fulfillmentStatus, 'FULFILLED');
+          assert.strictEqual(order.totalPrice, '89.00');
+          assert.strictEqual(order.currency, 'USD');
+          assert.strictEqual(order.lineItems.length, 1);
+          assert.strictEqual(order.lineItems[0].sku, 'JCK-001');
+        }
+      )
+    );
+  });
+
+  await testAsync('getOrders throws when the mocked response carries GraphQL errors', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { errors: [{ message: 'Throttled' }] }),
+        () => assert.rejects(() => getOrders(), /GraphQL errors/)
+      )
+    );
+  });
+
+  await testAsync('getOrders throws when the mocked response is missing order data', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: {} }),
+        () => assert.rejects(() => getOrders(), /did not include order data/)
+      )
+    );
+  });
+
+  // --- getCustomers ------------------------------------------------------------------
+
+  const SAMPLE_CUSTOMER_GRAPHQL_NODE = {
+    id: 'gid://shopify/Customer/1',
+    numberOfOrders: '3',
+    amountSpent: { amount: '267.00', currencyCode: 'USD' },
+    state: 'ENABLED',
+    tags: ['vip'],
+    createdAt: '2025-06-01T00:00:00Z',
+  };
+
+  await testAsync('getCustomers requests no PII fields (no name/email/phone/address in the query)', async () => {
+    let capturedBody = null;
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async (url, options) => {
+          capturedBody = JSON.parse(options.body);
+          return jsonResponse(200, { data: { customers: { edges: [] } } });
+        },
+        () => getCustomers()
+      )
+    );
+    const query = capturedBody.query.toLowerCase();
+    assert.ok(!query.includes('email'), 'query must not request email');
+    assert.ok(!query.includes('phone'), 'query must not request phone');
+    assert.ok(!query.includes('displayname'), 'query must not request displayName');
+    assert.ok(!query.includes('address'), 'query must not request address');
+  });
+
+  await testAsync('getCustomers normalizes a successful mocked response into non-PII fields only', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { customers: { edges: [{ node: SAMPLE_CUSTOMER_GRAPHQL_NODE }] } } }),
+        async () => {
+          const customers = await getCustomers();
+          assert.strictEqual(customers.length, 1);
+          const [customer] = customers;
+          assert.strictEqual(customer.id, 'gid://shopify/Customer/1');
+          assert.strictEqual(customer.ordersCount, '3');
+          assert.strictEqual(customer.amountSpent, '267.00');
+          assert.strictEqual(customer.currency, 'USD');
+          assert.strictEqual(customer.state, 'ENABLED');
+          assert.deepStrictEqual(customer.tags, ['vip']);
+          assert.deepStrictEqual(Object.keys(customer).sort(), ['amountSpent', 'createdAt', 'currency', 'id', 'ordersCount', 'state', 'tags'].sort());
+        }
+      )
+    );
+  });
+
+  await testAsync('getCustomers throws (does not swallow) a GraphQL access-denied error - the caller decides how to degrade', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { errors: [{ message: 'Access denied for customers field.' }] }),
+        () => assert.rejects(() => getCustomers(), /GraphQL errors/)
+      )
+    );
+  });
+
+  // --- getInventoryLevels --------------------------------------------------------------
+
+  const SAMPLE_INVENTORY_ITEM_GRAPHQL_NODE = {
+    id: 'gid://shopify/InventoryItem/1',
+    sku: 'JCK-001',
+    tracked: true,
+    inventoryLevels: {
+      edges: [
+        {
+          node: {
+            location: { id: 'gid://shopify/Location/1', name: 'Main Warehouse' },
+            quantities: [{ name: 'available', quantity: 12 }],
+          },
+        },
+      ],
+    },
+  };
+
+  await testAsync('getInventoryLevels normalizes a successful mocked response (id/sku/tracked/levels)', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { inventoryItems: { edges: [{ node: SAMPLE_INVENTORY_ITEM_GRAPHQL_NODE }] } } }),
+        async () => {
+          const items = await getInventoryLevels();
+          assert.strictEqual(items.length, 1);
+          const [item] = items;
+          assert.strictEqual(item.sku, 'JCK-001');
+          assert.strictEqual(item.tracked, true);
+          assert.strictEqual(item.levels.length, 1);
+          assert.strictEqual(item.levels[0].locationName, 'Main Warehouse');
+          assert.strictEqual(item.levels[0].available, 12);
+        }
+      )
+    );
+  });
+
+  await testAsync('getInventoryLevels leaves available undefined (never fabricated) when the "available" quantity name is absent', async () => {
+    const nodeWithoutAvailable = {
+      ...SAMPLE_INVENTORY_ITEM_GRAPHQL_NODE,
+      inventoryLevels: { edges: [{ node: { location: { id: 'l1', name: 'Main' }, quantities: [] } }] },
+    };
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { inventoryItems: { edges: [{ node: nodeWithoutAvailable }] } } }),
+        async () => {
+          const items = await getInventoryLevels();
+          assert.strictEqual(items[0].levels[0].available, undefined);
+        }
+      )
+    );
+  });
+
+  await testAsync('getInventoryLevels throws when the mocked response is missing inventory data', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: {} }),
+        () => assert.rejects(() => getInventoryLevels(), /did not include inventory data/)
       )
     );
   });

@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const {
   ANALYTICS_FIELDS,
   CATEGORY_FIELD_IDS,
+  METRICS_SUB_KEYS,
   createEmptyAnalyticsSnapshot,
   validateAnalyticsSnapshotShape,
 } = require('../../agent/core/analyticsModel');
@@ -14,8 +15,10 @@ const EXPECTED_ORDER = [
   'traffic',
   'conversion',
   'product_performance',
+  'inventory',
   'customer_behavior',
   'marketing_performance',
+  'advertising_performance',
   'seo_performance',
   'retention',
   'growth_opportunities',
@@ -36,11 +39,15 @@ function test(name, fn) {
   }
 }
 
-test('the record has exactly the 10 required fields, in the requested order', () => {
+test('the record has exactly the 12 required fields, in the requested order', () => {
   assert.deepStrictEqual(
     ANALYTICS_FIELDS.map((field) => field.id),
     EXPECTED_ORDER
   );
+});
+
+test('METRICS_SUB_KEYS lists exactly actual/calculated/estimated metrics, distinct from recommendations', () => {
+  assert.deepStrictEqual(METRICS_SUB_KEYS, ['actual_metrics', 'calculated_metrics', 'estimated_metrics']);
 });
 
 test('every field has a non-empty title and description', () => {
@@ -57,11 +64,13 @@ test('createEmptyAnalyticsSnapshot() produces a record that passes validation', 
   assert.strictEqual(result.errors.length, 0);
 });
 
-test('a default-empty record has every category at verification_status "unverified" with no metrics - never assumed', () => {
+test('a default-empty record has every category at verification_status "unverified" with no actual/calculated/estimated metrics - never assumed', () => {
   const record = createEmptyAnalyticsSnapshot();
   for (const id of CATEGORY_FIELD_IDS) {
     assert.strictEqual(record[id].verification_status, 'unverified', `${id}.verification_status`);
-    assert.deepStrictEqual(record[id].metrics, [], `${id}.metrics`);
+    for (const metricsKey of METRICS_SUB_KEYS) {
+      assert.deepStrictEqual(record[id][metricsKey], [], `${id}.${metricsKey}`);
+    }
   }
 });
 
@@ -105,12 +114,23 @@ test('validator detects an unexpected extra sub-field inside a category object',
   assert.ok(result.errors.includes('conversion has unexpected sub-field: rate'));
 });
 
-test('validator detects a wrong array type (metrics)', () => {
+test('validator detects a wrong array type for each of actual_metrics/calculated_metrics/estimated_metrics', () => {
+  for (const metricsKey of METRICS_SUB_KEYS) {
+    const record = createEmptyAnalyticsSnapshot();
+    record.seo_performance[metricsKey] = 'not an array';
+    const result = validateAnalyticsSnapshotShape(record);
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.errors.includes(`seo_performance.${metricsKey} must be an array`));
+  }
+});
+
+test('validator keeps actual/calculated/estimated metrics fully independent - populating one never satisfies another', () => {
   const record = createEmptyAnalyticsSnapshot();
-  record.seo_performance.metrics = 'not an array';
+  record.sales.actual_metrics = [{ label: 'orders_count', value: 12 }];
   const result = validateAnalyticsSnapshotShape(record);
-  assert.strictEqual(result.valid, false);
-  assert.ok(result.errors.includes('seo_performance.metrics must be an array'));
+  assert.strictEqual(result.valid, true, `expected valid, got errors: ${result.errors.join(', ')}`);
+  assert.deepStrictEqual(record.sales.calculated_metrics, []);
+  assert.deepStrictEqual(record.sales.estimated_metrics, []);
 });
 
 test('validator detects an invalid verification_status value', () => {
