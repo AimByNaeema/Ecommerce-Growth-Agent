@@ -25,6 +25,7 @@ const EXPECTED_ORDER = [
   'paid_advertising_planning',
   'social_media_strategy_generation',
   'platform_content_generation',
+  'content_calendar_generation',
   'analytics',
   'ai_reasoning_completion',
   'memory_retrieval',
@@ -45,6 +46,7 @@ const IMPLEMENTED_IDS = [
   'paid_advertising_planning',
   'social_media_strategy_generation',
   'platform_content_generation',
+  'content_calendar_generation',
   'ai_reasoning_completion',
 ];
 
@@ -63,7 +65,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 18 required tools, in the requested order', () => {
+test('the registry has exactly the 19 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER
@@ -96,7 +98,7 @@ test('every entry except the implemented set is not_implemented - do not impleme
   }
 });
 
-test('business_configuration_retrieval, product_data_retrieval, market_research, customer_research, competitor_research, keyword_research, seo_analysis, listing_content_generation, marketing_analysis, social_content_planning, paid_advertising_planning, social_media_strategy_generation, platform_content_generation, and ai_reasoning_completion are implemented', () => {
+test('business_configuration_retrieval, product_data_retrieval, market_research, customer_research, competitor_research, keyword_research, seo_analysis, listing_content_generation, marketing_analysis, social_content_planning, paid_advertising_planning, social_media_strategy_generation, platform_content_generation, content_calendar_generation, and ai_reasoning_completion are implemented', () => {
   for (const id of IMPLEMENTED_IDS) {
     assert.strictEqual(getToolById(id).status, 'implemented', `${id} should be implemented`);
   }

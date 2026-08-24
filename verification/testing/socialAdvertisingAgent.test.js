@@ -12,6 +12,7 @@ const {
   analyzeTiktokAds,
   analyzeSocialMediaStrategy,
   analyzeContentGeneration,
+  analyzeContentCalendar,
   runSocialAdvertisingAgent,
   retrieveSocialAdvertisingData,
 } = require('../../agent/core/socialAdvertisingAgent');
@@ -294,6 +295,169 @@ test('analyzeContentGeneration reports empty when no evidence is supplied, and s
   assert.deepStrictEqual(withEvidence.evidence, ['prior post performance']);
 });
 
+// --- content_calendar -----------------------------------------------------------------------
+
+test('analyzeContentCalendar requires a non-empty entryReference', () => {
+  assert.throws(
+    () => analyzeContentCalendar({ date: '2026-11-14', platform: 'tiktok' }),
+    /requires a non-empty `entryReference`/
+  );
+});
+
+test('analyzeContentCalendar requires a non-empty date', () => {
+  assert.throws(
+    () => analyzeContentCalendar({ entryReference: '(Example entry)', platform: 'tiktok' }),
+    /requires a non-empty `date`/
+  );
+});
+
+test('analyzeContentCalendar requires a non-empty platform', () => {
+  assert.throws(
+    () => analyzeContentCalendar({ entryReference: '(Example entry)', date: '2026-11-14' }),
+    /requires a non-empty `platform`/
+  );
+});
+
+test('analyzeContentCalendar rejects a platform outside the 5 in-scope social platforms', () => {
+  assert.throws(
+    () => analyzeContentCalendar({ entryReference: '(Example entry)', date: '2026-11-14', platform: 'snapchat' }),
+    /invalid content calendar record/
+  );
+});
+
+test('analyzeContentCalendar produces a valid result composing a contentCalendarModel.js record', () => {
+  const result = analyzeContentCalendar({
+    entryReference: '(Example Nov 14 tiktok post)',
+    date: '2026-11-14',
+    platform: 'tiktok',
+    contentType: 'video',
+    topic: 'Cold-weather stress test.',
+    hook: 'Warmest $80 jacket on the internet.',
+    cta: 'Shop now.',
+    campaign: '(Example winter jacket launch)',
+    product: '(Example insulated jacket)',
+    kpi: ['Engagement rate'],
+  });
+  assert.strictEqual(result.capability, 'content_calendar');
+  assertValidResult(result);
+  const record = result.specialized_records[0];
+  assert.strictEqual(record.date, '2026-11-14');
+  assert.strictEqual(record.platform, 'tiktok');
+  assert.strictEqual(record.topic, 'Cold-weather stress test.');
+  assert.strictEqual(record.hook, 'Warmest $80 jacket on the internet.');
+  assert.strictEqual(record.cta, 'Shop now.');
+  assert.strictEqual(record.campaign, '(Example winter jacket launch)');
+  assert.strictEqual(record.product, '(Example insulated jacket)');
+  assert.deepStrictEqual(record.kpi, ['Engagement rate']);
+  assert.ok(result.findings.includes('Warmest $80 jacket on the internet.'));
+});
+
+test('analyzeContentCalendar never invents a topic, hook, cta, campaign, product, or kpi that was not supplied', () => {
+  const result = analyzeContentCalendar({ entryReference: '(Example entry)', date: '2026-11-14', platform: 'instagram' });
+  const record = result.specialized_records[0];
+  assert.strictEqual(record.topic, '');
+  assert.strictEqual(record.hook, '');
+  assert.strictEqual(record.cta, '');
+  assert.strictEqual(record.campaign, '');
+  assert.strictEqual(record.product, '');
+  assert.deepStrictEqual(record.kpi, []);
+});
+
+test('analyzeContentCalendar never posts or schedules automatically - the result always carries that limitation', () => {
+  const result = analyzeContentCalendar({ entryReference: '(Example entry)', date: '2026-11-14', platform: 'instagram' });
+  assert.ok(result.limitations.some((l) => l.includes('not posted or scheduled automatically')));
+});
+
+test('analyzeContentCalendar reports empty when no evidence is supplied, and surfaces supplied evidence otherwise', () => {
+  const withoutEvidence = analyzeContentCalendar({ entryReference: '(Example entry)', date: '2026-11-14', platform: 'instagram' });
+  assert.ok(withoutEvidence.limitations.some((l) => l.startsWith('No evidence was supplied for')));
+
+  const withEvidence = analyzeContentCalendar({
+    entryReference: '(Example entry)',
+    date: '2026-11-14',
+    platform: 'instagram',
+    evidence: ['prior post performance'],
+  });
+  assert.deepStrictEqual(withEvidence.evidence, ['prior post performance']);
+});
+
+// --- content_calendar: Marketing Agent campaign context -------------------------------------
+
+test('analyzeContentCalendar derives campaign from Marketing Agent campaignContext when campaign is not explicitly supplied', () => {
+  const result = analyzeContentCalendar({
+    entryReference: '(Example entry)',
+    date: '2026-11-14',
+    platform: 'instagram',
+    campaignContext: {
+      campaignReference: '(Example winter jacket launch campaign)',
+      objective: 'Drive first-week sales.',
+      audience: 'Budget-conscious weekend hikers.',
+    },
+  });
+  const [calendarRecord, campaignRecord] = result.specialized_records;
+  assert.strictEqual(calendarRecord.campaign, '(Example winter jacket launch campaign)');
+  assert.strictEqual(campaignRecord.campaign_reference, '(Example winter jacket launch campaign)');
+  assert.strictEqual(campaignRecord.objective, 'Drive first-week sales.');
+  assert.ok(result.findings.includes('Drive first-week sales.'));
+  assert.ok(result.findings.includes('Budget-conscious weekend hikers.'));
+});
+
+test('analyzeContentCalendar honors an explicitly-supplied campaign over campaignContext', () => {
+  const result = analyzeContentCalendar({
+    entryReference: '(Example entry)',
+    date: '2026-11-14',
+    platform: 'instagram',
+    campaign: '(Explicit campaign)',
+    campaignContext: { campaignReference: '(Example winter jacket launch campaign)' },
+  });
+  assert.strictEqual(result.specialized_records[0].campaign, '(Explicit campaign)');
+});
+
+test('analyzeContentCalendar folds the campaign plan record\'s own evidence into the composed result', () => {
+  const result = analyzeContentCalendar({
+    entryReference: '(Example entry)',
+    date: '2026-11-14',
+    platform: 'instagram',
+    campaignContext: {
+      campaignReference: '(Example winter jacket launch campaign)',
+      evidence: ['prior campaign result'],
+    },
+  });
+  assert.ok(result.evidence.includes('prior campaign result'));
+});
+
+test('analyzeContentCalendar reuses marketingAgent.js\'s own campaign_plan validation - an invalid campaignContext throws, not silently ignored', () => {
+  assert.throws(
+    () =>
+      analyzeContentCalendar({
+        entryReference: '(Example entry)',
+        date: '2026-11-14',
+        platform: 'instagram',
+        campaignContext: {},
+      }),
+    /requires a non-empty `campaignReference`/
+  );
+});
+
+test('analyzeContentCalendar rejects a non-object campaignContext', () => {
+  assert.throws(
+    () =>
+      analyzeContentCalendar({
+        entryReference: '(Example entry)',
+        date: '2026-11-14',
+        platform: 'instagram',
+        campaignContext: 'not an object',
+      }),
+    /requires `campaignContext` to be an object/
+  );
+});
+
+test('analyzeContentCalendar works with no campaignContext at all - campaign stays whatever the caller explicitly set', () => {
+  const result = analyzeContentCalendar({ entryReference: '(Example entry)', date: '2026-11-14', platform: 'instagram' });
+  assert.strictEqual(result.specialized_records.length, 1);
+  assert.strictEqual(result.specialized_records[0].campaign, '');
+});
+
 // --- dispatcher / reuse helper ------------------------------------------------------------
 
 test('runSocialAdvertisingAgent dispatches by capability', () => {
@@ -333,6 +497,12 @@ test('retrieveSocialAdvertisingData builds social_content and ad_campaign record
     'test'
   );
   assert.strictEqual(platformContentRecords[0].content_reference, 'x');
+  const calendarRecords = retrieveSocialAdvertisingData(
+    'content_calendar',
+    [{ entryReference: 'x', date: '2026-11-14', platform: 'instagram' }],
+    'test'
+  );
+  assert.strictEqual(calendarRecords[0].entry_reference, 'x');
 });
 
 test('retrieveSocialAdvertisingData throws on an unknown record kind', () => {

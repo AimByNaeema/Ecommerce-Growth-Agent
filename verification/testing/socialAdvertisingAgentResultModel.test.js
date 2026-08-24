@@ -23,7 +23,7 @@ function test(name, fn) {
   }
 }
 
-test('SOCIAL_ADVERTISING_CAPABILITIES lists exactly the 10 requested capabilities, in the requested order', () => {
+test('SOCIAL_ADVERTISING_CAPABILITIES lists exactly the 11 requested capabilities, in the requested order', () => {
   assert.deepStrictEqual(SOCIAL_ADVERTISING_CAPABILITIES, [
     'instagram',
     'facebook',
@@ -35,6 +35,7 @@ test('SOCIAL_ADVERTISING_CAPABILITIES lists exactly the 10 requested capabilitie
     'tiktok_ads',
     'social_media_strategy',
     'content_generation',
+    'content_calendar',
   ]);
 });
 

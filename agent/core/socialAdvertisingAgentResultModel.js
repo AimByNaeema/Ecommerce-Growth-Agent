@@ -28,6 +28,7 @@ const SOCIAL_ADVERTISING_CAPABILITIES = [
   'tiktok_ads',
   'social_media_strategy',
   'content_generation',
+  'content_calendar',
 ];
 
 const SOCIAL_ADVERTISING_AGENT_RESULT_FIELDS = [
@@ -101,7 +102,7 @@ const SOCIAL_ADVERTISING_AGENT_RESULT_FIELDS = [
     id: 'specialized_records',
     title: 'Specialized records',
     type: 'array',
-    description: 'The underlying per-capability model record(s) this result was composed from (e.g. agent/core/socialContentModel.js, agent/core/adCampaignModel.js, agent/core/socialMediaStrategyModel.js, or agent/core/platformContentModel.js records) - so this envelope wraps existing schemas rather than duplicating them.',
+    description: 'The underlying per-capability model record(s) this result was composed from (e.g. agent/core/socialContentModel.js, agent/core/adCampaignModel.js, agent/core/socialMediaStrategyModel.js, agent/core/platformContentModel.js, or agent/core/contentCalendarModel.js records - the latter optionally alongside an agent/core/campaignPlanModel.js record when Marketing Agent campaign context was supplied) - so this envelope wraps existing schemas rather than duplicating them.',
   },
 ];
 

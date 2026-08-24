@@ -1,10 +1,12 @@
 'use strict';
 
 // The Social & Advertising Agent (CLAUDE.md section 2, specialist #6: "Social media
-// and paid advertising"). Supports 10 capabilities: instagram, facebook, tiktok,
+// and paid advertising"). Supports 11 capabilities: instagram, facebook, tiktok,
 // pinterest, youtube (social), meta_ads, google_ads, tiktok_ads (advertising),
-// social_media_strategy (cross-platform strategy generation), and content_generation
-// (platform-aware ecommerce content generation).
+// social_media_strategy (cross-platform strategy generation), content_generation
+// (platform-aware ecommerce content generation), and content_calendar (structured
+// social content calendar entries, optionally informed by Marketing Agent campaign
+// context).
 //
 // Deterministic only - no AI API call, no external fetch, no live social/ads platform
 // API (none is configured or called anywhere in this project). Callers supply
@@ -62,12 +64,27 @@
 //     reuses socialContentModel.js's existing SOCIAL_PLATFORMS enum - content here is
 //     always generated for, and adapted to, exactly one of the 5 in-scope social
 //     platforms, never invented or rewritten by this module itself.
+//   - content_calendar composes its own dedicated agent/core/contentCalendarModel.js
+//     record (entry_reference, date, platform, content_type, topic, hook, cta,
+//     campaign, product, kpi) - a plan-level scheduling record with fields
+//     (date, campaign, product) none of the other 4 dedicated schemas carry, so it
+//     gets its own schema too. When the caller supplies `campaignContext`, it is
+//     validated and built into a real agent/core/campaignPlanModel.js record via
+//     agent/core/marketingAgent.js's own retrieveMarketingData('campaign_plan', ...) -
+//     reused directly, not reimplemented, the same cross-agent reuse precedent
+//     agent/core/marketingAgent.js's own analyzeAudienceSegmentation established
+//     (delegating to agent/core/researchAgent.js). This is how the Marketing Agent
+//     "provides campaign context" here: the entry's own `campaign` field defaults to
+//     that record's campaign_reference when the caller didn't explicitly set one, and
+//     the campaign plan record is included alongside the calendar entry in
+//     specialized_records so the provided context stays visible and auditable, not
+//     hidden.
 //
-// socialContentModel.js, adCampaignModel.js, socialMediaStrategyModel.js, and
-// platformContentModel.js all already carry their own `evidence` array field - so,
-// exactly like agent/core/marketingAgent.js's own record builders, evidence is
-// assigned directly from caller-supplied input inside each record builder, with no
-// separate evidence-composition step layered on top.
+// socialContentModel.js, adCampaignModel.js, socialMediaStrategyModel.js,
+// platformContentModel.js, and contentCalendarModel.js all already carry their own
+// `evidence` array field - so, exactly like agent/core/marketingAgent.js's own record
+// builders, evidence is assigned directly from caller-supplied input inside each
+// record builder, with no separate evidence-composition step layered on top.
 //
 // Confidence: caller-asserted only, defaulting to 'unassessed' - same convention as
 // every other module in this project. A 'verified' claim asserted without evidence is
@@ -90,11 +107,20 @@ const {
   validatePlatformContentShape,
 } = require('./platformContentModel');
 const {
+  createEmptyContentCalendarRecord,
+  validateContentCalendarShape,
+} = require('./contentCalendarModel');
+const {
   SOCIAL_ADVERTISING_CAPABILITIES,
   createEmptySocialAdvertisingAgentResult,
   validateSocialAdvertisingAgentResultShape,
 } = require('./socialAdvertisingAgentResultModel');
 const { deriveRecommendations } = require('./researchAgent');
+// Reused directly for content_calendar's optional Marketing Agent campaign context -
+// see analyzeContentCalendar() below. One-directional dependency only
+// (socialAdvertisingAgent.js -> marketingAgent.js); marketingAgent.js does not import
+// this module, so there is no cycle.
+const { retrieveMarketingData: retrieveMarketingAgentData } = require('./marketingAgent');
 
 function requireNonEmptyString(value, fieldName, fnName) {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -208,11 +234,34 @@ function buildPlatformContentRecord(entry, fnName) {
   return record;
 }
 
+function buildContentCalendarRecord(entry, fnName) {
+  requireNonEmptyString(entry.entryReference, 'entryReference', fnName);
+  requireNonEmptyString(entry.date, 'date', fnName);
+  requireNonEmptyString(entry.platform, 'platform', fnName);
+  const record = createEmptyContentCalendarRecord(entry.entryReference, entry.date, entry.platform);
+  record.content_type = entry.contentType || '';
+  record.topic = entry.topic || '';
+  record.hook = entry.hook || '';
+  record.cta = entry.cta || '';
+  record.campaign = entry.campaign || '';
+  record.product = entry.product || '';
+  record.kpi = normalizeArray(entry.kpi);
+  record.evidence = normalizeArray(entry.evidence);
+  record.verification_status = entry.verificationStatus || 'unverified';
+
+  const validation = validateContentCalendarShape(record);
+  if (!validation.valid) {
+    throw new Error(`${fnName} produced an invalid content calendar record: ${validation.errors.join('; ')}`);
+  }
+  return record;
+}
+
 const RECORD_BUILDERS = {
   social_content: buildSocialContentRecord,
   ad_campaign: buildAdCampaignRecord,
   social_media_strategy: buildSocialMediaStrategyRecord,
   platform_content: buildPlatformContentRecord,
+  content_calendar: buildContentCalendarRecord,
 };
 
 // Exported for reuse, mirroring agent/core/marketingAgent.js's retrieveMarketingData /
@@ -292,11 +341,28 @@ function extractPlatformContentRecord(record) {
   };
 }
 
+function extractContentCalendarRecord(record) {
+  return {
+    findings: [
+      record.topic,
+      record.hook,
+      record.cta,
+      record.campaign,
+      record.product,
+      ...record.kpi,
+    ].filter(Boolean),
+    evidence: [...record.evidence],
+    source: [],
+    label: record.entry_reference || record.date || '(unspecified entry)',
+  };
+}
+
 const RECORD_KIND_EXTRACTORS = {
   social_content: extractSocialContentRecord,
   ad_campaign: extractAdCampaignRecord,
   social_media_strategy: extractSocialMediaStrategyRecord,
   platform_content: extractPlatformContentRecord,
+  content_calendar: extractContentCalendarRecord,
 };
 
 function analyzeSocialAdvertisingRecords(records, kind, limitationHeader) {
@@ -376,6 +442,8 @@ const SOCIAL_MEDIA_STRATEGY_LIMITATION_HEADER =
   'This strategy is not executed automatically - no live social/advertising platform is configured, and this result reflects only caller-supplied evidence.';
 const PLATFORM_CONTENT_LIMITATION_HEADER =
   'This content is not published automatically - no live social platform is configured, and this result reflects only caller-supplied evidence.';
+const CONTENT_CALENDAR_LIMITATION_HEADER =
+  'This entry is not posted or scheduled automatically - no live social platform is configured, and this result reflects only caller-supplied evidence.';
 
 // Shared by instagram, facebook, tiktok, pinterest, and youtube - all 5 build one
 // agent/core/socialContentModel.js record and honest limitations the same way,
@@ -531,6 +599,68 @@ function analyzeContentGeneration(params = {}) {
   });
 }
 
+// Composes a dedicated agent/core/contentCalendarModel.js record - not any of the
+// other 4 composers, since a calendar entry is its own plan-level schema (see module
+// header). Unlike every other capability here, this one may also delegate part of its
+// retrieval to agent/core/marketingAgent.js: when params.campaignContext is supplied,
+// it's validated and built into a real agent/core/campaignPlanModel.js record via
+// that module's own retrieveMarketingData('campaign_plan', ...) - never reimplemented
+// here. The entry's `campaign` field defaults to that record's campaign_reference when
+// the caller didn't explicitly set one, and the campaign plan record travels alongside
+// the calendar entry in specialized_records - the Marketing Agent's contribution stays
+// visible in the output, not silently absorbed.
+function analyzeContentCalendar(params = {}) {
+  const fnName = 'analyzeContentCalendar';
+  const { campaignContext, ...entryParams } = params;
+
+  let campaignPlanRecord = null;
+  if (campaignContext !== undefined) {
+    if (typeof campaignContext !== 'object' || campaignContext === null || Array.isArray(campaignContext)) {
+      throw new Error(`${fnName} requires \`campaignContext\` to be an object when supplied.`);
+    }
+    campaignPlanRecord = retrieveMarketingAgentData('campaign_plan', [campaignContext], fnName)[0];
+  }
+
+  const entryInput = { ...entryParams };
+  if (!entryInput.campaign && campaignPlanRecord) {
+    entryInput.campaign = campaignPlanRecord.campaign_reference;
+  }
+
+  const record = buildContentCalendarRecord(entryInput, fnName);
+  const specializedRecords = [record];
+
+  const analysis = analyzeSocialAdvertisingRecords([record], 'content_calendar', CONTENT_CALENDAR_LIMITATION_HEADER);
+  const findings = [...analysis.findings];
+  const evidence = [...analysis.evidence];
+  const limitations = [...analysis.limitations];
+
+  if (campaignPlanRecord) {
+    specializedRecords.push(campaignPlanRecord);
+    findings.push(...[campaignPlanRecord.objective, campaignPlanRecord.audience].filter(Boolean));
+    evidence.push(...campaignPlanRecord.evidence);
+    if (campaignPlanRecord.evidence.length === 0) {
+      limitations.push(
+        `No evidence was supplied for the Marketing Agent's campaign context (${campaignPlanRecord.campaign_reference}).`
+      );
+    }
+  }
+
+  return composeResult({
+    capability: 'content_calendar',
+    topic: params.topic || `Content calendar: ${record.entry_reference}`,
+    market: params.market || '',
+    findings,
+    evidence,
+    source: analysis.source,
+    confidence: params.confidence,
+    limitations,
+    recommendations: params.recommendations,
+    verificationStatus: params.verificationStatus,
+    researchDate: params.researchDate || todayIsoDate(),
+    specializedRecords,
+  });
+}
+
 const SOCIAL_ADVERTISING_CAPABILITY_HANDLERS = {
   instagram: analyzeInstagram,
   facebook: analyzeFacebook,
@@ -542,6 +672,7 @@ const SOCIAL_ADVERTISING_CAPABILITY_HANDLERS = {
   tiktok_ads: analyzeTiktokAds,
   social_media_strategy: analyzeSocialMediaStrategy,
   content_generation: analyzeContentGeneration,
+  content_calendar: analyzeContentCalendar,
 };
 
 // The single entry point: dispatches by capability to the matching function above.
@@ -565,6 +696,7 @@ module.exports = {
   analyzeTiktokAds,
   analyzeSocialMediaStrategy,
   analyzeContentGeneration,
+  analyzeContentCalendar,
   runSocialAdvertisingAgent,
   retrieveSocialAdvertisingData,
 };
@@ -662,6 +794,29 @@ if (require.main === module) {
         creativeBriefs: ['Fast-paced, natural light, UGC-style handheld footage, no studio setup (caller-supplied placeholder).'],
         platformAdaptationNotes: 'Vertical 9:16, hook within first 2 seconds, on-screen captions for sound-off viewing (caller-supplied placeholder).',
         evidence: ['(placeholder prior-video performance)'],
+      }),
+    () =>
+      analyzeContentCalendar({
+        entryReference: '(Example Nov 14 tiktok post)',
+        date: '2026-11-14',
+        platform: 'tiktok',
+        contentType: 'video',
+        topic: 'Cold-weather stress test (caller-supplied placeholder).',
+        hook: 'You\'re about to see the warmest $80 jacket on the internet (caller-supplied placeholder).',
+        cta: 'Shop the winter collection - link in bio (caller-supplied placeholder).',
+        product: '(Example insulated jacket)',
+        kpi: ['Engagement rate (caller-supplied placeholder).'],
+        evidence: ['(placeholder prior-post performance)'],
+        // The Marketing Agent supplies campaign context here - analyzeContentCalendar
+        // reuses agent/core/marketingAgent.js's own retrieveMarketingData('campaign_plan')
+        // to validate/build it, and the resulting campaign_reference fills `campaign`
+        // below since it wasn't set explicitly (caller-supplied placeholder values).
+        campaignContext: {
+          campaignReference: '(Example winter jacket launch campaign)',
+          objective: 'Drive first-week sales (caller-supplied placeholder).',
+          audience: 'Budget-conscious weekend hikers (caller-supplied placeholder).',
+          evidence: ['(placeholder prior-campaign result)'],
+        },
       }),
   ];
 

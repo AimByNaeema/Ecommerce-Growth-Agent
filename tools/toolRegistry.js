@@ -9,15 +9,16 @@
 // competitor_research, customer_research, product_data_retrieval, keyword_research,
 // seo_analysis, listing_content_generation, marketing_analysis,
 // social_content_planning, paid_advertising_planning,
-// social_media_strategy_generation, and platform_content_generation are the fourteen
-// entries actually implemented (see tools/businessConfigurationRetrieval.js,
-// tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
-// tools/competitorResearchTool.js, tools/customerResearchTool.js,
-// tools/productDataRetrievalTool.js, tools/keywordResearchTool.js,
-// tools/seoAnalysisTool.js, tools/listingContentTool.js,
+// social_media_strategy_generation, platform_content_generation, and
+// content_calendar_generation are the fifteen entries actually implemented (see
+// tools/businessConfigurationRetrieval.js, tools/aiReasoningCompletion.js,
+// tools/marketResearchTool.js, tools/competitorResearchTool.js,
+// tools/customerResearchTool.js, tools/productDataRetrievalTool.js,
+// tools/keywordResearchTool.js, tools/seoAnalysisTool.js, tools/listingContentTool.js,
 // tools/marketingAnalysisTool.js, tools/socialContentTool.js,
-// tools/paidAdvertisingTool.js, tools/socialMediaStrategyTool.js, and
-// tools/platformContentTool.js) - the other 2 tools remain 'not_implemented'.
+// tools/paidAdvertisingTool.js, tools/socialMediaStrategyTool.js,
+// tools/platformContentTool.js, and tools/contentCalendarTool.js) - the other 2 tools
+// remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -151,6 +152,14 @@ const TOOL_REGISTRY = [
     title: 'Platform-aware ecommerce content generation',
     description:
       "Compose agent/core/platformContentModel.js content records (hooks, captions, CTAs, content ideas, short-form video concepts, carousel concepts, creative briefs, all adapted to one selected platform) via agent/core/socialAdvertisingAgent.js's content_generation capability - see tools/platformContentTool.js.",
+    category: 'social_advertising',
+    status: 'implemented',
+  },
+  {
+    id: 'content_calendar_generation',
+    title: 'Social content calendar generation',
+    description:
+      "Compose agent/core/contentCalendarModel.js calendar entries (date, platform, content type, topic, hook, CTA, campaign, product, KPI) via agent/core/socialAdvertisingAgent.js's content_calendar capability, optionally informed by Marketing Agent campaign context via agent/core/marketingAgent.js's campaign_plan builder - see tools/contentCalendarTool.js.",
     category: 'social_advertising',
     status: 'implemented',
   },

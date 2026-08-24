@@ -259,4 +259,18 @@ to fit a platform on its own, only requires the platform to be named so the adap
 is explicit; a `platform_adaptation_notes` field records the caller's own explanation
 of that fit. Nothing is ever published automatically. A fourth tool,
 [`tools/platformContentTool.js`](tools/platformContentTool.js), connects it to the
+orchestrator the same way. The specialist's 11th capability, a structured social
+content calendar, is defined in
+[`agent/core/contentCalendarModel.js`](agent/core/contentCalendarModel.js) (date,
+platform, content type, topic, hook, CTA, campaign, product, KPI). It's the one
+capability that reaches across specialists: when the caller supplies a
+`campaignContext`, `socialAdvertisingAgent.js`'s `analyzeContentCalendar` builds it into
+a real campaign plan record by calling `marketingAgent.js`'s own
+`retrieveMarketingData('campaign_plan', ...)` directly (reused, not reimplemented), so
+the Marketing Agent can supply an entry's campaign context - the resulting
+`campaign_reference` fills the entry's `campaign` field when the caller didn't set one
+explicitly, and the campaign plan record travels alongside the entry in the result so
+that context stays visible rather than silently absorbed. Nothing is ever posted or
+scheduled automatically. A fifth tool,
+[`tools/contentCalendarTool.js`](tools/contentCalendarTool.js), connects it to the
 orchestrator the same way.
