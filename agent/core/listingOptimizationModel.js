@@ -1,19 +1,39 @@
 'use strict';
 
-// The shape of one product/listing optimization record. Schema and a couple of pure
-// helpers only - no automated rewriting, publishing, or scoring logic.
+// The shape of one product/listing optimization record - the structured output of
+// "ecommerce product SEO optimization": recommendations for a product's title, meta
+// description, headings, description, keyword usage, internal links, and supporting
+// content. Schema and a couple of pure helpers only - no automated rewriting,
+// publishing, or scoring logic.
 //
 // Every field here is a SUGGESTION, never a live edit: nothing in this module reads
 // or writes real listing content under data/business/, and there is no apply/publish
 // function to gate. Turning a suggestion into a real change to a store listing is a
 // human-approved action via approvals/ (see approvals/README.md) - never automatic -
-// which is how "do not overwrite real business content without approval" is satisfied
-// structurally.
+// which is how "do not overwrite real business content without approval" and "do not
+// automatically publish changes" are both satisfied structurally, not just by
+// convention.
+//
+// "Preserve factual product information": this module never generates or infers a
+// factual product claim (price, material, dimensions, etc.) - every field is either a
+// copy/structure suggestion (product_title, description, headings, structure) built
+// only from what the caller explicitly supplies, or a reference (keywords,
+// keyword_usage, internal_links) to something that already exists elsewhere. There is
+// no code path that could overwrite a real product's factual data, since nothing here
+// ever reads or writes real listing content in the first place.
 //
 // Deliberately absent: any field that claims or predicts an SEO performance
 // improvement (e.g. an expected ranking change or conversion lift). Only qualitative,
 // evidence-checkable opportunities/considerations are captured - nothing here asserts
 // a performance improvement without evidence, because there is no such field to fill.
+//
+// headings, internal_links, and cost_components-style small object arrays follow the
+// same light-validation convention agent/core/productAgentResultModel.js's
+// profitability_inputs.cost_components already established in this project: the field
+// itself must be an array, but individual entry shapes are not deeply validated -
+// callers are trusted to supply the documented {level, text} / {anchor_text, target}
+// shape, consistent with every other array field in this project never being deeply
+// validated per-item either.
 
 const LISTING_OPTIMIZATION_FIELDS = [
   {
@@ -32,13 +52,19 @@ const LISTING_OPTIMIZATION_FIELDS = [
     id: 'description',
     title: 'Description',
     type: 'string',
-    description: 'A suggested description for the listing - a proposal, never applied to the real listing without approval (see approvals/).',
+    description: 'A suggested description for the listing - a proposal, never applied to the real listing without approval (see approvals/). Never invents a factual product claim - only restates/reorganizes what the caller supplies.',
   },
   {
     id: 'keywords',
     title: 'Keywords',
     type: 'array',
     description: 'Keywords relevant to this listing - references to agent/core/seoResearchModel.js keyword records, not full reports.',
+  },
+  {
+    id: 'keyword_usage',
+    title: 'Keyword usage',
+    type: 'array',
+    description: 'Guidance on where to use each keyword (e.g. {keyword, placement} entries, placement being e.g. "title", "h1", "first paragraph") - never a ranking, volume, or usage-frequency claim.',
   },
   {
     id: 'search_intent',
@@ -50,13 +76,25 @@ const LISTING_OPTIMIZATION_FIELDS = [
     id: 'structure',
     title: 'Structure',
     type: 'string',
-    description: 'A recommended content structure/layout for the listing (e.g. heading order, sections) - qualitative, not a performance claim.',
+    description: 'A recommended content structure/layout for the listing (e.g. section order) - qualitative, not a performance claim.',
+  },
+  {
+    id: 'headings',
+    title: 'Headings',
+    type: 'array',
+    description: 'A suggested heading structure for the listing (e.g. {level, text} entries, H1 first) - a proposal, never applied without approval (see approvals/).',
   },
   {
     id: 'metadata',
     title: 'Metadata',
     type: 'object',
     description: 'A small nested group: meta_title, meta_description, url_slug, alt_text. No values invented here.',
+  },
+  {
+    id: 'internal_links',
+    title: 'Internal links',
+    type: 'array',
+    description: 'Suggested internal links to other pages (e.g. {anchor_text, target} entries, target being a product/collection/content reference) - references, not live links; never applied without approval.',
   },
   {
     id: 'internal_optimization_opportunities',
@@ -69,6 +107,12 @@ const LISTING_OPTIMIZATION_FIELDS = [
     title: 'Conversion considerations',
     type: 'array',
     description: 'Qualitative considerations relevant to conversion (e.g. trust signals, clarity) - not performance predictions.',
+  },
+  {
+    id: 'supporting_content',
+    title: 'Supporting content',
+    type: 'array',
+    description: 'Suggested supporting content ideas for this listing (e.g. a buying guide, an FAQ section) - qualitative ideas, not full drafted content.',
   },
 ];
 
@@ -88,11 +132,15 @@ function createEmptyListingOptimizationRecord(product_reference = '') {
     product_title: '',
     description: '',
     keywords: [],
+    keyword_usage: [],
     search_intent: '',
     structure: '',
+    headings: [],
     metadata: { meta_title: '', meta_description: '', url_slug: '', alt_text: '' },
+    internal_links: [],
     internal_optimization_opportunities: [],
     conversion_considerations: [],
+    supporting_content: [],
   };
 }
 

@@ -50,6 +50,8 @@ const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
 const competitorResearchTool = require('../../tools/competitorResearchTool');
 const customerResearchTool = require('../../tools/customerResearchTool');
+const keywordResearchTool = require('../../tools/keywordResearchTool');
+const seoAnalysisTool = require('../../tools/seoAnalysisTool');
 
 // Tool ids this orchestrator knows how to actually call. Each entry maps a
 // TOOL_REGISTRY id to the real function that performs the work - the only sanctioned
@@ -63,13 +65,14 @@ const customerResearchTool = require('../../tools/customerResearchTool');
 // (business_configuration_retrieval takes no input); ai_reasoning_completion uses
 // executionRequest.objective as its instruction and runTokenTracker to enforce this
 // run's token budget (agent/core/tokenControls.js) - see executeSelectedCapability
-// and buildPlanStep below for where runTokenTracker is created and updated. The 3
-// research tools read executionRequest.research_params instead - an optional
+// and buildPlanStep below for where runTokenTracker is created and updated. The
+// research and SEO tools read executionRequest.research_params instead - an optional
 // structured passthrough (see createExecutionRequest/buildPlanStep/
 // runOrchestratorContract below) - since free-text objective text alone cannot supply
 // the structured evidence these tools require; each tool itself reports honestly
 // (never fabricates) when research_params is absent. See tools/marketResearchTool.js,
-// tools/competitorResearchTool.js, tools/customerResearchTool.js.
+// tools/competitorResearchTool.js, tools/customerResearchTool.js,
+// tools/keywordResearchTool.js, tools/seoAnalysisTool.js.
 const TOOL_EXECUTORS = {
   business_configuration_retrieval: () =>
     businessConfigurationRetrieval.retrieveBusinessConfiguration(),
@@ -84,6 +87,10 @@ const TOOL_EXECUTORS = {
     competitorResearchTool.runCompetitorResearchTool(executionRequest.research_params),
   customer_research: (executionRequest) =>
     customerResearchTool.runCustomerResearchTool(executionRequest.research_params),
+  keyword_research: (executionRequest) =>
+    keywordResearchTool.runKeywordResearchTool(executionRequest.research_params),
+  seo_analysis: (executionRequest) =>
+    seoAnalysisTool.runSeoAnalysisTool(executionRequest.research_params),
 };
 
 const STOPWORDS = new Set([

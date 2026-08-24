@@ -4,12 +4,13 @@
 // to (CLAUDE.md section 2: 1 Orchestrator + 7 controlled specialist agents/modules).
 // This is a registry FOUNDATION only, mirroring tools/toolRegistry.js's pattern: a
 // descriptive list plus small read-only lookup helpers - there is no
-// select/dispatch/execute logic anywhere in this file. 'research' is now the first
-// implemented specialist (see agent/core/researchAgent.js, connected to the tool
+// select/dispatch/execute logic anywhere in this file. 'research' and 'seo' are now
+// implemented specialists (see agent/core/researchAgent.js, connected to the tool
 // system via tools/marketResearchTool.js, tools/competitorResearchTool.js, and
-// tools/customerResearchTool.js) - the other 6 specialists remain 'not_implemented',
-// with only the schema/pipeline foundations described in agent/core/*Model.js and
-// workflows/*.js.
+// tools/customerResearchTool.js; and agent/core/seoAgent.js, connected via
+// tools/keywordResearchTool.js and tools/seoAnalysisTool.js) - the other 5 specialists
+// remain 'not_implemented', with only the schema/pipeline foundations described in
+// agent/core/*Model.js and workflows/*.js.
 //
 // This is a single shared list for the Orchestrator to select from - it does not
 // itself select anything. See agent/core/orchestratorExecutionContract.js's
@@ -34,7 +35,7 @@ const SPECIALIST_REGISTRY = [
     id: 'seo',
     title: 'SEO',
     description: 'Search visibility analysis and keyword research.',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'listing',

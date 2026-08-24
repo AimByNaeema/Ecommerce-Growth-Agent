@@ -32,6 +32,8 @@ const IMPLEMENTED_IDS = [
   'market_research',
   'customer_research',
   'competitor_research',
+  'keyword_research',
+  'seo_analysis',
   'ai_reasoning_completion',
 ];
 
@@ -83,7 +85,7 @@ test('every entry except the implemented set is not_implemented - do not impleme
   }
 });
 
-test('business_configuration_retrieval, product_data_retrieval, market_research, customer_research, competitor_research, and ai_reasoning_completion are implemented', () => {
+test('business_configuration_retrieval, product_data_retrieval, market_research, customer_research, competitor_research, keyword_research, seo_analysis, and ai_reasoning_completion are implemented', () => {
   for (const id of IMPLEMENTED_IDS) {
     assert.strictEqual(getToolById(id).status, 'implemented', `${id} should be implemented`);
   }

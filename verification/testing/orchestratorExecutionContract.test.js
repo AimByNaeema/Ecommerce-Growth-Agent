@@ -292,10 +292,15 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.strictEqual(step.request, 'keyword search visibility');
     assert.strictEqual(step.current_task, 'keyword search visibility');
     assert.strictEqual(step.selected_specialist.id, 'seo');
-    assert.strictEqual(step.completion_state, 'blocked');
-    assert.strictEqual(step.confidence, 'unassessed');
     assert.deepStrictEqual(step.tool_calls, ['keyword_research']);
-    assert.ok(step.errors.length > 0);
+    // keyword_research is implemented, but no research_params were supplied for this
+    // free-text-only call - the tool itself reports that honestly (never a fabricated
+    // result) rather than the orchestrator finding it not_available, the same pattern
+    // as the 'without researchParams' market_research case below.
+    assert.strictEqual(step.completion_state, 'complete');
+    assert.strictEqual(step.outputs.status, 'failed');
+    assert.strictEqual(step.outputs.result, null);
+    assert.ok(step.outputs.error.includes('No structured research input was supplied'));
   });
 
   await testAsync('runOrchestratorContract: a Listing-only task routes correctly even though no tool exists for it, and its state stays minimal', async () => {

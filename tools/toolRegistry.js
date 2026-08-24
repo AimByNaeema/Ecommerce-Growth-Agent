@@ -6,11 +6,13 @@
 // this file (that lives in agent/core/orchestratorExecutionContract.js, gated by
 // agent/core/toolPermissions.js), so tools are not called *from here*.
 // business_configuration_retrieval, ai_reasoning_completion, market_research,
-// competitor_research, customer_research, and product_data_retrieval are the six
-// entries actually implemented (see tools/businessConfigurationRetrieval.js,
-// tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
-// tools/competitorResearchTool.js, tools/customerResearchTool.js, and
-// tools/productDataRetrievalTool.js) - the other 7 tools remain 'not_implemented'.
+// competitor_research, customer_research, product_data_retrieval, keyword_research,
+// and seo_analysis are the eight entries actually implemented (see
+// tools/businessConfigurationRetrieval.js, tools/aiReasoningCompletion.js,
+// tools/marketResearchTool.js, tools/competitorResearchTool.js,
+// tools/customerResearchTool.js, tools/productDataRetrievalTool.js,
+// tools/keywordResearchTool.js, and tools/seoAnalysisTool.js) - the other 5 tools
+// remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -85,17 +87,17 @@ const TOOL_REGISTRY = [
     id: 'keyword_research',
     title: 'Keyword research',
     description:
-      'Run the workflows/keywordResearchWorkflow.js pipeline to produce agent/core/seoResearchModel.js records.',
+      "Produce agent/core/seoResearchModel.js keyword records and search-intent groupings via agent/core/seoAgent.js's runKeywordResearch()/analyzeSearchIntent(), following the workflows/keywordResearchWorkflow.js pipeline - see tools/keywordResearchTool.js.",
     category: 'seo',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'seo_analysis',
     title: 'SEO analysis',
     description:
-      'Analyze listing SEO/optimization opportunities per agent/core/listingOptimizationModel.js.',
+      "Analyze product/collection/content on-page SEO and SEO opportunity coverage via agent/core/seoAgent.js, composing agent/core/listingOptimizationModel.js and agent/core/onPageOptimizationModel.js records - see tools/seoAnalysisTool.js.",
     category: 'seo',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'marketing_analysis',

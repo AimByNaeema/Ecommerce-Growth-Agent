@@ -12,11 +12,15 @@ const EXPECTED_ORDER = [
   'product_title',
   'description',
   'keywords',
+  'keyword_usage',
   'search_intent',
   'structure',
+  'headings',
   'metadata',
+  'internal_links',
   'internal_optimization_opportunities',
   'conversion_considerations',
+  'supporting_content',
 ];
 
 let passed = 0;
@@ -34,7 +38,7 @@ function test(name, fn) {
   }
 }
 
-test('the record has exactly the 9 required fields, in the requested order', () => {
+test('the record has exactly the 13 required fields, in the requested order', () => {
   assert.deepStrictEqual(
     LISTING_OPTIMIZATION_FIELDS.map((field) => field.id),
     EXPECTED_ORDER
@@ -93,6 +97,46 @@ test('validator detects a wrong object type (metadata)', () => {
   const result = validateListingOptimizationShape(record);
   assert.strictEqual(result.valid, false);
   assert.ok(result.errors.includes('metadata must be an object'));
+});
+
+test('createEmptyListingOptimizationRecord() defaults every new field to an empty array', () => {
+  const record = createEmptyListingOptimizationRecord('x');
+  assert.deepStrictEqual(record.keyword_usage, []);
+  assert.deepStrictEqual(record.headings, []);
+  assert.deepStrictEqual(record.internal_links, []);
+  assert.deepStrictEqual(record.supporting_content, []);
+});
+
+test('validator detects a wrong array type (headings)', () => {
+  const record = createEmptyListingOptimizationRecord();
+  record.headings = 'not an array';
+  const result = validateListingOptimizationShape(record);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.includes('headings must be an array'));
+});
+
+test('validator detects a wrong array type (internal_links)', () => {
+  const record = createEmptyListingOptimizationRecord();
+  record.internal_links = 'not an array';
+  const result = validateListingOptimizationShape(record);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.includes('internal_links must be an array'));
+});
+
+test('validator detects a wrong array type (keyword_usage)', () => {
+  const record = createEmptyListingOptimizationRecord();
+  record.keyword_usage = 'not an array';
+  const result = validateListingOptimizationShape(record);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.includes('keyword_usage must be an array'));
+});
+
+test('validator detects a wrong array type (supporting_content)', () => {
+  const record = createEmptyListingOptimizationRecord();
+  record.supporting_content = 'not an array';
+  const result = validateListingOptimizationShape(record);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.includes('supporting_content must be an array'));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

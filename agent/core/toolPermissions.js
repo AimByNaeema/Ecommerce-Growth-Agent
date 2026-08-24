@@ -67,6 +67,8 @@ const TOOL_CLASSIFICATIONS = {
   competitor_research: 'analysis_only',
   customer_research: 'analysis_only',
   product_data_retrieval: 'analysis_only',
+  keyword_research: 'analysis_only',
+  seo_analysis: 'analysis_only',
 };
 
 // Approval classifications that may proceed automatically. Anything else

@@ -58,15 +58,19 @@ test('every entry has a valid status', () => {
   }
 });
 
-test('every entry except research is not_implemented - do not implement other specialists yet', () => {
+const IMPLEMENTED_IDS = ['research', 'seo'];
+
+test('every entry except research and seo is not_implemented - do not implement other specialists yet', () => {
   for (const specialist of SPECIALIST_REGISTRY) {
-    if (specialist.id === 'research') continue;
+    if (IMPLEMENTED_IDS.includes(specialist.id)) continue;
     assert.strictEqual(specialist.status, 'not_implemented', `${specialist.id} should not be implemented yet`);
   }
 });
 
-test('research is implemented', () => {
-  assert.strictEqual(getSpecialistById('research').status, 'implemented');
+test('research and seo are implemented', () => {
+  for (const id of IMPLEMENTED_IDS) {
+    assert.strictEqual(getSpecialistById(id).status, 'implemented', `${id} should be implemented`);
+  }
 });
 
 test('getSpecialistById() finds a known specialist and returns undefined for an unknown one', () => {
@@ -75,8 +79,8 @@ test('getSpecialistById() finds a known specialist and returns undefined for an 
 });
 
 test('getSpecialistsByStatus() returns the correct counts for each status', () => {
-  assert.strictEqual(getSpecialistsByStatus('not_implemented').length, SPECIALIST_REGISTRY.length - 1);
-  assert.strictEqual(getSpecialistsByStatus('implemented').length, 1);
+  assert.strictEqual(getSpecialistsByStatus('not_implemented').length, SPECIALIST_REGISTRY.length - IMPLEMENTED_IDS.length);
+  assert.strictEqual(getSpecialistsByStatus('implemented').length, IMPLEMENTED_IDS.length);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
