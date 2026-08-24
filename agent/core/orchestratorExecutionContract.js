@@ -11,8 +11,8 @@
 // tools/toolRegistry.js and agent/core/specialistRegistry.js entries.
 //
 // STRUCTURED ROUTING (this revision): a single objective can require more than one
-// of the 7 approved specialists, or none of the 12 registered tools at all (Listing
-// and Social & Advertising have no TOOL_REGISTRY category today). Routing therefore
+// of the 7 approved specialists, or none of the 14 registered tools at all (Social &
+// Advertising has no TOOL_REGISTRY category today). Routing therefore
 // happens at the specialist level first (ROUTING_TARGETS, built from
 // specialistRegistry.js + the shared-infrastructure tool categories), producing a
 // controlled, ordered execution plan rather than a single silent pick - and when a
@@ -52,6 +52,8 @@ const competitorResearchTool = require('../../tools/competitorResearchTool');
 const customerResearchTool = require('../../tools/customerResearchTool');
 const keywordResearchTool = require('../../tools/keywordResearchTool');
 const seoAnalysisTool = require('../../tools/seoAnalysisTool');
+const listingContentTool = require('../../tools/listingContentTool');
+const marketingAnalysisTool = require('../../tools/marketingAnalysisTool');
 
 // Tool ids this orchestrator knows how to actually call. Each entry maps a
 // TOOL_REGISTRY id to the real function that performs the work - the only sanctioned
@@ -91,6 +93,10 @@ const TOOL_EXECUTORS = {
     keywordResearchTool.runKeywordResearchTool(executionRequest.research_params),
   seo_analysis: (executionRequest) =>
     seoAnalysisTool.runSeoAnalysisTool(executionRequest.research_params),
+  listing_content_generation: (executionRequest) =>
+    listingContentTool.runListingContentTool(executionRequest.research_params),
+  marketing_analysis: (executionRequest) =>
+    marketingAnalysisTool.runMarketingAnalysisTool(executionRequest.research_params),
 };
 
 const STOPWORDS = new Set([
@@ -285,9 +291,9 @@ function validateResult(outcome) {
 // specialist may use which tool category" (CLAUDE.md section 3's Permissions
 // component), reused here for routing rather than duplicated.
 
-// One routing target per approved specialist (all 7, including Listing and Social &
-// Advertising, which have no TOOL_REGISTRY category - their keyword text comes from
-// specialistRegistry.js instead, which is what makes them routable at all), plus one
+// One routing target per approved specialist (all 7, including Social & Advertising,
+// which has no TOOL_REGISTRY category - its keyword text comes from
+// specialistRegistry.js instead, which is what makes it routable at all), plus one
 // per shared-infrastructure category (keyword text derived from the tools already
 // registered under that category). Built once at module load from the existing
 // registries - not new data.
@@ -476,6 +482,8 @@ async function buildPlanStep(
   // No tool scored against the objective's own wording, but a category does exist for
   // this target - fall back to its first registered tool so execution can still report
   // an honest, specific status (e.g. not_available) instead of a generic "no tool".
+  // (Listing now has a real category/tool, so it takes this fallback path too, same as
+  // every other implemented specialist.)
   if (!toolMatch && categories.length > 0) {
     matchedCategory = categories[0];
     const toolsInCategory = getToolsByCategory(matchedCategory);

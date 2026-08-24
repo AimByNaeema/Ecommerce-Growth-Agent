@@ -8,6 +8,7 @@ const {
   runTrendResearch,
   runCustomerMarketIntelligence,
   runOpportunityDiscovery,
+  deriveCustomerSegmentation,
   runResearch,
   retrieveResearchData,
   analyzeResearchData,
@@ -201,6 +202,107 @@ test('runOpportunityDiscovery composes one generic record per signal', () => {
   assert.ok(result.findings.includes('gap identified'));
 });
 
+// --- deriveCustomerSegmentation (structured ecommerce customer segmentation) ---------
+
+test('deriveCustomerSegmentation requires a non-empty segmentReference', () => {
+  assert.throws(() => deriveCustomerSegmentation({}), /requires a non-empty `segmentReference`/);
+});
+
+test('deriveCustomerSegmentation reports insufficient data honestly when no behavioral data is supplied', () => {
+  const result = deriveCustomerSegmentation({ segmentReference: '(Example cohort)' });
+  assertValid(result);
+  assert.strictEqual(result.research_type, 'customer_segmentation');
+  assert.strictEqual(result.specialized_records[0].segment_definition, '(insufficient behavioral data to classify)');
+  assert.deepStrictEqual(result.specialized_records[0].needs, []);
+  assert.deepStrictEqual(result.findings, []);
+  assert.deepStrictEqual(result.recommendations, []);
+  assert.ok(result.limitations.some((l) => l.includes('could not be meaningfully classified')));
+});
+
+test('deriveCustomerSegmentation classifies a frequent, high-value, at-risk customer and derives needs/opportunity/strategy', () => {
+  const result = deriveCustomerSegmentation({
+    segmentReference: '(Example cohort)',
+    orderFrequency: { orderCount: 6, daysSinceLastOrder: 100 },
+    customerValue: { lifetimeValue: 620 },
+  });
+  assertValid(result);
+  const record = result.specialized_records[0];
+  assert.ok(record.segment_definition.includes('frequent buyer'));
+  assert.ok(record.segment_definition.includes('at risk of churn'));
+  assert.ok(record.segment_definition.includes('high value'));
+  assert.ok(record.needs.length > 0);
+  assert.ok(result.findings.some((f) => f.includes('churn')));
+  assert.ok(result.recommendations.some((r) => r.toLowerCase().includes('win-back') || r.toLowerCase().includes('vip')));
+});
+
+test('deriveCustomerSegmentation classifies a new customer distinctly from a frequent one', () => {
+  const newResult = deriveCustomerSegmentation({ segmentReference: '(Example cohort)', orderFrequency: { orderCount: 1 } });
+  assert.ok(newResult.specialized_records[0].segment_definition.includes('new customer'));
+
+  const frequentResult = deriveCustomerSegmentation({ segmentReference: '(Example cohort)', orderFrequency: { orderCount: 8 } });
+  assert.ok(frequentResult.specialized_records[0].segment_definition.includes('frequent buyer'));
+});
+
+test('deriveCustomerSegmentation surfaces low engagement distinctly from engaged', () => {
+  const lowEngagement = deriveCustomerSegmentation({
+    segmentReference: '(Example cohort)',
+    engagement: { emailOpenRate: 0.05 },
+  });
+  assert.ok(lowEngagement.specialized_records[0].segment_definition.includes('low engagement'));
+  assert.ok(lowEngagement.findings.some((f) => f.includes('Re-engagement')));
+
+  const engaged = deriveCustomerSegmentation({
+    segmentReference: '(Example cohort)',
+    engagement: { emailOpenRate: 0.5 },
+  });
+  assert.ok(engaged.specialized_records[0].segment_definition.includes('engaged'));
+  assert.ok(!engaged.specialized_records[0].segment_definition.includes('low engagement'));
+});
+
+test('deriveCustomerSegmentation surfaces product interest as needs/opportunity without inventing a purchase', () => {
+  const result = deriveCustomerSegmentation({
+    segmentReference: '(Example cohort)',
+    productInterest: { categoriesOfInterest: ['winter accessories'] },
+  });
+  assert.ok(result.specialized_records[0].needs.some((n) => n.includes('winter accessories')));
+  assert.ok(result.findings.some((f) => f.includes('winter accessories')));
+});
+
+test('deriveCustomerSegmentation never uses or accepts a personal attribute field - only behavioral/business data', () => {
+  const result = deriveCustomerSegmentation({
+    segmentReference: '(Example cohort)',
+    age: 34,
+    gender: 'female',
+    orderFrequency: { orderCount: 6 },
+  });
+  assertValid(result);
+  const serialized = JSON.stringify(result).toLowerCase();
+  assert.ok(!serialized.includes('34'));
+  assert.ok(!serialized.includes('female'));
+  assert.ok(result.limitations.some((l) => l.includes('no personal attribute')));
+});
+
+test('deriveCustomerSegmentation reports empty evidence honestly and surfaces supplied evidence otherwise', () => {
+  const withoutEvidence = deriveCustomerSegmentation({ segmentReference: '(Example cohort)', orderFrequency: { orderCount: 6 } });
+  assert.ok(withoutEvidence.limitations.some((l) => l.startsWith('No evidence was supplied for')));
+
+  const withEvidence = deriveCustomerSegmentation({
+    segmentReference: '(Example cohort)',
+    orderFrequency: { orderCount: 6 },
+    evidence: ['Shopify order history export'],
+  });
+  assert.deepStrictEqual(withEvidence.evidence, ['Shopify order history export']);
+});
+
+test('deriveCustomerSegmentation passes through caller-supplied recommendations alongside derived ones', () => {
+  const result = deriveCustomerSegmentation({
+    segmentReference: '(Example cohort)',
+    orderFrequency: { orderCount: 6 },
+    recommendations: ['Consider a custom offer'],
+  });
+  assert.ok(result.recommendations.includes('Consider a custom offer'));
+});
+
 // --- runResearch dispatcher ----------------------------------------------------------
 
 test('runResearch dispatches market_research to runMarketResearch', () => {
@@ -216,6 +318,16 @@ test('runResearch dispatches opportunity_discovery to runOpportunityDiscovery', 
   });
   assertValid(result);
   assert.strictEqual(result.research_type, 'opportunity_discovery');
+});
+
+test('runResearch dispatches customer_segmentation to deriveCustomerSegmentation', () => {
+  const result = runResearch({
+    researchType: 'customer_segmentation',
+    segmentReference: '(Example cohort)',
+    orderFrequency: { orderCount: 6 },
+  });
+  assertValid(result);
+  assert.strictEqual(result.research_type, 'customer_segmentation');
 });
 
 test('runResearch rejects an unknown research type', () => {

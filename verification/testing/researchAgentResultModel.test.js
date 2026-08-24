@@ -30,6 +30,7 @@ const EXPECTED_RESEARCH_TYPES = [
   'trend_research',
   'customer_market_intelligence',
   'opportunity_discovery',
+  'customer_segmentation',
 ];
 
 let passed = 0;
@@ -47,7 +48,7 @@ function test(name, fn) {
   }
 }
 
-test('all 6 research types are defined, in the requested order', () => {
+test('all 7 research types are defined, in the requested order', () => {
   assert.deepStrictEqual(RESEARCH_TYPES, EXPECTED_RESEARCH_TYPES);
 });
 

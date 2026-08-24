@@ -1,17 +1,33 @@
 'use strict';
 
 // The customer_research tool (tools/toolRegistry.js): connects the Chief/Orchestrator
-// to agent/core/researchAgent.js's runCustomerMarketIntelligence(). Thin wrapper - see
-// tools/marketResearchTool.js's header for the full rationale (structured passthrough,
-// honest missing-input handling, never-fabricate guarantee) - identical here.
+// to agent/core/researchAgent.js's runCustomerMarketIntelligence() and
+// deriveCustomerSegmentation(). Thin wrapper - see tools/marketResearchTool.js's
+// header for the full rationale (structured passthrough, honest missing-input
+// handling, never-fabricate guarantee) - identical here.
+//
+// researchParams.customerResearchMode selects which capability to run - one of
+// 'segment_research' (default when omitted, the original behavior - composes
+// caller-asserted customer segment records) or 'customer_segmentation' (structured
+// ecommerce customer segmentation - mechanically derives a segment from purchase/
+// order/engagement behavioral data; see deriveCustomerSegmentation's own header).
+// One tool id covering both keeps tools/toolRegistry.js's existing, already-reserved
+// shape intact - the same one-tool-many-capabilities pattern
+// tools/seoAnalysisTool.js/marketingAnalysisTool.js/listingContentTool.js already use.
 //
 // Returns { status, result, error } - never throws:
-//   status 'failed'  - no researchParams supplied, or a required field was missing
-//   status 'empty'   - valid input, but no evidence was supplied for any segment
-//   status 'partial' - some segments have evidence, others don't
-//   status 'success' - every composed segment record has evidence
+//   status 'failed'  - no researchParams supplied, an unknown customerResearchMode, or
+//                       a required field was missing
+//   status 'empty'   - valid input, but no evidence was supplied anywhere
+//   status 'partial' - some records/segments have evidence, others don't
+//   status 'success' - every composed record has evidence
 
-const { runCustomerMarketIntelligence } = require('../agent/core/researchAgent');
+const { runCustomerMarketIntelligence, deriveCustomerSegmentation } = require('../agent/core/researchAgent');
+
+const MODE_HANDLERS = {
+  segment_research: runCustomerMarketIntelligence,
+  customer_segmentation: deriveCustomerSegmentation,
+};
 
 function deriveStatus(result) {
   const recordsMissingEvidence = result.limitations.filter((l) =>
@@ -34,8 +50,18 @@ function runCustomerResearchTool(researchParams) {
     };
   }
 
+  const { customerResearchMode = 'segment_research', ...params } = researchParams;
+  const handler = MODE_HANDLERS[customerResearchMode];
+  if (!handler) {
+    return {
+      status: 'failed',
+      result: null,
+      error: `Unknown customerResearchMode: ${customerResearchMode}. Must be one of: ${Object.keys(MODE_HANDLERS).join(', ')}`,
+    };
+  }
+
   try {
-    const result = runCustomerMarketIntelligence(researchParams);
+    const result = handler(params);
     return { status: deriveStatus(result), result, error: null };
   } catch (err) {
     return { status: 'failed', result: null, error: err.message };
@@ -71,6 +97,22 @@ if (require.main === module) {
           evidence: ['(placeholder source reference)'],
         },
       ],
+    },
+    'customer_segmentation mode, missing segmentReference (failed)': {
+      customerResearchMode: 'customer_segmentation',
+    },
+    'customer_segmentation mode, no evidence (empty)': {
+      customerResearchMode: 'customer_segmentation',
+      segmentReference: '(Example customer cohort)',
+      orderFrequency: { orderCount: 6, daysSinceLastOrder: 100 },
+      customerValue: { lifetimeValue: 620 },
+    },
+    'customer_segmentation mode, evidence supplied (success)': {
+      customerResearchMode: 'customer_segmentation',
+      segmentReference: '(Example customer cohort)',
+      orderFrequency: { orderCount: 6, daysSinceLastOrder: 100 },
+      customerValue: { lifetimeValue: 620 },
+      evidence: ['(placeholder Shopify order history export)'],
     },
   };
 

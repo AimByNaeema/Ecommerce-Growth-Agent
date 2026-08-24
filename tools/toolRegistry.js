@@ -7,12 +7,13 @@
 // agent/core/toolPermissions.js), so tools are not called *from here*.
 // business_configuration_retrieval, ai_reasoning_completion, market_research,
 // competitor_research, customer_research, product_data_retrieval, keyword_research,
-// and seo_analysis are the eight entries actually implemented (see
-// tools/businessConfigurationRetrieval.js, tools/aiReasoningCompletion.js,
-// tools/marketResearchTool.js, tools/competitorResearchTool.js,
-// tools/customerResearchTool.js, tools/productDataRetrievalTool.js,
-// tools/keywordResearchTool.js, and tools/seoAnalysisTool.js) - the other 5 tools
-// remain 'not_implemented'.
+// seo_analysis, listing_content_generation, and marketing_analysis are the ten
+// entries actually implemented (see tools/businessConfigurationRetrieval.js,
+// tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
+// tools/competitorResearchTool.js, tools/customerResearchTool.js,
+// tools/productDataRetrievalTool.js, tools/keywordResearchTool.js,
+// tools/seoAnalysisTool.js, tools/listingContentTool.js, and
+// tools/marketingAnalysisTool.js) - the other 3 tools remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -25,6 +26,7 @@ const TOOL_CATEGORIES = [
   'research',
   'customer_market_intelligence',
   'seo',
+  'listing',
   'marketing',
   'analytics',
   'ai_reasoning',
@@ -100,12 +102,20 @@ const TOOL_REGISTRY = [
     status: 'implemented',
   },
   {
+    id: 'listing_content_generation',
+    title: 'Listing content generation',
+    description:
+      "Compose agent/core/listingContentModel.js listing-content records (title, description, benefits, features, selling points, FAQs, attributes, variants) and agent/core/marketplaceListingFormatModel.js marketplace-formatted records via agent/core/listingAgent.js - see tools/listingContentTool.js.",
+    category: 'listing',
+    status: 'implemented',
+  },
+  {
     id: 'marketing_analysis',
     title: 'Marketing analysis',
     description:
-      'Produce marketing analysis records conforming to agent/core/marketingAnalysisModel.js.',
+      "Produce agent/core/marketingAnalysisModel.js, agent/core/growthOpportunityModel.js, and agent/core/customerSegmentResearchModel.js records via agent/core/marketingAgent.js's 8 capabilities (marketing strategy, audience segmentation, offers, promotions, retention, campaign planning, email strategy, conversion opportunities) - see tools/marketingAnalysisTool.js.",
     category: 'marketing',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'analytics',

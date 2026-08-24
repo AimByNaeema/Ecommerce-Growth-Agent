@@ -4,13 +4,16 @@
 // to (CLAUDE.md section 2: 1 Orchestrator + 7 controlled specialist agents/modules).
 // This is a registry FOUNDATION only, mirroring tools/toolRegistry.js's pattern: a
 // descriptive list plus small read-only lookup helpers - there is no
-// select/dispatch/execute logic anywhere in this file. 'research' and 'seo' are now
-// implemented specialists (see agent/core/researchAgent.js, connected to the tool
-// system via tools/marketResearchTool.js, tools/competitorResearchTool.js, and
-// tools/customerResearchTool.js; and agent/core/seoAgent.js, connected via
-// tools/keywordResearchTool.js and tools/seoAnalysisTool.js) - the other 5 specialists
-// remain 'not_implemented', with only the schema/pipeline foundations described in
-// agent/core/*Model.js and workflows/*.js.
+// select/dispatch/execute logic anywhere in this file. 'research', 'seo', 'listing',
+// and 'marketing' are now implemented specialists (see agent/core/researchAgent.js,
+// connected to the tool system via tools/marketResearchTool.js,
+// tools/competitorResearchTool.js, and tools/customerResearchTool.js;
+// agent/core/seoAgent.js, connected via tools/keywordResearchTool.js and
+// tools/seoAnalysisTool.js; agent/core/listingAgent.js, connected via
+// tools/listingContentTool.js; and agent/core/marketingAgent.js, connected via
+// tools/marketingAnalysisTool.js) - the other 3 specialists remain 'not_implemented',
+// with only the schema/pipeline foundations described in agent/core/*Model.js and
+// workflows/*.js.
 //
 // This is a single shared list for the Orchestrator to select from - it does not
 // itself select anything. See agent/core/orchestratorExecutionContract.js's
@@ -41,13 +44,13 @@ const SPECIALIST_REGISTRY = [
     id: 'listing',
     title: 'Listing',
     description: 'Product listing content and optimization.',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'marketing',
     title: 'Marketing',
     description: 'Campaign ideas, copy, and marketing strategy.',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'social_advertising',

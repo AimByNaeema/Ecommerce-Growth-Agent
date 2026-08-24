@@ -303,16 +303,40 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.ok(step.outputs.error.includes('No structured research input was supplied'));
   });
 
-  await testAsync('runOrchestratorContract: a Listing-only task routes correctly even though no tool exists for it, and its state stays minimal', async () => {
+  await testAsync('runOrchestratorContract: a clean single-specialist task (Listing) produces a one-step plan of shared execution state', async () => {
     const response = await runOrchestratorContract('improve my listing content');
+    assert.strictEqual(response.needs_more_information, false);
     assert.strictEqual(response.routing.status, 'planned');
     assert.strictEqual(response.routing.plan.length, 1);
     const step = response.routing.plan[0];
     assert.strictEqual(step.selected_specialist.id, 'listing');
-    assert.strictEqual(step.completion_state, 'blocked');
-    assert.strictEqual(step.inputs, null);
-    assert.deepStrictEqual(step.tool_calls, []);
-    assert.ok(/No tool is registered/.test(step.errors[0]));
+    assert.deepStrictEqual(step.tool_calls, ['listing_content_generation']);
+    // listing_content_generation is implemented, but no research_params were supplied
+    // for this free-text-only call - the tool itself reports that honestly (never a
+    // fabricated result) rather than the orchestrator finding it not_available, the
+    // same pattern as the SEO/market_research 'without researchParams' cases.
+    assert.strictEqual(step.completion_state, 'complete');
+    assert.strictEqual(step.outputs.status, 'failed');
+    assert.strictEqual(step.outputs.result, null);
+    assert.ok(step.outputs.error.includes('No structured research input was supplied'));
+  });
+
+  await testAsync('runOrchestratorContract: a clean single-specialist task (Marketing) produces a one-step plan of shared execution state', async () => {
+    const response = await runOrchestratorContract('marketing campaign strategy');
+    assert.strictEqual(response.needs_more_information, false);
+    assert.strictEqual(response.routing.status, 'planned');
+    assert.strictEqual(response.routing.plan.length, 1);
+    const step = response.routing.plan[0];
+    assert.strictEqual(step.selected_specialist.id, 'marketing');
+    assert.deepStrictEqual(step.tool_calls, ['marketing_analysis']);
+    // marketing_analysis is implemented, but no research_params were supplied for this
+    // free-text-only call - the tool itself reports that honestly (never a fabricated
+    // result), the same pattern as the SEO/Listing/market_research 'without
+    // researchParams' cases.
+    assert.strictEqual(step.completion_state, 'complete');
+    assert.strictEqual(step.outputs.status, 'failed');
+    assert.strictEqual(step.outputs.result, null);
+    assert.ok(step.outputs.error.includes('No structured research input was supplied'));
   });
 
   await testAsync('runOrchestratorContract: a multi-capability task produces a controlled 2-step plan, each step self-contained', async () => {

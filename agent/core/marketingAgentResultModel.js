@@ -1,48 +1,45 @@
 'use strict';
 
-// The compact shape of one Research Agent result - the structured envelope
-// research/researchAgent.js returns for any of the 7 supported research types. This is
-// a schema and a couple of pure helpers only - no lookup/search/synthesis logic (no
-// research engine) - matching every other *Model.js file in agent/core/.
+// The compact shape of one Marketing Agent result - the structured envelope
+// agent/core/marketingAgent.js returns for any of its 8 supported capabilities.
+// Schema and a couple of pure helpers only - no lookup/search/synthesis logic,
+// matching every other *Model.js file in agent/core/ and mirroring
+// agent/core/seoAgentResultModel.js's own design exactly.
 //
-// This wraps existing per-type records (agent/core/marketResearchModel.js,
-// agent/core/competitorResearchModel.js, agent/core/customerSegmentResearchModel.js,
-// agent/core/researchRecordModel.js) rather than duplicating their fields - see
-// specialized_records below. It exists because no single existing model covers all 6
-// research types with one common shape, and none of them has a `limitations` or
-// `recommendations` field - adding those directly to the shared per-record schemas
-// would leak them into every other consumer of those schemas (e.g. Product's
-// evidence-collection stage reuses researchRecordModel.js directly).
+// This wraps existing per-capability records (agent/core/marketingAnalysisModel.js,
+// agent/core/growthOpportunityModel.js, agent/core/customerSegmentResearchModel.js)
+// rather than duplicating their fields - see specialized_records below.
 //
 // confidence and verification_status reuse agent/core/researchRecordModel.js's
 // existing enums rather than redefining them - both default to the same
-// unassessed/unverified starting point as every other research schema in this
-// project: nothing here is ever upgraded or invented by this shape's own logic.
+// unassessed/unverified starting point as every other schema in this project: nothing
+// here is ever upgraded or invented by this shape's own logic.
 
 const { CONFIDENCE_LEVELS, RESEARCH_VERIFICATION_STATUSES } = require('./researchRecordModel');
 
-const RESEARCH_TYPES = [
-  'market_research',
-  'global_market_research',
-  'competitor_research',
-  'trend_research',
-  'customer_market_intelligence',
-  'opportunity_discovery',
-  'customer_segmentation',
+const MARKETING_CAPABILITIES = [
+  'marketing_strategy',
+  'audience_segmentation',
+  'offers',
+  'promotions',
+  'retention',
+  'campaign_planning',
+  'email_strategy',
+  'conversion_opportunities',
 ];
 
-const RESEARCH_AGENT_RESULT_FIELDS = [
+const MARKETING_AGENT_RESULT_FIELDS = [
   {
-    id: 'research_type',
-    title: 'Research type',
-    type: `enum: ${RESEARCH_TYPES.join(' | ')}`,
-    description: 'Which of the Research Agent\'s supported research types this result is for.',
+    id: 'capability',
+    title: 'Capability',
+    type: `enum: ${MARKETING_CAPABILITIES.join(' | ')}`,
+    description: 'Which of the Marketing Agent\'s supported capabilities this result is for.',
   },
   {
     id: 'topic',
     title: 'Topic',
     type: 'string',
-    description: 'What was researched - a question or subject, not a full report title.',
+    description: 'What this result is about - a question or subject, not a full report title.',
   },
   {
     id: 'market',
@@ -66,7 +63,7 @@ const RESEARCH_AGENT_RESULT_FIELDS = [
     id: 'source',
     title: 'Source',
     type: 'array',
-    description: 'Flattened reference/source entries (e.g. URLs, report names) drawn from the underlying specialized_records.',
+    description: 'Flattened reference/source entries (e.g. prior campaign results, research records) drawn from the underlying specialized_records.',
   },
   {
     id: 'confidence',
@@ -78,7 +75,7 @@ const RESEARCH_AGENT_RESULT_FIELDS = [
     id: 'limitations',
     title: 'Limitations',
     type: 'array',
-    description: 'Honest gaps/caveats about this result (e.g. no external research source configured, missing evidence) - always populated, never omitted.',
+    description: 'Honest gaps/caveats about this result (e.g. no live marketing platform configured, missing evidence) - always populated, never omitted.',
   },
   {
     id: 'recommendations',
@@ -102,19 +99,19 @@ const RESEARCH_AGENT_RESULT_FIELDS = [
     id: 'specialized_records',
     title: 'Specialized records',
     type: 'array',
-    description: 'The underlying per-type model record(s) this result was composed from (e.g. agent/core/marketResearchModel.js records) - so this envelope wraps existing schemas rather than duplicating them.',
+    description: 'The underlying per-capability model record(s) this result was composed from (e.g. agent/core/marketingAnalysisModel.js records) - so this envelope wraps existing schemas rather than duplicating them.',
   },
 ];
 
-const ARRAY_FIELD_IDS = RESEARCH_AGENT_RESULT_FIELDS.filter((field) => field.type === 'array').map(
+const ARRAY_FIELD_IDS = MARKETING_AGENT_RESULT_FIELDS.filter((field) => field.type === 'array').map(
   (field) => field.id
 );
 
-// Returns a blank Research Agent result conforming to RESEARCH_AGENT_RESULT_FIELDS. No
-// real research data - callers fill it in.
-function createEmptyResearchAgentResult(researchType = null, topic = '') {
+// Returns a blank Marketing Agent result conforming to MARKETING_AGENT_RESULT_FIELDS.
+// No real analysis - callers (agent/core/marketingAgent.js) fill it in.
+function createEmptyMarketingAgentResult(capability = null, topic = '') {
   return {
-    research_type: researchType,
+    capability,
     topic,
     market: '',
     findings: [],
@@ -129,16 +126,16 @@ function createEmptyResearchAgentResult(researchType = null, topic = '') {
   };
 }
 
-// Checks that a Research Agent result has exactly the expected keys, with the expected
-// basic shapes. Does not guess or fill in anything missing - only reports.
-function validateResearchAgentResultShape(record) {
+// Checks that a Marketing Agent result has exactly the expected keys, with the
+// expected basic shapes. Does not guess or fill in anything missing - only reports.
+function validateMarketingAgentResultShape(record) {
   const errors = [];
 
   if (typeof record !== 'object' || record === null || Array.isArray(record)) {
     return { valid: false, errors: ['record must be a plain object'] };
   }
 
-  const expectedIds = RESEARCH_AGENT_RESULT_FIELDS.map((field) => field.id);
+  const expectedIds = MARKETING_AGENT_RESULT_FIELDS.map((field) => field.id);
   const actualIds = Object.keys(record);
 
   for (const id of expectedIds) {
@@ -158,8 +155,8 @@ function validateResearchAgentResultShape(record) {
     }
   }
 
-  if ('research_type' in record && !RESEARCH_TYPES.includes(record.research_type)) {
-    errors.push(`research_type must be one of: ${RESEARCH_TYPES.join(', ')}`);
+  if ('capability' in record && !MARKETING_CAPABILITIES.includes(record.capability)) {
+    errors.push(`capability must be one of: ${MARKETING_CAPABILITIES.join(', ')}`);
   }
   if ('confidence' in record && !CONFIDENCE_LEVELS.includes(record.confidence)) {
     errors.push(`confidence must be one of: ${CONFIDENCE_LEVELS.join(', ')}`);
@@ -175,18 +172,18 @@ function validateResearchAgentResultShape(record) {
 }
 
 module.exports = {
-  RESEARCH_TYPES,
-  RESEARCH_AGENT_RESULT_FIELDS,
-  createEmptyResearchAgentResult,
-  validateResearchAgentResultShape,
+  MARKETING_CAPABILITIES,
+  MARKETING_AGENT_RESULT_FIELDS,
+  createEmptyMarketingAgentResult,
+  validateMarketingAgentResultShape,
 };
 
 if (require.main === module) {
-  console.log('Smart E-Commerce Growth AI Agent - research agent result model (schema only):\n');
-  RESEARCH_AGENT_RESULT_FIELDS.forEach((field, index) => {
+  console.log('Smart E-Commerce Growth AI Agent - Marketing agent result model (schema only):\n');
+  MARKETING_AGENT_RESULT_FIELDS.forEach((field, index) => {
     console.log(`${index + 1}. [${field.id}] ${field.title} (${field.type})`);
     console.log(`   ${field.description}`);
   });
   console.log('\nExample empty result:');
-  console.log(JSON.stringify(createEmptyResearchAgentResult('market_research', '(no topic set)'), null, 2));
+  console.log(JSON.stringify(createEmptyMarketingAgentResult('marketing_strategy', '(no topic set)'), null, 2));
 }

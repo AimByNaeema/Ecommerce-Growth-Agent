@@ -59,6 +59,45 @@ test('successful: every segment has evidence supplied', () => {
   assert.strictEqual(outcome.error, null);
 });
 
+test('defaults to segment_research mode when customerResearchMode is omitted', () => {
+  const outcome = runCustomerResearchTool({
+    segments: [{ segmentDefinition: 'Budget shoppers', needs: ['low price'], evidence: ['survey'] }],
+  });
+  assert.strictEqual(outcome.result.research_type, 'customer_market_intelligence');
+});
+
+test('failed: an unknown customerResearchMode reports an honest error', () => {
+  const outcome = runCustomerResearchTool({ customerResearchMode: 'not_a_real_mode' });
+  assert.strictEqual(outcome.status, 'failed');
+  assert.ok(outcome.error.includes('Unknown customerResearchMode'));
+});
+
+test('customer_segmentation mode: failed when segmentReference is missing', () => {
+  const outcome = runCustomerResearchTool({ customerResearchMode: 'customer_segmentation' });
+  assert.strictEqual(outcome.status, 'failed');
+  assert.ok(outcome.error.includes('requires a non-empty `segmentReference`'));
+});
+
+test('customer_segmentation mode: empty when no evidence is supplied', () => {
+  const outcome = runCustomerResearchTool({
+    customerResearchMode: 'customer_segmentation',
+    segmentReference: '(Example cohort)',
+    orderFrequency: { orderCount: 6, daysSinceLastOrder: 100 },
+  });
+  assert.strictEqual(outcome.status, 'empty');
+  assert.strictEqual(outcome.result.research_type, 'customer_segmentation');
+});
+
+test('customer_segmentation mode: success when evidence is supplied', () => {
+  const outcome = runCustomerResearchTool({
+    customerResearchMode: 'customer_segmentation',
+    segmentReference: '(Example cohort)',
+    orderFrequency: { orderCount: 6, daysSinceLastOrder: 100 },
+    evidence: ['Shopify order history export'],
+  });
+  assert.strictEqual(outcome.status, 'success');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
   process.exit(1);

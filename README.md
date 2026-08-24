@@ -42,6 +42,7 @@ Planned modules, none implemented yet:
 | `seo/` | SEO analysis and recommendations |
 | `marketing/` | Campaign ideas, copy, and marketing strategy |
 | `products/` | Product catalog analysis and listing recommendations |
+| `listing/` | Listing content generation and marketplace formatting |
 | `customer-market-intelligence/` | Customer behavior and market intelligence |
 | `analytics/` | Store performance and growth metrics |
 | `integrations/adapters/` | Per-platform adapters (starting with Shopify) |

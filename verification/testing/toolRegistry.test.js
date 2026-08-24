@@ -19,6 +19,7 @@ const EXPECTED_ORDER = [
   'competitor_research',
   'keyword_research',
   'seo_analysis',
+  'listing_content_generation',
   'marketing_analysis',
   'analytics',
   'ai_reasoning_completion',
@@ -34,6 +35,8 @@ const IMPLEMENTED_IDS = [
   'competitor_research',
   'keyword_research',
   'seo_analysis',
+  'listing_content_generation',
+  'marketing_analysis',
   'ai_reasoning_completion',
 ];
 
@@ -52,7 +55,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 13 required tools, in the requested order', () => {
+test('the registry has exactly the 14 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER
@@ -85,7 +88,7 @@ test('every entry except the implemented set is not_implemented - do not impleme
   }
 });
 
-test('business_configuration_retrieval, product_data_retrieval, market_research, customer_research, competitor_research, keyword_research, seo_analysis, and ai_reasoning_completion are implemented', () => {
+test('business_configuration_retrieval, product_data_retrieval, market_research, customer_research, competitor_research, keyword_research, seo_analysis, listing_content_generation, marketing_analysis, and ai_reasoning_completion are implemented', () => {
   for (const id of IMPLEMENTED_IDS) {
     assert.strictEqual(getToolById(id).status, 'implemented', `${id} should be implemented`);
   }

@@ -36,9 +36,10 @@ rather than a conceptual stage list. It lives in `agent/core/` alongside the sch
 composes, not here: this folder is reserved entirely for a business's own gathered
 research data (git-ignored, see above), never for reusable agent code — this section
 exists purely so the Research Agent is documented next to the research shapes it
-produces. It supports 6 research types (market, global market, competitor, trend,
-customer/market intelligence, opportunity discovery) and returns one common structured
-result shape, [`agent/core/researchAgentResultModel.js`](../agent/core/researchAgentResultModel.js):
+produces. It supports 7 research types (market, global market, competitor, trend,
+customer/market intelligence, opportunity discovery, customer segmentation) and
+returns one common structured result shape,
+[`agent/core/researchAgentResultModel.js`](../agent/core/researchAgentResultModel.js):
 research type, topic, market, findings, evidence, source, confidence, limitations,
 recommendations, verification status, research date, and the underlying specialized
 record(s) it was composed from.
@@ -60,6 +61,36 @@ Trend research and opportunity discovery both reuse the generic
 [`researchRecordModel.js`](../agent/core/researchRecordModel.js) shape, one record per
 trend/signal — none of these schemas are duplicated, only composed into the common
 envelope.
+
+### Structured ecommerce customer segmentation
+
+`deriveCustomerSegmentation` (the `customer_segmentation` research type) is the one
+capability in `researchAgent.js` that genuinely *derives* rather than just relays: a
+deterministic, threshold-based classifier that segments a customer/cohort from
+structured business data - purchase behavior, product interest, order frequency,
+customer value, and engagement - into a segment definition, needs, an opportunity, and
+a recommended strategy. Every threshold (e.g. what counts as a "frequent" buyer or an
+"at-risk" customer) is an explicit, documented constant, never AI/ML-inferred, and
+every derived label/need/opportunity/recommendation traces back to exactly which
+threshold fired - the same mechanical, verifiable philosophy
+[`agent/core/seoQualityChecker.js`](../agent/core/seoQualityChecker.js) and
+[`agent/core/listingQualityChecker.js`](../agent/core/listingQualityChecker.js) already
+use for dimension checks, applied here to classification instead of validation.
+
+**No personal attribute is ever used or inferred** - this is a structural guarantee,
+not just a stated one: the classifier has no input field for age, gender, location,
+health, or any other personal attribute, so none can reach the output even by
+accident. Only transactional/behavioral business data is accepted.
+
+Reuses [`agent/core/customerSegmentResearchModel.js`](../agent/core/customerSegmentResearchModel.js)
+as-is for the segment/evidence/needs fields; "opportunity" and "recommended strategy"
+surface through the same envelope every other research type already has
+(`findings`/`recommendations`) - no new schema field was needed for either.
+
+Wired into the same `customer_research` tool as `customer_market_intelligence` above,
+via `researchParams.customerResearchMode` (`'segment_research'`, the default, or
+`'customer_segmentation'`) - one tool id, two capabilities, the same
+multi-capability-per-tool pattern `tools/seoAnalysisTool.js` already uses.
 
 ### Structured competitor intelligence
 
