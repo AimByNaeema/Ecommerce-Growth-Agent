@@ -1,55 +1,22 @@
-# Environment / secrets
+# Dependencies
+node_modules/
+
+# Environment variables / secrets — never commit real credentials
 .env
 .env.local
 .env.*.local
-configuration/business.yaml
-data/business/*
-!data/business/README.md
-data/products/*
-!data/products/README.md
-data/tasks/*
-!data/tasks/README.md
-research/*
-!research/README.md
-memory/state/*
-!memory/state/README.md
-*.pem
-*.key
-*.p12
-*.pfx
-secrets/
-*.secret
-credentials.json
-
-# Dependency directories (runtime not yet chosen)
-node_modules/
-venv/
-.venv/
-__pycache__/
-*.pyc
-
-# Build output
-dist/
-build/
-out/
-
-# Temporary / generated files
-tmp/
-temp/
-*.tmp
-*.bak
-.cache/
 
 # Logs
 *.log
-logs/
+npm-debug.log*
 
-# OS files
+# OS / editor junk
 .DS_Store
 Thumbs.db
-desktop.ini
-
-# Editor/IDE
 .vscode/
 .idea/
-*.swp
+
+# Build/cache output (future-proofing; safe to keep even if unused today)
+dist/
+build/
+coverage/
