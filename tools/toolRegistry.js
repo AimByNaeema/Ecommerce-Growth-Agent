@@ -1,13 +1,16 @@
 'use strict';
 
 // The registry of tools the Chief/Orchestrator may call. This is a registry
-// FOUNDATION plus two real, callable tools: a descriptive list plus small read-only
+// FOUNDATION plus real, callable tools: a descriptive list plus small read-only
 // lookup helpers - there is still no register/execute/dispatch function anywhere in
 // this file (that lives in agent/core/orchestratorExecutionContract.js, gated by
 // agent/core/toolPermissions.js), so tools are not called *from here*.
-// business_configuration_retrieval and ai_reasoning_completion are the two entries
-// actually implemented (see tools/businessConfigurationRetrieval.js and
-// tools/aiReasoningCompletion.js) - the other 11 tools remain 'not_implemented'.
+// business_configuration_retrieval, ai_reasoning_completion, market_research,
+// competitor_research, customer_research, and product_data_retrieval are the six
+// entries actually implemented (see tools/businessConfigurationRetrieval.js,
+// tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
+// tools/competitorResearchTool.js, tools/customerResearchTool.js, and
+// tools/productDataRetrievalTool.js) - the other 7 tools remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -42,9 +45,9 @@ const TOOL_REGISTRY = [
     id: 'product_data_retrieval',
     title: 'Product data retrieval',
     description:
-      'Retrieve product data conforming to agent/core/productModel.js from data/products/.',
+      "Retrieve read-only product data (products, variants, inventory, prices, SKUs, status, collections, metadata) from the connected Shopify store via integrations/adapters/shopifyClient.js's getProducts() - see tools/productDataRetrievalTool.js. No writes.",
     category: 'products',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'product_research',
@@ -58,25 +61,25 @@ const TOOL_REGISTRY = [
     id: 'market_research',
     title: 'Market research',
     description:
-      'Produce market research records conforming to agent/core/marketResearchModel.js.',
+      "Produce market research records conforming to agent/core/marketResearchModel.js via agent/core/researchAgent.js's runMarketResearch() - see tools/marketResearchTool.js.",
     category: 'research',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'customer_research',
     title: 'Customer research',
     description:
-      'Produce customer segment research records conforming to agent/core/customerSegmentResearchModel.js.',
+      "Produce customer segment research records conforming to agent/core/customerSegmentResearchModel.js via agent/core/researchAgent.js's runCustomerMarketIntelligence() - see tools/customerResearchTool.js.",
     category: 'customer_market_intelligence',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'competitor_research',
     title: 'Competitor research',
     description:
-      'Produce competitor research records conforming to agent/core/competitorResearchModel.js.',
+      "Produce competitor research records conforming to agent/core/competitorResearchModel.js via agent/core/researchAgent.js's runCompetitorResearch() - see tools/competitorResearchTool.js.",
     category: 'research',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'keyword_research',

@@ -30,6 +30,24 @@ composes [`agent/core/productModel.js`](../agent/core/productModel.js),
 Pipeline only — nothing is ever published automatically, and no business fact is
 invented anywhere.
 
+[`globalEcommerceMarketResearchWorkflow.js`](globalEcommerceMarketResearchWorkflow.js)
+is real, executable logic — unlike the 4 workflows above, which are conceptual
+stage-lists only. It compares markets side-by-side across 9 dimensions: countries and
+markets are the comparison axis (one row per country/market), and categories, products,
+trends, competition, pricing, and demand signals/risks are evidence-backed facets
+compared across those rows. It reuses
+[`agent/core/researchAgent.js`](../agent/core/researchAgent.js)'s `retrieveResearchData()`
+for the market/competitor record-building (no duplicated logic), and
+[`agent/core/productModel.js`](../agent/core/productModel.js) for products. The result
+shape is [`agent/core/globalMarketComparisonModel.js`](../agent/core/globalMarketComparisonModel.js).
+No field is ever a computed number, percentage, score, or ranking — every facet is
+either caller-supplied content passed through as-is, or a structural evidence-presence
+signal (`has_evidence` / `status: empty|partial|success`), so no unsupported market
+statistic can be produced. Not yet wired to `tools/toolRegistry.js` or the
+orchestrator — that is a documented follow-up, matching how
+[`agent/core/researchAgent.js`](../agent/core/researchAgent.js) was connected in a
+separate, later prompt.
+
 [`analyticsInsightWorkflow.js`](analyticsInsightWorkflow.js) defines the process that
 turns real analytics data into a verified result: DATA → FINDING → INTERPRETATION →
 OPPORTUNITY → RECOMMENDATION → EXPECTED IMPACT → VERIFICATION. It composes

@@ -26,7 +26,14 @@ const EXPECTED_ORDER = [
   'verification',
 ];
 
-const IMPLEMENTED_IDS = ['business_configuration_retrieval', 'ai_reasoning_completion'];
+const IMPLEMENTED_IDS = [
+  'business_configuration_retrieval',
+  'product_data_retrieval',
+  'market_research',
+  'customer_research',
+  'competitor_research',
+  'ai_reasoning_completion',
+];
 
 let passed = 0;
 let failed = 0;
@@ -76,7 +83,7 @@ test('every entry except the implemented set is not_implemented - do not impleme
   }
 });
 
-test('business_configuration_retrieval and ai_reasoning_completion are implemented', () => {
+test('business_configuration_retrieval, product_data_retrieval, market_research, customer_research, competitor_research, and ai_reasoning_completion are implemented', () => {
   for (const id of IMPLEMENTED_IDS) {
     assert.strictEqual(getToolById(id).status, 'implemented', `${id} should be implemented`);
   }

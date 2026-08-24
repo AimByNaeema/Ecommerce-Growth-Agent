@@ -48,9 +48,10 @@ const SHARED_INFRASTRUCTURE_CATEGORIES = TOOL_CATEGORIES.filter(
   (category) => !(category in CATEGORY_TO_SPECIALIST)
 );
 
-// business_configuration_retrieval is a read-only GET against Shopify (no writes, no
-// side effects) - classified analysis_only. ai_reasoning_completion only ever
-// produces a draft/suggestion for a human to consider (see
+// business_configuration_retrieval and product_data_retrieval are read-only GETs
+// against Shopify (no writes, no side effects) - both classified analysis_only.
+// ai_reasoning_completion only ever produces a draft/suggestion for a human to
+// consider (see
 // approvals/approvalArchitecture.js's own description of 'recommendation':
 // "producing the suggestion needs no approval; acting on it does") - it never
 // publishes, sends, or changes anything by itself, so generating the text needs no
@@ -62,6 +63,10 @@ const SHARED_INFRASTRUCTURE_CATEGORIES = TOOL_CATEGORIES.filter(
 const TOOL_CLASSIFICATIONS = {
   business_configuration_retrieval: 'analysis_only',
   ai_reasoning_completion: 'recommendation',
+  market_research: 'analysis_only',
+  competitor_research: 'analysis_only',
+  customer_research: 'analysis_only',
+  product_data_retrieval: 'analysis_only',
 };
 
 // Approval classifications that may proceed automatically. Anything else

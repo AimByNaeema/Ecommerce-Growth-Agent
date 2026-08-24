@@ -58,10 +58,15 @@ test('every entry has a valid status', () => {
   }
 });
 
-test('every entry is not_implemented - no specialist has real logic yet', () => {
+test('every entry except research is not_implemented - do not implement other specialists yet', () => {
   for (const specialist of SPECIALIST_REGISTRY) {
+    if (specialist.id === 'research') continue;
     assert.strictEqual(specialist.status, 'not_implemented', `${specialist.id} should not be implemented yet`);
   }
+});
+
+test('research is implemented', () => {
+  assert.strictEqual(getSpecialistById('research').status, 'implemented');
 });
 
 test('getSpecialistById() finds a known specialist and returns undefined for an unknown one', () => {
@@ -69,9 +74,9 @@ test('getSpecialistById() finds a known specialist and returns undefined for an 
   assert.strictEqual(getSpecialistById('does_not_exist'), undefined);
 });
 
-test('getSpecialistsByStatus() returns all specialists when all are not_implemented', () => {
-  assert.strictEqual(getSpecialistsByStatus('not_implemented').length, SPECIALIST_REGISTRY.length);
-  assert.strictEqual(getSpecialistsByStatus('implemented').length, 0);
+test('getSpecialistsByStatus() returns the correct counts for each status', () => {
+  assert.strictEqual(getSpecialistsByStatus('not_implemented').length, SPECIALIST_REGISTRY.length - 1);
+  assert.strictEqual(getSpecialistsByStatus('implemented').length, 1);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

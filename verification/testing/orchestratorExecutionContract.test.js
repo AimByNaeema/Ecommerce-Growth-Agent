@@ -453,6 +453,24 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     }
   });
 
+  await testAsync('runOrchestratorContract: researchParams passthrough routes to market_research and executes it for real', async () => {
+    const response = await runOrchestratorContract('run market research', {
+      researchParams: { market: 'European Union', demandSignals: ['x'], evidence: ['y'] },
+    });
+    assert.strictEqual(response.routing.plan.length, 1);
+    const outputs = response.routing.plan[0].outputs;
+    assert.strictEqual(outputs.status, 'success');
+    assert.strictEqual(outputs.result.research_type, 'market_research');
+  });
+
+  await testAsync('runOrchestratorContract: without researchParams, market_research reports an honest missing-input failure, never a fabricated result', async () => {
+    const response = await runOrchestratorContract('run market research');
+    const outputs = response.routing.plan[0].outputs;
+    assert.strictEqual(outputs.status, 'failed');
+    assert.strictEqual(outputs.result, null);
+    assert.ok(outputs.error.includes('No structured research input was supplied'));
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) {
     process.exit(1);

@@ -47,6 +47,9 @@ const {
 } = require('./toolPermissions');
 const businessConfigurationRetrieval = require('../../tools/businessConfigurationRetrieval');
 const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
+const marketResearchTool = require('../../tools/marketResearchTool');
+const competitorResearchTool = require('../../tools/competitorResearchTool');
+const customerResearchTool = require('../../tools/customerResearchTool');
 
 // Tool ids this orchestrator knows how to actually call. Each entry maps a
 // TOOL_REGISTRY id to the real function that performs the work - the only sanctioned
@@ -60,7 +63,13 @@ const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 // (business_configuration_retrieval takes no input); ai_reasoning_completion uses
 // executionRequest.objective as its instruction and runTokenTracker to enforce this
 // run's token budget (agent/core/tokenControls.js) - see executeSelectedCapability
-// and buildPlanStep below for where runTokenTracker is created and updated.
+// and buildPlanStep below for where runTokenTracker is created and updated. The 3
+// research tools read executionRequest.research_params instead - an optional
+// structured passthrough (see createExecutionRequest/buildPlanStep/
+// runOrchestratorContract below) - since free-text objective text alone cannot supply
+// the structured evidence these tools require; each tool itself reports honestly
+// (never fabricates) when research_params is absent. See tools/marketResearchTool.js,
+// tools/competitorResearchTool.js, tools/customerResearchTool.js.
 const TOOL_EXECUTORS = {
   business_configuration_retrieval: () =>
     businessConfigurationRetrieval.retrieveBusinessConfiguration(),
@@ -69,6 +78,12 @@ const TOOL_EXECUTORS = {
       instruction: executionRequest.objective,
       tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
     }),
+  market_research: (executionRequest) =>
+    marketResearchTool.runMarketResearchTool(executionRequest.research_params),
+  competitor_research: (executionRequest) =>
+    competitorResearchTool.runCompetitorResearchTool(executionRequest.research_params),
+  customer_research: (executionRequest) =>
+    customerResearchTool.runCustomerResearchTool(executionRequest.research_params),
 };
 
 const STOPWORDS = new Set([
@@ -136,8 +151,12 @@ function needsMoreInformation(objective, capability) {
   return { needs_more_information: false, reason: null };
 }
 
-// Create a structured execution request from the identified capability.
-function createExecutionRequest(objective, capability) {
+// Create a structured execution request from the identified capability. researchParams
+// is an optional structured passthrough (see runOrchestratorContract/buildPlanStep
+// below) - attached as-is (null when absent) for whichever tool executor ends up
+// selected; a tool that doesn't use it (e.g. business_configuration_retrieval) simply
+// ignores the field.
+function createExecutionRequest(objective, capability, researchParams = null) {
   const category = capability.category;
   const specialistId = CATEGORY_TO_SPECIALIST[category] || null;
   return {
@@ -146,6 +165,7 @@ function createExecutionRequest(objective, capability) {
     tool_id: capability.tool.id,
     specialist_id: specialistId,
     is_shared_infrastructure: specialistId === null,
+    research_params: researchParams,
   };
 }
 
@@ -415,7 +435,13 @@ function planRouting(objective) {
 // the categories that map to this target; if none maps (Listing, Social &
 // Advertising today) or none scores, reports an honest not_available outcome rather
 // than inventing a tool call.
-async function buildPlanStep(target, objective, currentTask, runTokenTracker = { tokensUsedThisRun: 0 }) {
+async function buildPlanStep(
+  target,
+  objective,
+  currentTask,
+  runTokenTracker = { tokensUsedThisRun: 0 },
+  researchParams = null
+) {
   const categories = target.type === 'specialist'
     ? (SPECIALIST_TO_CATEGORIES[target.id] || [])
     : [target.id];
@@ -459,6 +485,7 @@ async function buildPlanStep(target, objective, currentTask, runTokenTracker = {
       tool_id: null,
       specialist_id: target.type === 'specialist' ? target.id : null,
       is_shared_infrastructure: target.type === 'shared_infrastructure',
+      research_params: researchParams,
     };
     outcome = {
       status: 'not_available',
@@ -467,7 +494,11 @@ async function buildPlanStep(target, objective, currentTask, runTokenTracker = {
       classification: null,
     };
   } else {
-    executionRequest = createExecutionRequest(objective, { category: matchedCategory, tool: toolMatch });
+    executionRequest = createExecutionRequest(
+      objective,
+      { category: matchedCategory, tool: toolMatch },
+      researchParams
+    );
     outcome = await executeSelectedCapability(executionRequest, runTokenTracker);
   }
 
@@ -548,7 +579,13 @@ function buildRoutingResponse({ objective, routing, tokensUsedThisRun = 0 }) {
 // The single entry point: normalizes the task, routes it into a controlled execution
 // plan (or a clarification requirement), executes every planned step, and returns the
 // final structured response. Never throws - all failures become structured outcomes.
-async function runOrchestratorContract(rawTask) {
+//
+// researchParams (optional, in the second argument) is a structured passthrough for
+// research tools (see TOOL_EXECUTORS/createExecutionRequest above) - routing itself is
+// still decided purely by the existing free-text word-overlap logic; researchParams
+// only affects what a matched research tool is actually called with. Omitted by every
+// existing caller, so default behavior (and every existing test) is unchanged.
+async function runOrchestratorContract(rawTask, { researchParams = null } = {}) {
   let objective;
   try {
     objective = understandObjective(rawTask);
@@ -583,7 +620,13 @@ async function runOrchestratorContract(rawTask) {
   const plan = [];
   for (let i = 0; i < routingResult.targets.length; i += 1) {
     plan.push(
-      await buildPlanStep(routingResult.targets[i], objective, routingResult.segments[i], runTokenTracker)
+      await buildPlanStep(
+        routingResult.targets[i],
+        objective,
+        routingResult.segments[i],
+        runTokenTracker,
+        researchParams
+      )
     );
   }
 

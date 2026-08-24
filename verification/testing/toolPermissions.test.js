@@ -11,12 +11,14 @@ const {
 } = require('../../agent/core/toolPermissions');
 
 // checkToolAccess is the real, tools/toolRegistry.js-backed API - it is exercised here
-// against real registry entries wherever real data can produce the outcome. Today's
-// registry has exactly one implemented tool (business_configuration_retrieval,
-// classified analysis_only/auto-approved) and eleven not_implemented tools, so no real
-// tool can currently produce an 'approval_required' decision end-to-end - that branch
-// is covered via evaluateToolAccess() with a clearly-labeled synthetic tool shape
-// instead of inventing a new entry in the real registry.
+// against real registry entries wherever real data can produce the outcome. Every
+// implemented tool in today's registry (business_configuration_retrieval,
+// market_research, customer_research, competitor_research, ai_reasoning_completion,
+// product_data_retrieval) is classified analysis_only or recommendation - both
+// auto-approved - so no real tool can currently produce an 'approval_required'
+// decision end-to-end; that branch is covered via evaluateToolAccess() with a
+// clearly-labeled synthetic tool shape instead of inventing a new entry in the real
+// registry.
 
 let passed = 0;
 let failed = 0;

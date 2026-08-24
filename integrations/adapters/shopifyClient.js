@@ -1,13 +1,15 @@
 'use strict';
 
 // The ONE agent's connection to the owner's Shopify store (Admin GraphQL API). This is
-// a CONNECTION LAYER ONLY: it can reach the store and confirm the connection works. It
-// does not read/write products, orders, inventory, or anything else, and is not wired
-// into agent/core/agentContract.js's stages yet - that orchestration is later,
-// explicitly scoped work. No response is ever invented here: a missing config, a
-// network failure, or a non-success/GraphQL-error response all throw a clear error
-// instead of returning fabricated data (same convention as every research/analysis
-// module already in this project, and as agent/core/claudeClient.js).
+// a CONNECTION LAYER: it can reach the store, confirm the connection works
+// (getShopInfo), and read product data (getProducts - products, variants incl.
+// SKU/price/inventory, product status, collections, and metafields). Read-only only -
+// no write/mutation of any kind exists here, and it is not wired into
+// agent/core/agentContract.js's stages yet - that orchestration is later, explicitly
+// scoped work. No response is ever invented here: a missing config, a network
+// failure, or a non-success/GraphQL-error response all throw a clear error instead of
+// returning fabricated data (same convention as every research/analysis module
+// already in this project, and as agent/core/claudeClient.js).
 //
 // No SDK dependency is added for this: Node's built-in fetch (stable since Node 18)
 // is enough for the GraphQL calls this layer needs.
@@ -125,8 +127,117 @@ async function getShopInfo() {
   };
 }
 
+// Runs one GraphQL query covering products, variants (incl. SKU/price/inventory),
+// collections, and metafields (product metadata) - read-only, no mutation, no write
+// field anywhere in this query. One round-trip is enough for every item this layer
+// currently exposes.
+//
+// Returns: an array of normalized product objects: { id, title, handle, status,
+// productType, vendor, tags, variants: [{id, title, sku, price, inventoryQuantity,
+// availableForSale}], collections: [{id, title}], metafields: [{namespace, key, value}] }
+// Throws: same conditions as getShopInfo() (not configured / network failure /
+// non-success status / GraphQL errors / missing data). Never returns fabricated
+// product data.
+async function getProducts({ limit = 50 } = {}) {
+  loadEnvOnce();
+
+  if (!isConfigured()) {
+    throw new Error(
+      'SHOPIFY_STORE_DOMAIN and/or SHOPIFY_ADMIN_API_ACCESS_TOKEN are not set. Copy ' +
+      '.env.example to .env and add real values for the owner\'s Shopify store before ' +
+      'calling getProducts().'
+    );
+  }
+
+  const domain = process.env.SHOPIFY_STORE_DOMAIN.trim();
+  const accessToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN.trim();
+  const apiVersion = (process.env.SHOPIFY_API_VERSION && process.env.SHOPIFY_API_VERSION.trim()) || DEFAULT_API_VERSION;
+  const url = buildGraphqlUrl(domain, apiVersion);
+
+  const query = `{
+    products(first: ${Number(limit)}) {
+      edges { node {
+        id
+        title
+        handle
+        status
+        productType
+        vendor
+        tags
+        variants(first: 50) { edges { node {
+          id
+          title
+          sku
+          price
+          inventoryQuantity
+          availableForSale
+        } } }
+        collections(first: 10) { edges { node { id title } } }
+        metafields(first: 10) { edges { node { namespace key value } } }
+      } }
+    }
+  }`;
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Shopify-Access-Token': accessToken,
+      },
+      body: JSON.stringify({ query }),
+    });
+  } catch (err) {
+    throw new Error(`Could not reach the Shopify Admin API: ${err.message}`);
+  }
+
+  const raw = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const apiMessage = raw && raw.errors ? JSON.stringify(raw.errors) : response.statusText;
+    throw new Error(`Shopify Admin API request failed (${response.status}): ${apiMessage}`);
+  }
+
+  if (raw && Array.isArray(raw.errors) && raw.errors.length > 0) {
+    throw new Error(`Shopify Admin API returned GraphQL errors: ${JSON.stringify(raw.errors)}`);
+  }
+
+  if (!raw || !raw.data || !raw.data.products) {
+    throw new Error('Shopify Admin API response did not include product data.');
+  }
+
+  return raw.data.products.edges.map(({ node }) => ({
+    id: node.id,
+    title: node.title,
+    handle: node.handle,
+    status: node.status,
+    productType: node.productType,
+    vendor: node.vendor,
+    tags: node.tags,
+    variants: node.variants.edges.map(({ node: variant }) => ({
+      id: variant.id,
+      title: variant.title,
+      sku: variant.sku,
+      price: variant.price,
+      inventoryQuantity: variant.inventoryQuantity,
+      availableForSale: variant.availableForSale,
+    })),
+    collections: node.collections.edges.map(({ node: collection }) => ({
+      id: collection.id,
+      title: collection.title,
+    })),
+    metafields: node.metafields.edges.map(({ node: metafield }) => ({
+      namespace: metafield.namespace,
+      key: metafield.key,
+      value: metafield.value,
+    })),
+  }));
+}
+
 module.exports = {
   getShopInfo,
+  getProducts,
   isConfigured,
   loadEnvOnce,
   DEFAULT_API_VERSION,
@@ -142,12 +253,16 @@ if (require.main === module) {
     process.exit(0);
   }
   getShopInfo()
-    .then((result) => {
+    .then(async (result) => {
       console.log('Shopify connection succeeded.');
       console.log(`Shop: ${result.name}`);
       console.log(`Domain: ${result.domain}`);
       console.log(`Email: ${result.email}`);
       console.log(`API version: ${result.apiVersion}`);
+
+      const products = await getProducts({ limit: 5 });
+      console.log(`\nRetrieved ${products.length} product(s) (read-only, first 5).`);
+      console.log(JSON.stringify(products, null, 2));
     })
     .catch((err) => {
       console.error(`STOP: ${err.message}`);
