@@ -176,6 +176,48 @@ test('deriveExecutionState reports failed completion and records the error for a
   assert.deepStrictEqual(state.evidence, []);
 });
 
+test('deriveExecutionState populates inputs.capability_id/input_contract when the caller supplies them', () => {
+  const state = deriveExecutionState({
+    request: 'keyword search visibility',
+    currentTask: 'keyword search visibility',
+    target: { type: 'specialist', id: 'seo', title: 'SEO' },
+    category: 'seo',
+    toolId: 'keyword_research',
+    capabilityId: 'keyword_research',
+    inputContract: { required: ['keywords', 'keywords[].keyword'], optional: [] },
+    requiredContextIds: ['tool_context'],
+    outcome: { status: 'success', data: { research_type: 'keyword_research' }, error: null, classification: 'analysis_only' },
+    verificationStatus: 'passed',
+  });
+  assert.strictEqual(validateExecutionStateShape(state).valid, true);
+  assert.deepStrictEqual(state.inputs, {
+    category: 'seo',
+    tool_id: 'keyword_research',
+    capability_id: 'keyword_research',
+    input_contract: { required: ['keywords', 'keywords[].keyword'], optional: [] },
+  });
+});
+
+test('deriveExecutionState defaults inputs.capability_id/input_contract to null when the caller omits them - never guessed', () => {
+  const state = deriveExecutionState({
+    request: 'run product research',
+    currentTask: 'run product research',
+    target: { type: 'specialist', id: 'product', title: 'Product' },
+    category: 'products',
+    toolId: 'product_data_retrieval',
+    requiredContextIds: ['tool_context'],
+    outcome: { status: 'success', data: {}, error: null, classification: 'analysis_only' },
+    verificationStatus: 'passed',
+  });
+  assert.strictEqual(validateExecutionStateShape(state).valid, true);
+  assert.deepStrictEqual(state.inputs, {
+    category: 'products',
+    tool_id: 'product_data_retrieval',
+    capability_id: null,
+    input_contract: null,
+  });
+});
+
 test('deriveExecutionState invents nothing when no tool was matched at all (e.g. Listing/Social & Advertising today)', () => {
   const listingTarget = { type: 'specialist', id: 'listing', title: 'Listing' };
   const state = deriveExecutionState({

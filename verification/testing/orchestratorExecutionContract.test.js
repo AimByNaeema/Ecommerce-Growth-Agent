@@ -363,6 +363,52 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.strictEqual(researchStep.selected_specialist.id !== socialStep.selected_specialist.id, true);
   });
 
+  // --- Specialist capability registry connection ---------------------------------
+  //
+  // agent/core/specialistCapabilityRegistry.js is now the source for which tools a
+  // specialist may use (required_tools) and, once a tool is matched, which declared
+  // capability/task it actually serves (inputs.capability_id/input_contract) - see
+  // buildPlanStep's header comment. These fixtures were observed by running the real
+  // orchestrator (not hand-predicted), the same practice this file's own header notes
+  // for the word-overlap routing fixtures above.
+
+  await testAsync('runOrchestratorContract: SEO plan step names the exact matched capability and its real input contract', async () => {
+    const response = await runOrchestratorContract('keyword search visibility');
+    const step = response.routing.plan[0];
+    assert.strictEqual(step.inputs.tool_id, 'keyword_research');
+    assert.strictEqual(step.inputs.capability_id, 'keyword_research');
+    assert.deepStrictEqual(step.inputs.input_contract, { required: ['keywords', 'keywords[].keyword'], optional: [] });
+  });
+
+  await testAsync('runOrchestratorContract: a matched tool with zero connected capabilities (Product) honestly reports capability_id null, never guessed', async () => {
+    const response = await runOrchestratorContract('run product research on my catalog');
+    const step = response.routing.plan[0];
+    assert.strictEqual(step.selected_specialist.id, 'product');
+    assert.strictEqual(step.inputs.tool_id, 'product_research');
+    assert.strictEqual(step.inputs.capability_id, null);
+    assert.strictEqual(step.inputs.input_contract, null);
+  });
+
+  await testAsync('runOrchestratorContract: a shared-infrastructure step (no specialist, no capability registry entry) reports capability_id null', async () => {
+    const response = await runOrchestratorContract("check my shop's business configuration");
+    const step = response.routing.plan[0];
+    assert.strictEqual(step.selected_specialist.type, 'shared_infrastructure');
+    assert.strictEqual(step.inputs.capability_id, null);
+  });
+
+  await testAsync('runOrchestratorContract: a multi-step plan resolves each step\'s capability independently, one tool -> one specialist only', async () => {
+    const response = await runOrchestratorContract('market competitor research and social media advertising');
+    const [researchStep, socialStep] = response.routing.plan;
+    assert.strictEqual(researchStep.inputs.tool_id, 'market_research');
+    assert.strictEqual(researchStep.inputs.capability_id, 'market_research');
+    assert.strictEqual(socialStep.inputs.tool_id, 'social_content_planning');
+    // 5 platform capabilities (instagram/facebook/tiktok/.../youtube) share this one
+    // tool and none of their names appear in the clause's own wording, so they tie -
+    // the documented, deterministic tie-break (declared order, first wins) resolves
+    // it to 'instagram' rather than guessing among equally-scored candidates.
+    assert.strictEqual(socialStep.inputs.capability_id, 'instagram');
+  });
+
   await testAsync('runOrchestratorContract: an ambiguous task requires clarification instead of assuming', async () => {
     const response = await runOrchestratorContract('I need content optimization help');
     assert.strictEqual(response.needs_more_information, true);

@@ -40,7 +40,8 @@ const EXECUTION_STATE_FIELDS = [
     id: 'inputs',
     title: 'Inputs',
     type: 'object | null',
-    description: 'What was actually asked for ({ category, tool_id }) - not a duplicate of the full execution request.',
+    description:
+      'What was actually asked for ({ category, tool_id, capability_id, input_contract }) - not a duplicate of the full execution request. capability_id/input_contract are looked up from agent/core/specialistCapabilityRegistry.js\'s supported_tasks that reference the matched tool - when more than one task shares that tool, the one whose own wording best matches the request wins (same scoring used for tool selection), ties broken by declared order; both stay null only when zero tasks reference the matched tool, or no tool was matched at all.',
   },
   {
     id: 'required_context',
@@ -126,6 +127,8 @@ function deriveExecutionState({
   target,
   category = null,
   toolId = null,
+  capabilityId = null,
+  inputContract = null,
   requiredContextIds = [],
   outcome = null,
   verificationStatus = 'unverified',
@@ -133,7 +136,9 @@ function deriveExecutionState({
   const state = createEmptyExecutionState(request);
   state.current_task = currentTask || request;
   state.selected_specialist = target ? { type: target.type, id: target.id, title: target.title } : null;
-  state.inputs = toolId ? { category, tool_id: toolId } : null;
+  state.inputs = toolId
+    ? { category, tool_id: toolId, capability_id: capabilityId, input_contract: inputContract }
+    : null;
   state.required_context = requiredContextIds;
   state.tool_calls = toolId ? [toolId] : [];
 

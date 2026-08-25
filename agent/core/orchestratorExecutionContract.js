@@ -8,34 +8,54 @@
 // Deterministic only - no AI/Claude API call is made here. agentContract.js's own
 // header reserves "no AI API calls" for a later, explicitly-scoped prompt, so
 // capability identification is plain keyword matching against the existing
-// tools/toolRegistry.js and agent/core/specialistRegistry.js entries.
+// tools/toolRegistry.js and agent/core/specialistCapabilityRegistry.js entries.
 //
-// STRUCTURED ROUTING (this revision): a single objective can require more than one
-// of the 7 approved specialists, or none of the 21 registered tools at all (Product
-// and Analytics & Optimization still have no TOOL_REGISTRY category today). Routing
-// therefore happens at the specialist level first (ROUTING_TARGETS, built from
-// specialistRegistry.js + the shared-infrastructure tool categories), producing a
-// controlled, ordered execution plan rather than a single silent pick - and when a
-// request is genuinely ambiguous (two or more targets tie for the best match), routing
-// stops and reports a clarification requirement instead of guessing. See
-// planRouting()/routeClause() below. Every existing single-capability function
-// (understandObjective, identifyRequiredCapability, needsMoreInformation,
+// STRUCTURED ROUTING: a single objective can require more than one of the 7 approved
+// specialists. Routing happens at the specialist level first (ROUTING_TARGETS, built
+// from agent/core/specialistCapabilityRegistry.js + the shared-infrastructure tool
+// categories), producing a controlled, ordered execution plan rather than a single
+// silent pick - and when a request is genuinely ambiguous (two or more targets tie for
+// the best match), routing stops and reports a clarification requirement instead of
+// guessing. See planRouting()/routeClause() below. Every existing single-capability
+// function (understandObjective, identifyRequiredCapability, needsMoreInformation,
 // createExecutionRequest, selectSpecialist, gatherMinimumContext,
 // executeSelectedCapability, validateResult) is reused unchanged - the plan is built
 // by calling them once per routed target, not by reimplementing their logic.
 //
-// No autonomous or write-capable external action - the only real tool call available
-// today is the existing read-only tools/businessConfigurationRetrieval.js, and it only
-// runs when its approval classification allows it to proceed automatically (see
-// approvals/approvalArchitecture.js). Anything approval_required/externally_executable
-// stops and reports that instead of executing.
+// THE FULL PIPELINE THIS FILE IMPLEMENTS, per request:
+//   User Request -> Chief (planRouting: split into clauses, route each one, stop for
+//   clarification on anything ambiguous/unmatched) -> Specialist (buildPlanStep: the
+//   matched agent/core/specialistCapabilityRegistry.js entry supplies the specialist's
+//   required_tools and, once a tool is matched, which declared capability/task it
+//   serves) -> Tool(s) (executeSelectedCapability: the ONLY place a tool executor is
+//   ever invoked, gated by agent/core/toolPermissions.js's checkToolAccess() - see
+//   TOOL_EXECUTORS below) -> Result (validateResult + deriveExecutionState, one
+//   self-contained state per step) -> Chief (buildRoutingResponse aggregates every
+//   step's state into the final response) -> User.
+//
+// NO UNCONTROLLED SPECIALIST-TO-SPECIALIST EXECUTION: TOOL_EXECUTORS is the single
+// dispatch surface in this entire codebase - no agent/core/*Agent.js file requires
+// a tools/*.js module or this file, so nothing outside this pipeline can ever invoke a
+// tool. Where one specialist's module reuses another's pure, side-effect-free data
+// composition helper (agent/core/researchAgent.js's generic record builders, reused by
+// every specialist per established convention; agent/core/socialAdvertisingAgent.js's
+// content_calendar capability optionally reading agent/core/marketingAgent.js's
+// retrieveMarketingData for campaign context), that is read-only schema composition,
+// never a tool call - it does not touch TOOL_EXECUTORS, does not bypass
+// checkToolAccess, and never executes an action on another specialist's behalf.
+//
+// No autonomous or write-capable external action - every implemented tool today is
+// classified 'analysis_only' or 'recommendation' in agent/core/toolPermissions.js's
+// TOOL_CLASSIFICATIONS (see approvals/approvalArchitecture.js). Anything
+// approval_required/externally_executable stops and reports that instead of executing.
 //
 // No new persistence - the returned state is a stateModel.js-shaped object built
 // in-memory and returned to the caller; it is never written to memory/state/ (no
 // storage mechanism has been chosen yet).
 
-const { TOOL_REGISTRY, getToolsByCategory } = require('../../tools/toolRegistry');
-const { SPECIALIST_REGISTRY, getSpecialistById } = require('./specialistRegistry');
+const { TOOL_REGISTRY, getToolsByCategory, getToolById } = require('../../tools/toolRegistry');
+const { getSpecialistById } = require('./specialistRegistry');
+const { getSpecialistCapabilityRegistry, getSpecialistCapabilityById } = require('./specialistCapabilityRegistry');
 const { getContextBoundaries } = require('./contextBoundaries');
 const { createEmptyState } = require('./stateModel');
 const { deriveExecutionState } = require('./executionState');
@@ -318,14 +338,17 @@ function validateResult(outcome) {
 // specialist may use which tool category" (CLAUDE.md section 3's Permissions
 // component), reused here for routing rather than duplicated.
 
-// One routing target per approved specialist (all 7, including Product and Analytics
-// & Optimization, which still have no TOOL_REGISTRY category - their keyword text
-// comes from specialistRegistry.js instead, which is what makes them routable at
-// all), plus one per shared-infrastructure category (keyword text derived from the
-// tools already registered under that category). Built once at module load from the
-// existing registries - not new data.
+// One routing target per approved specialist (all 7 - see
+// agent/core/specialistCapabilityRegistry.js, this orchestrator's connection to the
+// specialist registry), plus one per shared-infrastructure category (keyword text
+// derived from the tools already registered under that category). Built once at
+// module load from the existing registries - not new data. Specialist id/title/
+// description come from the capability registry, which reuses
+// agent/core/specialistRegistry.js verbatim (see that registry's own tests) - so this
+// is byte-identical to routing directly against specialistRegistry.js, not a new
+// source of truth.
 function buildRoutingTargets() {
-  const specialistTargets = SPECIALIST_REGISTRY.map((specialist) => ({
+  const specialistTargets = getSpecialistCapabilityRegistry().map((specialist) => ({
     type: 'specialist',
     id: specialist.id,
     title: specialist.title,
@@ -466,15 +489,52 @@ function planRouting(objective) {
   };
 }
 
+// Scores a piece of candidate text against an already-tokenized objective word set -
+// the same word-overlap approach used throughout this file (identifyRequiredCapability,
+// scoreRoutingTargets), factored into one place so buildPlanStep's tool and capability
+// matching below don't each duplicate it.
+function scoreWordOverlap(text, objectiveWords) {
+  let score = 0;
+  for (const word of tokenize(text)) {
+    if (objectiveWords.has(word)) score += 1;
+  }
+  return score;
+}
+
+// Finds, among a list of capability tasks, the one whose own id/title/description
+// best matches the objective's wording - ties broken by declared order (first wins).
+// Returns null when the list is empty; never guesses among equally-scored candidates
+// beyond that deterministic, documented tie-break.
+function bestMatchingTask(tasks, objectiveWords) {
+  let best = null;
+  let bestScore = -1;
+  for (const task of tasks) {
+    const score = scoreWordOverlap(`${task.id} ${task.title} ${task.description}`, objectiveWords);
+    if (score > bestScore) {
+      bestScore = score;
+      best = task;
+    }
+  }
+  return best;
+}
+
 // Builds and executes one plan step for a routed target, reusing the existing
 // single-capability pipeline (createExecutionRequest, selectSpecialist,
 // gatherMinimumContext, executeSelectedCapability, validateResult) unchanged, and
 // returns it as a shared execution state (agent/core/executionState.js) rather than
 // an ad hoc object - one minimal, self-contained state per specialist, so nothing
-// from this step leaks into any other step's state. Finds the best-scoring tool among
-// the categories that map to this target; if none maps (Listing, Social &
-// Advertising today) or none scores, reports an honest not_available outcome rather
-// than inventing a tool call.
+// from this step leaks into any other step's state.
+//
+// CONNECTION TO THE SPECIALIST CAPABILITY REGISTRY: for a specialist target, which
+// tools are even candidates comes from agent/core/specialistCapabilityRegistry.js's
+// required_tools (itself derived from toolPermissions.js's SPECIALIST_TO_CATEGORIES -
+// not a separate source of truth). Once a tool is matched, the registry's
+// supported_tasks tells us which declared capability that tool actually serves - the
+// explicit "Specialist -> Tool(s)" step this pipeline is required to make visible, not
+// just a bare tool id. For a shared-infrastructure target (no specialist owns it),
+// candidates come directly from tools/toolRegistry.js's own category, unchanged.
+// Finds the best-scoring tool among the candidates; if none scores, reports an honest
+// not_available outcome rather than inventing a tool call.
 async function buildPlanStep(
   target,
   objective,
@@ -482,39 +542,44 @@ async function buildPlanStep(
   runTokenTracker = { tokensUsedThisRun: 0 },
   researchParams = null
 ) {
-  const categories = target.type === 'specialist'
-    ? (SPECIALIST_TO_CATEGORIES[target.id] || [])
-    : [target.id];
+  const capabilityEntry = target.type === 'specialist' ? getSpecialistCapabilityById(target.id) : null;
+  const candidateToolIds = capabilityEntry
+    ? capabilityEntry.required_tools
+    : target.type === 'shared_infrastructure'
+      ? getToolsByCategory(target.id).map((tool) => tool.id)
+      : [];
 
   const objectiveWords = new Set(tokenize(objective));
   let toolMatch = null;
-  let matchedCategory = null;
   let bestScore = 0;
 
-  for (const category of categories) {
-    for (const tool of getToolsByCategory(category)) {
-      const toolWords = tokenize(`${tool.id} ${tool.title} ${tool.description} ${tool.category}`);
-      let score = 0;
-      for (const word of toolWords) {
-        if (objectiveWords.has(word)) score += 1;
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        toolMatch = tool;
-        matchedCategory = category;
-      }
+  for (const toolId of candidateToolIds) {
+    const tool = getToolById(toolId);
+    if (!tool) continue;
+    const score = scoreWordOverlap(`${tool.id} ${tool.title} ${tool.description} ${tool.category}`, objectiveWords);
+    if (score > bestScore) {
+      bestScore = score;
+      toolMatch = tool;
     }
   }
 
-  // No tool scored against the objective's own wording, but a category does exist for
-  // this target - fall back to its first registered tool so execution can still report
+  // No tool scored against the objective's own wording, but at least one candidate
+  // exists for this target - fall back to the first one so execution can still report
   // an honest, specific status (e.g. not_available) instead of a generic "no tool".
-  // (Listing and Social & Advertising now have real categories/tools, so they take
-  // this fallback path too, same as every other implemented specialist.)
-  if (!toolMatch && categories.length > 0) {
-    matchedCategory = categories[0];
-    const toolsInCategory = getToolsByCategory(matchedCategory);
-    toolMatch = toolsInCategory.length > 0 ? toolsInCategory[0] : null;
+  if (!toolMatch && candidateToolIds.length > 0) {
+    toolMatch = getToolById(candidateToolIds[0]) || null;
+  }
+
+  const matchedCategory = toolMatch ? toolMatch.category : null;
+
+  // Which declared capability (agent/core/specialistCapabilityModel.js's
+  // CAPABILITY_TASK_FIELDS shape) the matched tool actually serves - null (never
+  // guessed) when the tool serves zero capabilities in the registry, or when this
+  // target has no capability entry at all (shared infrastructure).
+  let matchedCapability = null;
+  if (capabilityEntry && toolMatch) {
+    const candidateTasks = capabilityEntry.supported_tasks.filter((task) => task.tool_ids.includes(toolMatch.id));
+    matchedCapability = bestMatchingTask(candidateTasks, objectiveWords);
   }
 
   let executionRequest;
@@ -559,6 +624,8 @@ async function buildPlanStep(
     target,
     category: toolMatch ? matchedCategory : null,
     toolId: toolMatch ? toolMatch.id : null,
+    capabilityId: matchedCapability ? matchedCapability.id : null,
+    inputContract: matchedCapability ? matchedCapability.input_contract : null,
     requiredContextIds,
     outcome,
     verificationStatus,
