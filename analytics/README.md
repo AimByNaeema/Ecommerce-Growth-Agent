@@ -252,3 +252,47 @@ already made. It has no write/execute path of its own: `decideExperiment()`'s
 requirement, never applied to a real store, page, price, or ad account automatically —
 acting on it is a separate, human-approved action via
 [`../approvals/README.md`](../approvals/README.md).
+
+## Experiment Learning Store
+
+[`../agent/core/experimentLearningStore.js`](../agent/core/experimentLearningStore.js)
+is the knowledge layer built on top of the Experiment Framework above: it distills one
+*decided* experiment into a structured Experiment Lesson via
+[`../agent/core/experimentLessonModel.js`](../agent/core/experimentLessonModel.js) —
+`experiment` (a reference back to the source), `hypothesis`, `result`, `evidence`,
+`outcome`, `lesson`, and `confidence` — and makes validated lessons available to future
+recommendations.
+
+`recordExperimentLesson()` only accepts an experiment whose `status` is `'completed'`
+and whose `decision.outcome` is `'ship_variant'` or `'keep_control'` — it throws for
+`'iterate'`, `'inconclusive'`, or `'not_yet_decided'` rather than forcing an undecided
+or ambiguous call into a false success/failure binary. `outcome` is the one field this
+module derives itself, and only mechanically from that decision (`ship_variant` →
+`'success'`, `keep_control` → `'failure'`) — never caller-set, so a failed experiment
+can never be mislabeled a success. `hypothesis`, `result`, and `evidence` are direct
+relays of the source experiment's own fields; `lesson` and `confidence` are always
+caller-supplied, and a `confidence` asserted with zero result evidence is forced down
+to `'unassessed'` — the exact same full-downgrade rule
+[`../agent/core/growthOpportunityEngine.js`](../agent/core/growthOpportunityEngine.js)'s
+`normalizeCandidate()` already applies to its own confidence field, reusing
+[`../agent/core/researchRecordModel.js`](../agent/core/researchRecordModel.js)'s
+`CONFIDENCE_LEVELS`.
+
+There is no database or persistence layer here — like every other engine in this
+folder, this module is a set of pure functions over a caller-held array of lesson
+records; whoever calls it is responsible for keeping that array across calls. **Making
+validated knowledge available to future recommendations is enforced mechanically, not
+just by convention**: `getValidatedLearnings()` is the only supported way to surface
+this knowledge downstream, and it filters strictly to `outcome === 'success'`.
+`getCautionaryLessons()` surfaces `'failure'` lessons separately — real, storable
+knowledge so a losing test is not silently repeated, but never mixed into the
+validated pool. `lessonsAsRecommendationEvidence()` converts only validated lessons
+into plain evidence strings shaped for direct use as `evidence` array entries in
+`growthOpportunityEngine.js` candidates or `salesGrowthPlanner.js`'s evidence arrays —
+built strictly on top of `getValidatedLearnings()`, so a failed experiment's lesson can
+never reach a caller through that path, and can never be treated as successful
+knowledge by anything built on top of it.
+
+Standalone deliverable, not wired into `tools/toolRegistry.js` or the
+Chief/Orchestrator — the same deliberate scope choice every other engine in this folder
+already made.

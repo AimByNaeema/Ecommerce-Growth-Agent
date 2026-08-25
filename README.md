@@ -412,4 +412,18 @@ never applied silently), and every decision is tagged with one of
 `approvals/approvalArchitecture.js`'s 4 classifications via
 `growthOpportunityEngine.js`'s reused `buildApprovalRequirement()` — the same pattern
 `salesGrowthPlanner.js`'s recommended actions already use. Standalone deliverable, no
-write/execute path of its own.
+write/execute path of its own. A knowledge layer now sits on top of that framework:
+[`agent/core/experimentLearningStore.js`](agent/core/experimentLearningStore.js) via
+[`agent/core/experimentLessonModel.js`](agent/core/experimentLessonModel.js) distills a
+*decided* experiment into a structured lesson — experiment reference, hypothesis,
+result, evidence, outcome, lesson, and confidence. `outcome` is mechanically derived
+from the decision (`ship_variant` → `success`, `keep_control` → `failure`; `iterate`/
+`inconclusive`/`not_yet_decided` throw rather than guessing) — never caller-set, so a
+failed experiment can never be mislabeled a success. Making validated knowledge
+available to future recommendations is enforced mechanically:
+`getValidatedLearnings()` and `lessonsAsRecommendationEvidence()` return only
+`outcome === 'success'` lessons; `getCautionaryLessons()` keeps failed-experiment
+lessons real and retrievable but permanently separate from that validated pool, so a
+failed experiment is never treated as successful knowledge by anything built on top of
+it. No persistence layer — a set of pure functions over a caller-held lesson array,
+the same standalone-deliverable, no-write-path pattern as every other engine here.
