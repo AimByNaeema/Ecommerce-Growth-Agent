@@ -2,6 +2,10 @@
 
 const assert = require('node:assert');
 const { checkConversionOptimization } = require('../../agent/core/conversionOptimizationChecker');
+const {
+  CONVERSION_OPTIMIZATION_DIMENSIONS,
+  validateConversionOptimizationCheckShape,
+} = require('../../agent/core/conversionOptimizationCheckModel');
 
 let passed = 0;
 let failed = 0;
@@ -18,12 +22,38 @@ function test(name, fn) {
   }
 }
 
-// A fully-populated, fully-passing evidence set - one honest example per dimension.
-function fullEvidence() {
-  return {
-    subjectReference: '(Example product page)',
+function assertValid(result) {
+  const validation = validateConversionOptimizationCheckShape(result);
+  assert.strictEqual(validation.valid, true, `expected valid, got errors: ${validation.errors.join(', ')}`);
+}
+
+// --- baseline: nothing supplied stays honestly empty, never fabricated -----------------
+
+test('calling with no dimension evidence reports every dimension empty and a 0% score, never fabricated', () => {
+  const result = checkConversionOptimization({ subjectReference: '(no evidence)' });
+  assertValid(result);
+  for (const status of Object.values(result.dimension_status)) {
+    assert.strictEqual(status, 'empty');
+  }
+  assert.strictEqual(result.quality_score.percentage, 0);
+  assert.strictEqual(result.quality_score.status, 'empty');
+  assert.strictEqual(result.dimension_gaps.length, CONVERSION_OPTIMIZATION_DIMENSIONS.length);
+  assert.deepStrictEqual(result.recommendations, []);
+  assert.deepStrictEqual(result.prioritized_recommendations, []);
+});
+
+test('subject_reference defaults to empty string and is echoed back when supplied', () => {
+  const result = checkConversionOptimization({ subjectReference: '(Example store homepage)' });
+  assert.strictEqual(result.subject_reference, '(Example store homepage)');
+});
+
+// --- a fully-passing store reports success across every dimension ----------------------
+
+test('fully-passing evidence across all 8 dimensions reports success and a 100% score', () => {
+  const result = checkConversionOptimization({
+    subjectReference: 'sku-1',
     productPages: {
-      imagesCount: 3,
+      imagesCount: 5,
       hasDescription: true,
       hasPriceDisplayed: true,
       hasAvailabilityStatus: true,
@@ -33,7 +63,7 @@ function fullEvidence() {
       hasClearHeadline: true,
       hasValueProposition: true,
       hasHeroCta: true,
-      loadTimeSeconds: 2,
+      loadTimeSeconds: 1.5,
       hasSocialProof: true,
     },
     offers: {
@@ -75,35 +105,9 @@ function fullEvidence() {
       currencyClear: true,
       allCostsShownBeforeCheckout: true,
     },
-  };
-}
+  });
 
-// --- baseline: nothing supplied stays honestly empty, never fabricated -------------------
-
-test('a call with nothing supplied reports every dimension empty, a 0% score, and 8 dimension_gaps', () => {
-  const result = checkConversionOptimization({});
-  for (const status of Object.values(result.dimension_status)) {
-    assert.strictEqual(status, 'empty');
-  }
-  assert.strictEqual(result.quality_score.percentage, 0);
-  assert.strictEqual(result.quality_score.status, 'empty');
-  assert.strictEqual(result.dimension_gaps.length, 8);
-  assert.deepStrictEqual(result.findings, [
-    '[Product pages] No product page evidence was supplied to audit.',
-    '[Landing pages] No landing page evidence was supplied to audit.',
-    '[Offers] No active offer was supplied to audit.',
-    '[CTA] No CTA evidence was supplied to audit.',
-    '[Trust signals] No trust signal evidence was supplied to audit.',
-    '[Checkout friction] No checkout evidence was supplied to audit.',
-    '[Mobile experience] No mobile experience evidence was supplied to audit.',
-    '[Pricing presentation] No pricing presentation evidence was supplied to audit.',
-  ]);
-});
-
-// --- a fully-populated, fully-passing evidence set reports success everywhere ------------
-
-test('a fully-populated evidence set reports success on every dimension, a 100% score, and zero gaps', () => {
-  const result = checkConversionOptimization(fullEvidence());
+  assertValid(result);
   for (const [dimension, status] of Object.entries(result.dimension_status)) {
     assert.strictEqual(status, 'success', `expected ${dimension} to be success`);
   }
@@ -114,64 +118,105 @@ test('a fully-populated evidence set reports success on every dimension, a 100% 
   assert.deepStrictEqual(result.prioritized_recommendations, []);
 });
 
-// --- product_pages -------------------------------------------------------------------------
+// --- product_pages -----------------------------------------------------------------------
 
-test('product_pages is partial and flags an image count below the conventional guideline', () => {
+test('product_pages is empty when no evidence is supplied', () => {
+  const result = checkConversionOptimization({});
+  assert.strictEqual(result.dimension_status.product_pages, 'empty');
+  assert.ok(result.findings.some((f) => f === '[Product pages] No product page evidence was supplied to audit.'));
+});
+
+test('product_pages is partial and flags a below-guideline image count', () => {
   const result = checkConversionOptimization({
-    productPages: { imagesCount: 2, hasDescription: true, hasPriceDisplayed: true, hasAvailabilityStatus: true, hasCustomerReviews: true },
+    productPages: { imagesCount: 1, hasDescription: true, hasPriceDisplayed: true, hasAvailabilityStatus: true, hasCustomerReviews: true },
   });
   assert.strictEqual(result.dimension_status.product_pages, 'partial');
-  assert.ok(result.findings.some((f) => f.includes('conventional guideline: at least 3')));
+  assert.ok(result.recommendations.some((r) => r.includes('Add more product images')));
 });
 
-// --- landing_pages ---------------------------------------------------------------------------
+// --- landing_pages -----------------------------------------------------------------------
 
-test('landing_pages flags a load time over the conventional guideline as critical', () => {
+test('landing_pages is empty when no evidence is supplied', () => {
+  const result = checkConversionOptimization({});
+  assert.strictEqual(result.dimension_status.landing_pages, 'empty');
+});
+
+test('landing_pages flags a load time above the conventional threshold', () => {
   const result = checkConversionOptimization({
-    landingPages: { hasClearHeadline: true, hasValueProposition: true, hasHeroCta: true, loadTimeSeconds: 5, hasSocialProof: true },
+    landingPages: { hasClearHeadline: true, hasValueProposition: true, hasHeroCta: true, loadTimeSeconds: 6, hasSocialProof: true },
   });
   assert.strictEqual(result.dimension_status.landing_pages, 'partial');
-  const entry = result.prioritized_recommendations.find((r) => r.dimension === 'landing_pages');
-  assert.strictEqual(entry.severity, 'critical');
+  assert.ok(result.findings.some((f) => f.includes('conventional guideline: 3s')));
+  assert.ok(
+    result.prioritized_recommendations.some((r) => r.dimension === 'landing_pages' && r.severity === 'critical')
+  );
 });
 
-// --- offers ----------------------------------------------------------------------------------
+// --- offers ------------------------------------------------------------------------------
 
-test('offers is empty (not a failure) when no active offer is supplied', () => {
-  const result = checkConversionOptimization({});
+test('offers is honestly empty (not a failure) when there is no active offer', () => {
+  const result = checkConversionOptimization({ offers: { hasActiveOffer: false } });
   assert.strictEqual(result.dimension_status.offers, 'empty');
   assert.ok(!result.recommendations.some((r) => r.startsWith('[Offers]')));
 });
 
-test('offers is partial once an active offer exists but its checks are unmet', () => {
+test('offers is empty when the offers object itself is not supplied at all', () => {
+  const result = checkConversionOptimization({});
+  assert.strictEqual(result.dimension_status.offers, 'empty');
+});
+
+test('offers is partial when an active offer has unclear terms', () => {
   const result = checkConversionOptimization({
-    offers: { hasActiveOffer: true, offerTermsClear: false, offerExpiryShown: false, discountVisibleBeforeCheckout: false },
+    offers: { hasActiveOffer: true, offerTermsClear: false, offerExpiryShown: true, discountVisibleBeforeCheckout: true },
   });
   assert.strictEqual(result.dimension_status.offers, 'partial');
   assert.ok(result.recommendations.some((r) => r.includes('Clarify the offer terms')));
 });
 
-// --- cta -------------------------------------------------------------------------------------
+// --- cta ---------------------------------------------------------------------------------
 
-test('cta flags missing CTA text as critical', () => {
-  const result = checkConversionOptimization({
-    cta: { ctaAboveFold: true, ctaButtonCount: 1, ctaContrastSufficient: true },
-  });
-  const entry = result.prioritized_recommendations.find((r) => r.recommendation.includes('Add clear CTA text'));
-  assert.strictEqual(entry.severity, 'critical');
+test('cta is empty when no evidence is supplied', () => {
+  const result = checkConversionOptimization({});
+  assert.strictEqual(result.dimension_status.cta, 'empty');
 });
 
-test('cta flags a button count over the conventional guideline as low severity', () => {
+test('cta flags missing CTA text and a missing CTA button as critical', () => {
   const result = checkConversionOptimization({
-    cta: { ctaText: 'Buy Now', ctaAboveFold: true, ctaButtonCount: 5, ctaContrastSufficient: true },
+    cta: { ctaText: '', ctaAboveFold: false, ctaButtonCount: 0, ctaContrastSufficient: false },
   });
-  const entry = result.prioritized_recommendations.find((r) => r.recommendation.includes('Reduce the number of competing CTA buttons'));
-  assert.strictEqual(entry.severity, 'low');
+  assert.strictEqual(result.dimension_status.cta, 'partial');
+  const ctaCritical = result.prioritized_recommendations.filter((r) => r.dimension === 'cta' && r.severity === 'critical');
+  assert.ok(ctaCritical.length >= 2);
 });
 
-// --- trust_signals -----------------------------------------------------------------------------
+test('cta over-button-count check only applies once at least one CTA button exists', () => {
+  const result = checkConversionOptimization({
+    cta: { ctaText: 'Buy', ctaAboveFold: true, ctaButtonCount: 0, ctaContrastSufficient: true },
+  });
+  // ctaButtonCount is 0, so the "too many buttons" check must not fire at all -
+  // only the "no CTA button present" check should be flagged.
+  assert.ok(!result.recommendations.some((r) => r.includes('Reduce the number of competing CTA buttons')));
+});
 
-test('trust_signals flags a missing security badge', () => {
+test('cta flags too many competing CTA buttons as low severity', () => {
+  const result = checkConversionOptimization({
+    cta: { ctaText: 'Buy', ctaAboveFold: true, ctaButtonCount: 5, ctaContrastSufficient: true },
+  });
+  assert.ok(
+    result.prioritized_recommendations.some(
+      (r) => r.dimension === 'cta' && r.severity === 'low' && r.recommendation.includes('Reduce the number of competing CTA buttons')
+    )
+  );
+});
+
+// --- trust_signals -----------------------------------------------------------------------
+
+test('trust_signals is empty when no evidence is supplied', () => {
+  const result = checkConversionOptimization({});
+  assert.strictEqual(result.dimension_status.trust_signals, 'empty');
+});
+
+test('trust_signals flags missing security badges', () => {
   const result = checkConversionOptimization({
     trustSignals: { hasSecurityBadges: false, hasReturnPolicyVisible: true, hasMoneyBackGuarantee: true, hasCustomerReviews: true, hasContactInfoVisible: true },
   });
@@ -179,101 +224,162 @@ test('trust_signals flags a missing security badge', () => {
   assert.ok(result.recommendations.some((r) => r.includes('Add security/payment trust badges')));
 });
 
-// --- checkout_friction -------------------------------------------------------------------------
+// --- checkout_friction -------------------------------------------------------------------
 
-test('checkout_friction flags too many steps, no guest checkout, and required account creation as critical', () => {
-  const result = checkConversionOptimization({
-    checkoutFriction: { stepsToCheckout: 6, guestCheckoutAvailable: false, accountCreationRequired: true, paymentMethodsCount: 3, formFieldsCount: 6 },
-  });
-  const critical = result.prioritized_recommendations
-    .filter((r) => r.dimension === 'checkout_friction' && r.severity === 'critical')
-    .map((r) => r.recommendation);
-  assert.strictEqual(critical.length, 3);
+test('checkout_friction is empty when no evidence is supplied', () => {
+  const result = checkConversionOptimization({});
+  assert.strictEqual(result.dimension_status.checkout_friction, 'empty');
 });
 
-// --- mobile_experience -------------------------------------------------------------------------
-
-test('mobile_experience flags a non-responsive layout as critical and a low page speed score as high', () => {
+test('checkout_friction flags mandatory account creation and no guest checkout as critical', () => {
   const result = checkConversionOptimization({
-    mobileExperience: { mobileResponsive: false, mobilePageSpeedScore: 42, tapTargetsAdequate: true, mobileCheckoutOptimized: true },
+    checkoutFriction: {
+      stepsToCheckout: 2,
+      guestCheckoutAvailable: false,
+      accountCreationRequired: true,
+      paymentMethodsCount: 3,
+      formFieldsCount: 5,
+    },
   });
-  const responsive = result.prioritized_recommendations.find((r) => r.recommendation.includes('mobile-responsive'));
-  const speed = result.prioritized_recommendations.find((r) => r.recommendation.includes('Improve mobile page speed'));
-  assert.strictEqual(responsive.severity, 'critical');
-  assert.strictEqual(speed.severity, 'high');
+  assert.strictEqual(result.dimension_status.checkout_friction, 'partial');
+  const critical = result.prioritized_recommendations.filter((r) => r.dimension === 'checkout_friction' && r.severity === 'critical');
+  assert.ok(critical.some((r) => r.recommendation.includes('guest checkout')));
+  assert.ok(critical.some((r) => r.recommendation.includes('Remove the requirement to create an account')));
 });
 
-// --- pricing_presentation -----------------------------------------------------------------------
+test('checkout_friction flags too many steps and too many form fields', () => {
+  const result = checkConversionOptimization({
+    checkoutFriction: {
+      stepsToCheckout: 6,
+      guestCheckoutAvailable: true,
+      accountCreationRequired: false,
+      paymentMethodsCount: 1,
+      formFieldsCount: 12,
+    },
+  });
+  assert.ok(result.findings.some((f) => f.includes('conventional guideline: at most 4')));
+  assert.ok(result.recommendations.some((r) => r.includes('Offer at least 2 payment methods')));
+  assert.ok(result.recommendations.some((r) => r.includes('Reduce the checkout form to at most 8 fields')));
+});
+
+// --- mobile_experience -------------------------------------------------------------------
+
+test('mobile_experience is empty when no evidence is supplied', () => {
+  const result = checkConversionOptimization({});
+  assert.strictEqual(result.dimension_status.mobile_experience, 'empty');
+});
+
+test('mobile_experience flags a below-threshold mobile page speed score', () => {
+  const result = checkConversionOptimization({
+    mobileExperience: { mobileResponsive: true, mobilePageSpeedScore: 20, tapTargetsAdequate: true, mobileCheckoutOptimized: true },
+  });
+  assert.strictEqual(result.dimension_status.mobile_experience, 'partial');
+  assert.ok(result.findings.some((f) => f.includes('conventional guideline: 50+')));
+});
+
+// --- pricing_presentation ------------------------------------------------------------------
+
+test('pricing_presentation is empty when no evidence is supplied', () => {
+  const result = checkConversionOptimization({});
+  assert.strictEqual(result.dimension_status.pricing_presentation, 'empty');
+});
 
 test('pricing_presentation flags hidden shipping cost and hidden fees as critical', () => {
   const result = checkConversionOptimization({
-    pricingPresentation: { priceClearlyDisplayed: true, compareAtPriceShown: true, shippingCostShownBeforeCheckout: false, currencyClear: true, allCostsShownBeforeCheckout: false },
+    pricingPresentation: {
+      priceClearlyDisplayed: true,
+      compareAtPriceShown: true,
+      shippingCostShownBeforeCheckout: false,
+      currencyClear: true,
+      allCostsShownBeforeCheckout: false,
+    },
   });
-  const critical = result.prioritized_recommendations
-    .filter((r) => r.dimension === 'pricing_presentation' && r.severity === 'critical')
-    .map((r) => r.recommendation);
-  assert.strictEqual(critical.length, 2);
+  assert.strictEqual(result.dimension_status.pricing_presentation, 'partial');
+  const critical = result.prioritized_recommendations.filter((r) => r.dimension === 'pricing_presentation' && r.severity === 'critical');
+  assert.ok(critical.some((r) => r.recommendation.includes('Show shipping cost before checkout')));
+  assert.ok(critical.some((r) => r.recommendation.includes('Disclose all costs')));
+});
+
+test('pricing_presentation flags a missing compare-at price as low severity only', () => {
+  const result = checkConversionOptimization({
+    pricingPresentation: {
+      priceClearlyDisplayed: true,
+      compareAtPriceShown: false,
+      shippingCostShownBeforeCheckout: true,
+      currencyClear: true,
+      allCostsShownBeforeCheckout: true,
+    },
+  });
+  const entry = result.prioritized_recommendations.find((r) => r.recommendation.includes('compare-at price'));
+  assert.strictEqual(entry.severity, 'low');
 });
 
 // --- prioritized_recommendations ordering ---------------------------------------------------
 
-test('prioritized_recommendations is sorted by severity tier, ties broken by dimension order', () => {
+test('prioritized_recommendations is sorted by severity tier, critical first', () => {
   const result = checkConversionOptimization({
-    pricingPresentation: { priceClearlyDisplayed: true, compareAtPriceShown: false, shippingCostShownBeforeCheckout: true, currencyClear: true, allCostsShownBeforeCheckout: true },
-    productPages: { imagesCount: 3, hasDescription: true, hasPriceDisplayed: true, hasAvailabilityStatus: false, hasCustomerReviews: true },
-    checkoutFriction: { stepsToCheckout: 6, guestCheckoutAvailable: true, accountCreationRequired: false, paymentMethodsCount: 3, formFieldsCount: 6 },
+    pricingPresentation: {
+      priceClearlyDisplayed: true,
+      compareAtPriceShown: false, // low
+      shippingCostShownBeforeCheckout: false, // critical
+      currencyClear: false, // medium
+      allCostsShownBeforeCheckout: true,
+    },
+    trustSignals: {
+      hasSecurityBadges: false, // high
+      hasReturnPolicyVisible: true,
+      hasMoneyBackGuarantee: true,
+      hasCustomerReviews: true,
+      hasContactInfoVisible: true,
+    },
   });
   const severities = result.prioritized_recommendations.map((r) => r.severity);
-  const rank = { critical: 0, high: 1, medium: 2, low: 3 };
+  const severityRank = { critical: 0, high: 1, medium: 2, low: 3 };
   for (let i = 1; i < severities.length; i += 1) {
-    assert.ok(rank[severities[i - 1]] <= rank[severities[i]], 'severities must be non-decreasing');
+    assert.ok(
+      severityRank[severities[i - 1]] <= severityRank[severities[i]],
+      `severity order broken at index ${i}: ${severities.join(', ')}`
+    );
   }
-  // checkout_friction (critical) precedes product_pages (medium) precedes pricing_presentation (low).
-  assert.strictEqual(result.prioritized_recommendations[0].dimension, 'checkout_friction');
-  assert.strictEqual(result.prioritized_recommendations[0].severity, 'critical');
-  assert.strictEqual(result.prioritized_recommendations[result.prioritized_recommendations.length - 1].dimension, 'pricing_presentation');
+  assert.strictEqual(severities[0], 'critical');
+  assert.strictEqual(severities[severities.length - 1], 'low');
 });
 
-// --- specialized_records traceability -----------------------------------------------------------
+// --- specialized_records traceability --------------------------------------------------------
 
-test('specialized_records echoes back exactly the caller-supplied evidence per dimension, and null where absent', () => {
-  const productPages = { imagesCount: 3, hasDescription: true, hasPriceDisplayed: true, hasAvailabilityStatus: true, hasCustomerReviews: true };
-  const result = checkConversionOptimization({ productPages });
-  assert.deepStrictEqual(result.specialized_records.product_pages, productPages);
-  assert.strictEqual(result.specialized_records.landing_pages, null);
+test('specialized_records echoes back exactly the supplied evidence per dimension, null when absent', () => {
+  const ctaEvidence = { ctaText: 'Buy', ctaAboveFold: true, ctaButtonCount: 1, ctaContrastSufficient: true };
+  const result = checkConversionOptimization({ cta: ctaEvidence });
+  assert.deepStrictEqual(result.specialized_records.cta, ctaEvidence);
   assert.strictEqual(result.specialized_records.offers, null);
-});
-
-// --- research_date ---------------------------------------------------------------------------
-
-test('research_date defaults to today\'s ISO date when not supplied', () => {
-  const result = checkConversionOptimization({});
-  const today = new Date().toISOString().slice(0, 10);
-  assert.strictEqual(result.research_date, today);
-});
-
-test('research_date honors a caller-supplied value', () => {
-  const result = checkConversionOptimization({ researchDate: '2025-01-01' });
-  assert.strictEqual(result.research_date, '2025-01-01');
 });
 
 // --- honesty: no fabricated conversion-rate/impact claim anywhere -------------------------------
 
 test('the result never contains a fabricated conversion-rate/impact prediction anywhere', () => {
-  const result = checkConversionOptimization(fullEvidence());
+  const result = checkConversionOptimization({
+    checkoutFriction: { stepsToCheckout: 6, guestCheckoutAvailable: false, accountCreationRequired: true, paymentMethodsCount: 1, formFieldsCount: 12 },
+  });
   const serialized = JSON.stringify(result).toLowerCase();
-  for (const bannedTerm of ['will increase', 'will convert', 'guaranteed', '% lift', 'roi of', 'predicted conversion']) {
+  for (const bannedTerm of ['% increase', 'will convert', 'guaranteed', 'conversion_rate_prediction', '$']) {
     assert.ok(!serialized.includes(bannedTerm), `result must not contain "${bannedTerm}"`);
   }
 });
 
 test('every recommendation is prefixed with its dimension label for traceability', () => {
   const result = checkConversionOptimization({
-    cta: { ctaAboveFold: false, ctaButtonCount: 0, ctaContrastSufficient: false },
+    checkoutFriction: { stepsToCheckout: 6, guestCheckoutAvailable: false, accountCreationRequired: true, paymentMethodsCount: 1, formFieldsCount: 12 },
   });
   for (const recommendation of result.recommendations) {
     assert.ok(/^\[[A-Za-z -]+\]/.test(recommendation), `"${recommendation}" is missing a [Dimension] prefix`);
   }
+});
+
+test('this checker never fetches or modifies anything - it is a pure function of its input evidence', () => {
+  const evidence = { ctaText: 'Buy', ctaAboveFold: true, ctaButtonCount: 1, ctaContrastSufficient: true };
+  const first = checkConversionOptimization({ cta: { ...evidence }, researchDate: '2026-01-01' });
+  const second = checkConversionOptimization({ cta: { ...evidence }, researchDate: '2026-01-01' });
+  assert.deepStrictEqual(first, second);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

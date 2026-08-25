@@ -38,12 +38,12 @@ test('CONVERSION_OPTIMIZATION_DIMENSIONS lists exactly the 8 requested dimension
   ]);
 });
 
-test('SEVERITY_LEVELS is exactly critical/high/medium/low', () => {
-  assert.deepStrictEqual(SEVERITY_LEVELS, ['critical', 'high', 'medium', 'low']);
-});
-
 test('DIMENSION_STATUSES is exactly empty/partial/success', () => {
   assert.deepStrictEqual(DIMENSION_STATUSES, ['empty', 'partial', 'success']);
+});
+
+test('SEVERITY_LEVELS is exactly critical/high/medium/low, in tier order', () => {
+  assert.deepStrictEqual(SEVERITY_LEVELS, ['critical', 'high', 'medium', 'low']);
 });
 
 test('every field has a non-empty title and description', () => {
@@ -69,7 +69,7 @@ test('createEmptyConversionOptimizationCheck() defaults every dimension to empty
   assert.strictEqual(record.quality_score.dimensions_empty, CONVERSION_OPTIMIZATION_DIMENSIONS.length);
 });
 
-test('createEmptyConversionOptimizationCheck() defaults specialized_records to null for every dimension', () => {
+test('createEmptyConversionOptimizationCheck() defaults specialized_records to null per dimension', () => {
   const record = createEmptyConversionOptimizationCheck('x');
   for (const dimension of CONVERSION_OPTIMIZATION_DIMENSIONS) {
     assert.strictEqual(record.specialized_records[dimension], null);
@@ -86,7 +86,7 @@ test('validator detects a missing top-level field', () => {
 
 test('validator detects an unexpected extra top-level field', () => {
   const record = createEmptyConversionOptimizationCheck();
-  record.conversion_rate_prediction = '12%';
+  record.conversion_rate_prediction = '+15%';
   const result = validateConversionOptimizationCheckShape(record);
   assert.strictEqual(result.valid, false);
   assert.ok(result.errors.includes('unexpected field: conversion_rate_prediction'));
@@ -124,22 +124,6 @@ test('validator detects a malformed dimension_gaps entry', () => {
   assert.ok(result.errors.includes('dimension_gaps[0] is missing sub-field: reason'));
 });
 
-test('validator detects a malformed prioritized_recommendations entry with a bad dimension', () => {
-  const record = createEmptyConversionOptimizationCheck();
-  record.prioritized_recommendations = [{ dimension: 'not_real', recommendation: 'x', severity: 'high' }];
-  const result = validateConversionOptimizationCheckShape(record);
-  assert.strictEqual(result.valid, false);
-  assert.ok(result.errors.some((e) => e.startsWith('prioritized_recommendations[0].dimension must be one of')));
-});
-
-test('validator detects a malformed prioritized_recommendations entry with a bad severity', () => {
-  const record = createEmptyConversionOptimizationCheck();
-  record.prioritized_recommendations = [{ dimension: 'cta', recommendation: 'x', severity: 'urgent' }];
-  const result = validateConversionOptimizationCheckShape(record);
-  assert.strictEqual(result.valid, false);
-  assert.ok(result.errors.some((e) => e.startsWith('prioritized_recommendations[0].severity must be one of')));
-});
-
 test('validator detects a missing sub-field in quality_score', () => {
   const record = createEmptyConversionOptimizationCheck();
   delete record.quality_score.percentage;
@@ -162,6 +146,30 @@ test('validator detects a wrong array type (findings)', () => {
   const result = validateConversionOptimizationCheckShape(record);
   assert.strictEqual(result.valid, false);
   assert.ok(result.errors.includes('findings must be an array'));
+});
+
+test('validator detects a malformed prioritized_recommendations entry (missing sub-field)', () => {
+  const record = createEmptyConversionOptimizationCheck();
+  record.prioritized_recommendations = [{ dimension: 'cta', recommendation: 'Add a CTA.' }];
+  const result = validateConversionOptimizationCheckShape(record);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.includes('prioritized_recommendations[0] is missing sub-field: severity'));
+});
+
+test('validator detects an invalid prioritized_recommendations.dimension value', () => {
+  const record = createEmptyConversionOptimizationCheck();
+  record.prioritized_recommendations = [{ dimension: 'not_real', recommendation: 'x', severity: 'high' }];
+  const result = validateConversionOptimizationCheckShape(record);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.some((e) => e.startsWith('prioritized_recommendations[0].dimension must be one of')));
+});
+
+test('validator detects an invalid prioritized_recommendations.severity value', () => {
+  const record = createEmptyConversionOptimizationCheck();
+  record.prioritized_recommendations = [{ dimension: 'cta', recommendation: 'x', severity: 'urgent' }];
+  const result = validateConversionOptimizationCheckShape(record);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.some((e) => e.startsWith('prioritized_recommendations[0].severity must be one of')));
 });
 
 test('validator detects a missing dimension in specialized_records', () => {

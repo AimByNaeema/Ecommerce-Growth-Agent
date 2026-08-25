@@ -366,4 +366,17 @@ causation without evidence: a `possible_cause` stated with no evidence can never
 downgrade (a presence-only guard, the same honest limit every other verification guard
 in this project already accepts). `insights` is reached through the existing
 `tools/analyticsTool.js`, wired into the orchestrator the same way as every other
-analytics capability.
+analytics capability. A conversion-rate-optimization (CRO) audit is now also
+available: [`agent/core/conversionOptimizationChecker.js`](agent/core/conversionOptimizationChecker.js)
+evaluates 8 dimensions of a store's real, caller-supplied evidence — product pages,
+landing pages, offers, CTA, trust signals, checkout friction, mobile experience,
+pricing presentation — via
+[`agent/core/conversionOptimizationCheckModel.js`](agent/core/conversionOptimizationCheckModel.js),
+mirroring `agent/core/seoQualityChecker.js`/`agent/core/listingQualityChecker.js`'s
+mechanical, evidence-only checklist structure exactly. Every flagged issue is tagged
+with a fixed, documented severity tier (critical/high/medium/low) and returned in a
+`prioritized_recommendations` list sorted by that tier — never a fabricated
+conversion-rate or business-impact estimate. Like those two checkers, it is a
+standalone deliverable (not wired into `tools/toolRegistry.js` or the
+Chief/Orchestrator) with no write/execute/publish code path anywhere, so no
+recommendation is ever applied to a real page automatically.

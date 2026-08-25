@@ -108,3 +108,47 @@ Both tools are wired into the Chief/Orchestrator
 (`../agent/core/orchestratorExecutionContract.js`'s `TOOL_EXECUTORS`), classified
 `analysis_only` in `../agent/core/toolPermissions.js` (read-only, no side effects), so a
 routed objective can reach either end-to-end via `runOrchestratorContract()`.
+
+## Conversion Optimization Checker
+
+[`../agent/core/conversionOptimizationChecker.js`](../agent/core/conversionOptimizationChecker.js)
+is a CRO (conversion-rate optimization) audit, evaluating 8 dimensions of a store's
+real, caller-supplied evidence — product pages, landing pages, offers, CTA, trust
+signals, checkout friction, mobile experience, pricing presentation — via
+[`../agent/core/conversionOptimizationCheckModel.js`](../agent/core/conversionOptimizationCheckModel.js).
+It mirrors [`../agent/core/seoQualityChecker.js`](../agent/core/seoQualityChecker.js)'s
+and [`../agent/core/listingQualityChecker.js`](../agent/core/listingQualityChecker.js)'s
+structure and honesty rules exactly: every finding is a concrete, mechanical fact about
+the actual supplied evidence (a count, a boolean presence check, a numeric threshold
+comparison) — never a subjective opinion about design quality or an actual
+conversion-rate prediction. A dimension with no evidence supplied is honestly `'empty'`,
+not skipped or guessed; `offers` is additionally `'empty'` (not a failure) whenever no
+active offer exists, since a store isn't required to always run a promotion.
+
+This is a distinct concern from this folder's own `conversion` snapshot category above
+(numeric conversion-rate metrics) and from
+[`../agent/core/marketingAgent.js`](../agent/core/marketingAgent.js)'s
+`conversion_opportunities` capability (upsell/cross-sell/retention growth records) —
+three different things that happen to share the word "conversion". It also never
+fetches a live page, screenshot, or theme file — there is no tool in this project that
+can (see [`../integrations/adapters/shopifyClient.js`](../integrations/adapters/shopifyClient.js)'s
+own scope: read-only product/order/customer/inventory data only) — every dimension's
+evidence is supplied by the caller as plain structured facts.
+
+`prioritized_recommendations` tags every flagged issue with a fixed, documented
+severity tier (`critical`/`high`/`medium`/`low`) drawn from widely-documented
+e-commerce CRO conventions (e.g. a missing guest-checkout option is `critical`; a
+missing compare-at price is `low`) — the same labeled-heuristic honesty
+`seoQualityChecker.js`'s length guidelines already use, never a per-instance invented
+business-impact estimate. `quality_score` is a mechanical checklist-coverage
+percentage across the 8 dimensions, never a conversion-rate prediction.
+
+Standalone deliverable, not wired into `tools/toolRegistry.js` or the
+Chief/Orchestrator — the same deliberate scope choice
+[`../agent/core/seoQualityChecker.js`](../agent/core/seoQualityChecker.js) and
+[`../agent/core/listingQualityChecker.js`](../agent/core/listingQualityChecker.js)
+already made (directly callable, evaluating caller-supplied structured evidence, not
+part of the 10-capability dispatcher above). It has no write/execute/publish code path
+anywhere: applying any recommendation to a real page is a separate, human-approved
+action (see [`../approvals/README.md`](../approvals/README.md)) — nothing here ever
+modifies a production page.
