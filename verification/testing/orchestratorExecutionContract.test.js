@@ -117,13 +117,13 @@ test('selectSpecialist returns shared_infrastructure for a shared-infra request'
   assert.strictEqual(specialist.type, 'shared_infrastructure');
 });
 
-test('selectSpecialist returns the product specialist with its honest not_implemented status', () => {
+test('selectSpecialist returns the product specialist, honestly relaying its real status from specialistRegistry.js', () => {
   const capability = identifyRequiredCapability('run product research on my catalog');
   const request = createExecutionRequest('run product research on my catalog', capability);
   const specialist = selectSpecialist(request);
   assert.strictEqual(specialist.type, 'specialist');
   assert.strictEqual(specialist.id, 'product');
-  assert.strictEqual(specialist.status, 'not_implemented');
+  assert.strictEqual(specialist.status, 'implemented');
 });
 
 test('gatherMinimumContext returns only the relevant boundary entries, not all six', () => {
