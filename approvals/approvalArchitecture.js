@@ -53,10 +53,24 @@ function getClassificationById(id) {
   return ACTION_CLASSIFICATIONS.find((entry) => entry.id === id);
 }
 
+// Classifications that may proceed automatically, per the 'approval_required_by_default'
+// policy rule above. Anything else (approval_required, externally_executable, or no
+// classification at all) requires explicit human approval before it proceeds -
+// mechanically encoded by requiresApproval() below, rather than living only as prose.
+// This is the single source of truth agent/core/toolPermissions.js reuses (never
+// redefines) for its own AUTO_APPROVED_CLASSIFICATIONS re-export.
+const AUTO_APPROVED_CLASSIFICATIONS = ['analysis_only', 'recommendation'];
+
+function requiresApproval(classificationId) {
+  return !classificationId || !AUTO_APPROVED_CLASSIFICATIONS.includes(classificationId);
+}
+
 module.exports = {
   ACTION_CLASSIFICATIONS,
   APPROVAL_POLICY_RULES,
+  AUTO_APPROVED_CLASSIFICATIONS,
   getClassificationById,
+  requiresApproval,
 };
 
 if (require.main === module) {

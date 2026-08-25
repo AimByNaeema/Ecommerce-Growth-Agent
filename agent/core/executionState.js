@@ -77,7 +77,7 @@ const EXECUTION_STATE_FIELDS = [
     id: 'approvals',
     title: 'Approvals',
     type: 'array',
-    description: 'Entries of { classification, status } where status is "required" or "auto_approved" - empty when no classification applies.',
+    description: 'Entries of { classification, status } where status is "required" or "auto_approved" - "required" entries also carry an approval_request_id (see approvals/approvalWorkflow.js) - empty when no classification applies.',
   },
   {
     id: 'errors',
@@ -132,6 +132,7 @@ function deriveExecutionState({
   requiredContextIds = [],
   outcome = null,
   verificationStatus = 'unverified',
+  approvalRequestId = null,
 }) {
   const state = createEmptyExecutionState(request);
   state.current_task = currentTask || request;
@@ -150,7 +151,7 @@ function deriveExecutionState({
     state.errors = outcome.error ? [outcome.error] : [];
 
     if (outcome.status === 'approval_required') {
-      state.approvals = [{ classification: outcome.classification, status: 'required' }];
+      state.approvals = [{ classification: outcome.classification, status: 'required', approval_request_id: approvalRequestId }];
     } else if (outcome.classification) {
       state.approvals = [{ classification: outcome.classification, status: 'auto_approved' }];
     }

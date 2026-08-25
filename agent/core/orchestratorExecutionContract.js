@@ -71,6 +71,7 @@ const {
   SHARED_INFRASTRUCTURE_CATEGORIES,
   checkToolAccess,
 } = require('./toolPermissions');
+const { createApprovalRequest } = require('../../approvals/approvalWorkflow');
 const businessConfigurationRetrieval = require('../../tools/businessConfigurationRetrieval');
 const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
@@ -263,6 +264,30 @@ function gatherMinimumContext(executionRequest) {
   return boundaries.filter((boundary) => relevantIds.includes(boundary.id));
 }
 
+// Shared executor-invocation tail for both executeSelectedCapability (first attempt)
+// and resumeApprovedExecution (post-approval retry) - the only two places TOOL_EXECUTORS
+// is ever read, so a tool call always looks the same regardless of which path reached
+// it. Never fabricates a result: a missing executor or a thrown error both become an
+// explicit, honest 'error' outcome.
+async function runExecutor(toolId, executionRequest, runTokenTracker, classification) {
+  const executor = TOOL_EXECUTORS[toolId];
+  if (!executor) {
+    return {
+      status: 'error',
+      data: null,
+      error: `No executor is wired for implemented tool '${toolId}'.`,
+      classification,
+    };
+  }
+
+  try {
+    const data = await executor(executionRequest, runTokenTracker);
+    return { status: 'success', data, error: null, classification };
+  } catch (err) {
+    return { status: 'error', data: null, error: err.message, classification };
+  }
+}
+
 // Receive the specialist result - the real dispatch point, and the ONLY place a tool
 // executor is ever invoked. Every call is gated by
 // agent/core/toolPermissions.js's checkToolAccess() first - which tool is required
@@ -275,7 +300,11 @@ function gatherMinimumContext(executionRequest) {
 // and runOrchestratorContract below) is passed straight through to the executor -
 // only ai_reasoning_completion's executor actually uses it, to enforce
 // agent/core/tokenControls.js's run budget before ever calling Claude.
-async function executeSelectedCapability(executionRequest, runTokenTracker = { tokensUsedThisRun: 0 }) {
+async function executeSelectedCapability(
+  executionRequest,
+  runTokenTracker = { tokensUsedThisRun: 0 },
+  runApprovalTracker = { requests: [] }
+) {
   const access = checkToolAccess({
     specialistId: executionRequest.specialist_id,
     toolId: executionRequest.tool_id,
@@ -295,30 +324,75 @@ async function executeSelectedCapability(executionRequest, runTokenTracker = { t
   }
 
   if (access.decision === 'approval_required') {
+    // Real, trackable pending request - see approvals/approvalWorkflow.js. Never
+    // executes here; execution only ever happens via resumeApprovedExecution() below,
+    // once a real, accountable decideApprovalRequest(..., { decision: 'approved' })
+    // call has happened (CLAUDE.md rule 7 - never silently perform a consequential
+    // action). The id is deterministic per run (no randomness), matching every other
+    // record in this project.
+    const approvalRequest = createApprovalRequest({
+      id: `apr-${runApprovalTracker.requests.length + 1}`,
+      classification: access.classification,
+      specialistId: executionRequest.specialist_id,
+      toolId: access.tool_id,
+      executionRequest,
+      reason: access.reason,
+    });
+    runApprovalTracker.requests.push(approvalRequest);
     return {
       status: 'approval_required',
       data: null,
       error: access.reason,
       classification: access.classification,
+      approval_request_id: approvalRequest.id,
     };
   }
 
-  const executor = TOOL_EXECUTORS[access.tool_id];
-  if (!executor) {
+  return runExecutor(access.tool_id, executionRequest, runTokenTracker, access.classification);
+}
+
+// Resumes a previously gated action after a real human decision has been recorded via
+// approvals/approvalWorkflow.js's decideApprovalRequest(). This is the only path in the
+// entire codebase that can execute a tool call that once required approval - and it
+// only runs at all when decidedApprovalRequest.status === 'approved'; a 'pending' or
+// 'rejected' record returns an honest non-executing outcome instead. Availability and
+// specialist permission are re-checked at resume time (approval only ever satisfies the
+// approval gate itself - a tool could have become unavailable, or specialist ownership
+// could have changed, since the request was first created).
+async function resumeApprovedExecution(decidedApprovalRequest, runTokenTracker = { tokensUsedThisRun: 0 }) {
+  if (!decidedApprovalRequest || typeof decidedApprovalRequest !== 'object') {
     return {
       status: 'error',
       data: null,
-      error: `No executor is wired for implemented tool '${access.tool_id}'.`,
-      classification: access.classification,
+      error: 'resumeApprovedExecution requires a decided approval request record.',
+      classification: null,
     };
   }
 
-  try {
-    const data = await executor(executionRequest, runTokenTracker);
-    return { status: 'success', data, error: null, classification: access.classification };
-  } catch (err) {
-    return { status: 'error', data: null, error: err.message, classification: access.classification };
+  if (decidedApprovalRequest.status !== 'approved') {
+    return {
+      status: decidedApprovalRequest.status === 'rejected' ? 'denied' : 'approval_required',
+      data: null,
+      error: `This action is '${decidedApprovalRequest.status}', not approved - it cannot be executed.`,
+      classification: decidedApprovalRequest.classification,
+    };
   }
+
+  const access = checkToolAccess({
+    specialistId: decidedApprovalRequest.specialist_id,
+    toolId: decidedApprovalRequest.tool_id,
+  });
+
+  if (access.decision === 'unavailable' || access.decision === 'denied') {
+    return {
+      status: access.decision === 'unavailable' ? 'not_available' : 'denied',
+      data: null,
+      error: access.reason,
+      classification: null,
+    };
+  }
+
+  return runExecutor(access.tool_id, decidedApprovalRequest.execution_request, runTokenTracker, access.classification);
 }
 
 // Validate the result. Never treats an unverified/failed outcome as passed.
@@ -581,7 +655,8 @@ async function buildPlanStep(
   currentTask,
   runTokenTracker = { tokensUsedThisRun: 0 },
   researchParams = null,
-  priorSteps = []
+  priorSteps = [],
+  runApprovalTracker = { requests: [] }
 ) {
   const capabilityEntry = target.type === 'specialist' ? getSpecialistCapabilityById(target.id) : null;
   const candidateToolIds = capabilityEntry
@@ -676,7 +751,7 @@ async function buildPlanStep(
       { category: matchedCategory, tool: toolMatch },
       effectiveResearchParams
     );
-    outcome = await executeSelectedCapability(executionRequest, runTokenTracker);
+    outcome = await executeSelectedCapability(executionRequest, runTokenTracker, runApprovalTracker);
   }
 
   // Only ai_reasoning_completion's structured output carries tokensUsed - every other
@@ -699,6 +774,7 @@ async function buildPlanStep(
     requiredContextIds,
     outcome,
     verificationStatus,
+    approvalRequestId: outcome ? outcome.approval_request_id || null : null,
   });
 }
 
@@ -727,7 +803,13 @@ function aggregatePlanState(plan) {
 // only, never persisted, see module header) plus every field the caller needs.
 // tokensUsedThisRun surfaces agent/core/tokenControls.js's running total so token
 // usage is visible in the response, not just enforced silently inside execution.
-function buildRoutingResponse({ objective, routing, tokensUsedThisRun = 0, growthOpportunityDrafts = null }) {
+function buildRoutingResponse({
+  objective,
+  routing,
+  tokensUsedThisRun = 0,
+  growthOpportunityDrafts = null,
+  pendingApprovals = null,
+}) {
   const needsMoreInfo = routing.status === 'clarification_required';
   const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
     ? aggregatePlanState(routing.plan)
@@ -757,6 +839,14 @@ function buildRoutingResponse({ objective, routing, tokensUsedThisRun = 0, growt
     // when there was no plan to gather them from at all (a clarification-required
     // response); an array (possibly empty) whenever a real plan ran.
     growth_opportunity_drafts: growthOpportunityDrafts,
+    // Every approval request created anywhere in this plan (see
+    // approvals/approvalWorkflow.js, agent/core/orchestratorExecutionContract.js's
+    // executeSelectedCapability) - null (never an empty-by-omission array) when there
+    // was no plan to gather them from at all (a clarification-required response); an
+    // array (possibly empty) whenever a real plan ran. A human decides these via
+    // approvals/approvalWorkflow.js's decideApprovalRequest(), then resumeApprovedExecution()
+    // actually executes them - never automatically.
+    pending_approvals: pendingApprovals,
   };
 }
 
@@ -800,6 +890,11 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
   // executeSelectedCapability above. This is what lets agent/core/tokenControls.js
   // enforce a budget across the whole run, not just per call.
   const runTokenTracker = { tokensUsedThisRun: 0 };
+  // One approval-request tracker per run, same pattern as runTokenTracker above - a
+  // plain mutable accumulator the caller holds, never module-level state (see
+  // approvals/approvalWorkflow.js's own header on why this project never holds hidden
+  // state). Every approval_required outcome anywhere in this plan appends to it.
+  const runApprovalTracker = { requests: [] };
 
   const plan = [];
   for (let i = 0; i < routingResult.targets.length; i += 1) {
@@ -813,7 +908,8 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
         routingResult.segments[i],
         runTokenTracker,
         researchParams,
-        plan
+        plan,
+        runApprovalTracker
       )
     );
   }
@@ -836,6 +932,7 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
     },
     tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
     growthOpportunityDrafts,
+    pendingApprovals: runApprovalTracker.requests,
   });
 }
 
@@ -851,6 +948,7 @@ module.exports = {
   selectSpecialist,
   gatherMinimumContext,
   executeSelectedCapability,
+  resumeApprovedExecution,
   validateResult,
   scoreRoutingTargets,
   splitIntoClauses,

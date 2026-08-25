@@ -427,3 +427,23 @@ lessons real and retrievable but permanently separate from that validated pool, 
 failed experiment is never treated as successful knowledge by anything built on top of
 it. No persistence layer — a set of pure functions over a caller-held lesson array,
 the same standalone-deliverable, no-write-path pattern as every other engine here.
+The approval architecture is now operational, not just a classification schema:
+[`approvals/approvalWorkflow.js`](approvals/approvalWorkflow.js) via
+[`approvals/approvalRequestModel.js`](approvals/approvalRequestModel.js) carries one
+Approval Request record through a real `pending` → `approved`/`rejected` lifecycle.
+`decideApprovalRequest()` is the only function that can move a request out of
+`pending`, and it requires a non-empty `decidedBy` — no path anywhere lets a
+consequential action be approved silently. `agent/core/orchestratorExecutionContract.js`'s
+`executeSelectedCapability()` (the Chief's single dispatch point) creates a real
+tracked request whenever `agent/core/toolPermissions.js`'s `checkToolAccess()` reports
+`approval_required`, surfaced on every response as `pending_approvals`; the new
+`resumeApprovedExecution()` is the only path in the codebase that can execute a
+previously gated action, and it only reaches the tool executor once a real, decided
+`approved` record exists — re-checking availability/permission at resume time, since
+approval only ever satisfies the approval gate itself. `approvals/approvalArchitecture.js`
+now also exposes `requiresApproval()`, the single mechanical source of truth for which
+classifications auto-proceed, reused (never re-declared) by
+`agent/core/toolPermissions.js`. No hidden module state anywhere — the request array is
+threaded through one run the same way `runTokenTracker` already was. No external
+service is connected yet, so no `externally_executable` action can run end-to-end
+today, but the classification, request lifecycle, and Chief-level wiring are all real.

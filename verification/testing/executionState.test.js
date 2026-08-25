@@ -236,6 +236,31 @@ test('deriveExecutionState invents nothing when no tool was matched at all (e.g.
   assert.strictEqual(state.completion_state, 'blocked');
 });
 
+test('deriveExecutionState records the approval_request_id alongside a required approval', () => {
+  const state = deriveExecutionState({
+    request: 'publish updated title',
+    currentTask: 'publish updated title',
+    target: seoTarget,
+    category: 'seo',
+    toolId: 'hypothetical_publish_listing',
+    requiredContextIds: ['tool_context'],
+    outcome: {
+      status: 'approval_required',
+      data: null,
+      error: 'Executing requires explicit approval.',
+      classification: 'externally_executable',
+      approval_request_id: 'apr-1',
+    },
+    verificationStatus: 'unverified',
+    approvalRequestId: 'apr-1',
+  });
+  assert.strictEqual(validateExecutionStateShape(state).valid, true);
+  assert.deepStrictEqual(state.approvals, [
+    { classification: 'externally_executable', status: 'required', approval_request_id: 'apr-1' },
+  ]);
+  assert.strictEqual(state.completion_state, 'blocked');
+});
+
 test('deriveExecutionState leaves a state not_started when no outcome has happened yet', () => {
   const state = deriveExecutionState({
     request: 'run seo analysis',

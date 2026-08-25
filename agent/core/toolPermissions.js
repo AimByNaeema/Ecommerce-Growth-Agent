@@ -15,6 +15,7 @@
 
 const { getToolById } = require('../../tools/toolRegistry');
 const { TOOL_CATEGORIES } = require('../../tools/toolRegistry');
+const { AUTO_APPROVED_CLASSIFICATIONS, requiresApproval } = require('../../approvals/approvalArchitecture');
 
 // Which TOOL_REGISTRY category each of the 7 approved specialists (see
 // agent/core/specialistRegistry.js) is permitted to use. Categories not listed here
@@ -82,10 +83,12 @@ const TOOL_CLASSIFICATIONS = {
   analytics_data_retrieval: 'analysis_only',
 };
 
-// Approval classifications that may proceed automatically. Anything else
-// (approval_required, externally_executable, or no classification at all) must stop
-// and surface an approval requirement rather than execute.
-const AUTO_APPROVED_CLASSIFICATIONS = ['analysis_only', 'recommendation'];
+// AUTO_APPROVED_CLASSIFICATIONS and requiresApproval() are imported from
+// approvals/approvalArchitecture.js above - that module is now the single source of
+// truth for which classifications may proceed automatically (the
+// 'approval_required_by_default' policy rule), reused here rather than duplicated.
+// AUTO_APPROVED_CLASSIFICATIONS is re-exported below unchanged so existing callers of
+// this module keep working.
 
 // Whether a specialist (by id) is permitted to use a given TOOL_REGISTRY category.
 // specialistId === null represents the orchestrator's own shared-infrastructure
@@ -145,7 +148,7 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
     };
   }
 
-  const approvalRequired = !classification || !AUTO_APPROVED_CLASSIFICATIONS.includes(classification);
+  const approvalRequired = requiresApproval(classification);
   if (approvalRequired) {
     return {
       tool_id: tool.id,

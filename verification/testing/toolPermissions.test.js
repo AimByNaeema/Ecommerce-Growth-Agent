@@ -5,10 +5,15 @@ const {
   CATEGORY_TO_SPECIALIST,
   SHARED_INFRASTRUCTURE_CATEGORIES,
   AUTO_APPROVED_CLASSIFICATIONS,
+  TOOL_CLASSIFICATIONS,
   isSpecialistPermittedForCategory,
   evaluateToolAccess,
   checkToolAccess,
 } = require('../../agent/core/toolPermissions');
+const {
+  AUTO_APPROVED_CLASSIFICATIONS: ARCHITECTURE_AUTO_APPROVED_CLASSIFICATIONS,
+  getClassificationById,
+} = require('../../approvals/approvalArchitecture');
 
 // checkToolAccess is the real, tools/toolRegistry.js-backed API - it is exercised here
 // against real registry entries wherever real data can produce the outcome. Every
@@ -154,6 +159,18 @@ test('ALLOWED: evaluateToolAccess only reaches allowed once available, permitted
   });
   assert.strictEqual(result.decision, 'allowed');
   assert.strictEqual(result.approval_required, false);
+});
+
+// --- approvals/approvalArchitecture.js reuse (not duplicated) ----------------------
+
+test('AUTO_APPROVED_CLASSIFICATIONS is reused, not redefined, from approvals/approvalArchitecture.js', () => {
+  assert.strictEqual(AUTO_APPROVED_CLASSIFICATIONS, ARCHITECTURE_AUTO_APPROVED_CLASSIFICATIONS);
+});
+
+test('every TOOL_CLASSIFICATIONS value is a real classification id from approvals/approvalArchitecture.js', () => {
+  for (const [toolId, classification] of Object.entries(TOOL_CLASSIFICATIONS)) {
+    assert.ok(getClassificationById(classification), `TOOL_CLASSIFICATIONS.${toolId} = '${classification}' is not a real classification id`);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -4,7 +4,9 @@ const assert = require('node:assert');
 const {
   ACTION_CLASSIFICATIONS,
   APPROVAL_POLICY_RULES,
+  AUTO_APPROVED_CLASSIFICATIONS,
   getClassificationById,
+  requiresApproval,
 } = require('../../approvals/approvalArchitecture');
 
 const EXPECTED_CLASSIFICATIONS = [
@@ -66,6 +68,26 @@ test('ids are unique across classifications and policy rules combined', () => {
 test('getClassificationById() finds a known entry and returns undefined for an unknown one', () => {
   assert.strictEqual(getClassificationById('externally_executable').title, 'Externally executable');
   assert.strictEqual(getClassificationById('does_not_exist'), undefined);
+});
+
+test('AUTO_APPROVED_CLASSIFICATIONS is exactly analysis_only and recommendation', () => {
+  assert.deepStrictEqual(AUTO_APPROVED_CLASSIFICATIONS, ['analysis_only', 'recommendation']);
+});
+
+test('requiresApproval is false for the two auto-approved classifications', () => {
+  assert.strictEqual(requiresApproval('analysis_only'), false);
+  assert.strictEqual(requiresApproval('recommendation'), false);
+});
+
+test('requiresApproval is true for approval_required and externally_executable', () => {
+  assert.strictEqual(requiresApproval('approval_required'), true);
+  assert.strictEqual(requiresApproval('externally_executable'), true);
+});
+
+test('requiresApproval is true (never auto-approved) for null or an unknown classification', () => {
+  assert.strictEqual(requiresApproval(null), true);
+  assert.strictEqual(requiresApproval(undefined), true);
+  assert.strictEqual(requiresApproval('not_a_real_classification'), true);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

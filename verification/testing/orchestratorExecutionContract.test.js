@@ -9,6 +9,7 @@ const {
   selectSpecialist,
   gatherMinimumContext,
   executeSelectedCapability,
+  resumeApprovedExecution,
   validateResult,
   splitIntoClauses,
   routeClause,
@@ -17,6 +18,8 @@ const {
 } = require('../../agent/core/orchestratorExecutionContract');
 const claudeClient = require('../../agent/core/claudeClient');
 const { getMaxTokensPerRun } = require('../../agent/core/tokenControls');
+const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
+const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
 
 // This test never makes a real network call - the one real tool it can reach
 // (business_configuration_retrieval) fails fast on its own "not configured" check
@@ -650,6 +653,143 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.strictEqual(outputs.status, 'failed');
     assert.strictEqual(outputs.result, null);
     assert.ok(outputs.error.includes('No structured research input was supplied'));
+  });
+
+  // --- Operational approval flow: pending -> approved/rejected -> resumed --------
+  //
+  // No tool in today's real registry is both implemented and approval_required (every
+  // implemented tool is analysis_only or recommendation - see
+  // agent/core/toolPermissions.js's TOOL_CLASSIFICATIONS and its own test's header
+  // comment on this exact honest gap). To exercise the real Chief dispatch path
+  // (executeSelectedCapability -> checkToolAccess -> createApprovalRequest) end-to-end
+  // rather than only unit-testing approvals/approvalWorkflow.js in isolation, these
+  // tests temporarily reclassify one real, implemented tool
+  // (business_configuration_retrieval) via TOOL_CLASSIFICATIONS - the same
+  // temporarily-reassign-and-restore-in-finally technique this file already uses for
+  // claudeClient.sendMessage above - never leaving the shared registry mutated for
+  // other tests.
+
+  await testAsync('executeSelectedCapability creates a real, trackable pending request on a runApprovalTracker when approval is required', async () => {
+    const originalClassification = TOOL_CLASSIFICATIONS.business_configuration_retrieval;
+    TOOL_CLASSIFICATIONS.business_configuration_retrieval = 'externally_executable';
+    try {
+      const executionRequest = {
+        objective: "check my shop's business configuration",
+        category: 'configuration',
+        tool_id: 'business_configuration_retrieval',
+        specialist_id: null,
+        is_shared_infrastructure: true,
+      };
+      const runApprovalTracker = { requests: [] };
+      const outcome = await executeSelectedCapability(executionRequest, undefined, runApprovalTracker);
+
+      assert.strictEqual(outcome.status, 'approval_required');
+      assert.strictEqual(outcome.classification, 'externally_executable');
+      assert.strictEqual(runApprovalTracker.requests.length, 1);
+      const request = runApprovalTracker.requests[0];
+      assert.strictEqual(request.id, outcome.approval_request_id);
+      assert.strictEqual(request.status, 'pending');
+      assert.strictEqual(request.tool_id, 'business_configuration_retrieval');
+      assert.strictEqual(request.specialist_id, null);
+      assert.deepStrictEqual(request.execution_request, executionRequest);
+    } finally {
+      TOOL_CLASSIFICATIONS.business_configuration_retrieval = originalClassification;
+    }
+  });
+
+  await testAsync('resumeApprovedExecution refuses to run a pending or rejected request, never invoking any executor', async () => {
+    const originalClassification = TOOL_CLASSIFICATIONS.business_configuration_retrieval;
+    TOOL_CLASSIFICATIONS.business_configuration_retrieval = 'externally_executable';
+    try {
+      const executionRequest = {
+        objective: "check my shop's business configuration",
+        category: 'configuration',
+        tool_id: 'business_configuration_retrieval',
+        specialist_id: null,
+        is_shared_infrastructure: true,
+      };
+      const runApprovalTracker = { requests: [] };
+      const gated = await executeSelectedCapability(executionRequest, undefined, runApprovalTracker);
+      const [pendingRequest] = runApprovalTracker.requests;
+
+      const pendingOutcome = await resumeApprovedExecution(pendingRequest);
+      assert.strictEqual(pendingOutcome.status, 'approval_required');
+
+      const rejectedRequests = decideApprovalRequest([pendingRequest], gated.approval_request_id, {
+        decision: 'rejected',
+        decidedBy: 'owner@example.com',
+      });
+      const rejectedOutcome = await resumeApprovedExecution(rejectedRequests[0]);
+      assert.strictEqual(rejectedOutcome.status, 'denied');
+    } finally {
+      TOOL_CLASSIFICATIONS.business_configuration_retrieval = originalClassification;
+    }
+  });
+
+  await testAsync('resumeApprovedExecution actually invokes the real executor once a request has been approved, and never before', async () => {
+    const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
+    const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    delete process.env.SHOPIFY_STORE_DOMAIN;
+    delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    const originalClassification = TOOL_CLASSIFICATIONS.business_configuration_retrieval;
+    TOOL_CLASSIFICATIONS.business_configuration_retrieval = 'externally_executable';
+    try {
+      const executionRequest = {
+        objective: "check my shop's business configuration",
+        category: 'configuration',
+        tool_id: 'business_configuration_retrieval',
+        specialist_id: null,
+        is_shared_infrastructure: true,
+      };
+      const runApprovalTracker = { requests: [] };
+      const gated = await executeSelectedCapability(executionRequest, undefined, runApprovalTracker);
+      const [pendingRequest] = runApprovalTracker.requests;
+
+      const approvedRequests = decideApprovalRequest([pendingRequest], gated.approval_request_id, {
+        decision: 'approved',
+        decidedBy: 'owner@example.com',
+      });
+
+      // The real executor is genuinely reached now (not before) - it fails fast on its
+      // own "not configured" check rather than making a network call, the same
+      // convention already used elsewhere in this file.
+      const resumedOutcome = await resumeApprovedExecution(approvedRequests[0]);
+      assert.strictEqual(resumedOutcome.status, 'error');
+      assert.ok(/SHOPIFY_STORE_DOMAIN/.test(resumedOutcome.error));
+    } finally {
+      TOOL_CLASSIFICATIONS.business_configuration_retrieval = originalClassification;
+      if (savedDomain === undefined) delete process.env.SHOPIFY_STORE_DOMAIN;
+      else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
+      if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+      else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+    }
+  });
+
+  await testAsync('resumeApprovedExecution honestly refuses when the tool became unavailable/denied since the request was created', async () => {
+    const outcome = await resumeApprovedExecution({
+      id: 'apr-stale',
+      classification: 'externally_executable',
+      specialist_id: 'marketing',
+      tool_id: 'business_configuration_retrieval',
+      execution_request: { objective: 'x', tool_id: 'business_configuration_retrieval', specialist_id: 'marketing' },
+      reason: 'test fixture',
+      status: 'approved',
+      requested_at: new Date().toISOString(),
+      decided_at: new Date().toISOString(),
+      decided_by: 'owner@example.com',
+      decision_notes: null,
+    });
+    // 'marketing' does not own the 'configuration' category - approval never overrides
+    // permission, only the approval gate itself.
+    assert.strictEqual(outcome.status, 'denied');
+  });
+
+  await testAsync('runOrchestratorContract: pending_approvals is null for a clarification-required response and an empty array for a real, fully auto-approved plan today', async () => {
+    const clarificationResponse = await runOrchestratorContract('zzqxvth wobble unicorn');
+    assert.strictEqual(clarificationResponse.pending_approvals, null);
+
+    const plannedResponse = await runOrchestratorContract('keyword search visibility');
+    assert.deepStrictEqual(plannedResponse.pending_approvals, []);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
