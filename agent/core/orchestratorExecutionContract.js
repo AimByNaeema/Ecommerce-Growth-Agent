@@ -56,6 +56,12 @@
 const { TOOL_REGISTRY, getToolsByCategory, getToolById } = require('../../tools/toolRegistry');
 const { getSpecialistById } = require('./specialistRegistry');
 const { getSpecialistCapabilityRegistry, getSpecialistCapabilityById } = require('./specialistCapabilityRegistry');
+const {
+  deriveCrossAgentContext,
+  deriveAllToAnalyticsContext,
+  gatherGrowthOpportunityDrafts,
+  mergeContext,
+} = require('./crossAgentContext');
 const { getContextBoundaries } = require('./contextBoundaries');
 const { createEmptyState } = require('./stateModel');
 const { deriveExecutionState } = require('./executionState');
@@ -489,6 +495,40 @@ function planRouting(objective) {
   };
 }
 
+// Which researchParams field a multi-capability tool reads to select its capability,
+// and (only where the tool's own value differs from the specialistCapabilityRegistry
+// capability id - customer_research alone) how to translate one into the other.
+// Without this, a matched capability (see matchedCapability below) is purely
+// descriptive - the tool would silently keep running its own hardcoded default
+// capability regardless of what was actually matched, discarding the capability-level
+// routing this pipeline just did. null valueMap means the capability id itself is
+// already the value the tool expects (verified directly against each tool's own
+// destructuring default - see tools/analyticsTool.js, tools/seoAnalysisTool.js,
+// tools/keywordResearchTool.js, tools/marketingAnalysisTool.js,
+// tools/listingContentTool.js, tools/customerResearchTool.js,
+// tools/socialContentTool.js, tools/paidAdvertisingTool.js).
+const TOOL_CAPABILITY_SELECTORS = {
+  customer_research: {
+    field: 'customerResearchMode',
+    valueMap: { customer_market_intelligence: 'segment_research', customer_segmentation: 'customer_segmentation' },
+  },
+  keyword_research: { field: 'seoCapability', valueMap: null },
+  seo_analysis: { field: 'seoCapability', valueMap: null },
+  listing_content_generation: { field: 'listingCapability', valueMap: null },
+  marketing_analysis: { field: 'marketingCapability', valueMap: null },
+  social_content_planning: { field: 'socialPlatform', valueMap: null },
+  paid_advertising_planning: { field: 'adPlatform', valueMap: null },
+  analytics: { field: 'analyticsCapability', valueMap: null },
+  analytics_data_retrieval: { field: 'analyticsCapability', valueMap: null },
+};
+
+function deriveCapabilitySelectorContext(toolId, capabilityId) {
+  const selector = TOOL_CAPABILITY_SELECTORS[toolId];
+  if (!selector) return {};
+  const value = selector.valueMap ? selector.valueMap[capabilityId] : capabilityId;
+  return value ? { [selector.field]: value } : {};
+}
+
 // Scores a piece of candidate text against an already-tokenized objective word set -
 // the same word-overlap approach used throughout this file (identifyRequiredCapability,
 // scoreRoutingTargets), factored into one place so buildPlanStep's tool and capability
@@ -540,7 +580,8 @@ async function buildPlanStep(
   objective,
   currentTask,
   runTokenTracker = { tokensUsedThisRun: 0 },
-  researchParams = null
+  researchParams = null,
+  priorSteps = []
 ) {
   const capabilityEntry = target.type === 'specialist' ? getSpecialistCapabilityById(target.id) : null;
   const candidateToolIds = capabilityEntry
@@ -582,6 +623,35 @@ async function buildPlanStep(
     matchedCapability = bestMatchingTask(candidateTasks, objectiveWords);
   }
 
+  // STRUCTURED CROSS-AGENT CONTEXT PASSING (see agent/core/crossAgentContext.js): now
+  // that this step's real capability is known, derive only the fields it actually
+  // declares needing from whichever earlier steps in this same plan produced
+  // something relevant (the 5 declared specialist-pair flows, plus "All ->
+  // Analytics" when this step is analytics_optimization's growth_opportunities
+  // capability) - plus tell the matched tool which capability to actually run (see
+  // TOOL_CAPABILITY_SELECTORS above). The caller's own explicit researchParams always
+  // wins on any field collision - injected context only fills gaps, never overrides
+  // real input.
+  let effectiveResearchParams = researchParams;
+  if (target.type === 'specialist' && matchedCapability && toolMatch) {
+    const selectorContext = deriveCapabilitySelectorContext(toolMatch.id, matchedCapability.id);
+    const pairContext = deriveCrossAgentContext({
+      completedSteps: priorSteps,
+      toSpecialistId: target.id,
+      toCapabilityId: matchedCapability.id,
+      existingResearchParams: researchParams,
+    });
+    const analyticsContext =
+      target.id === 'analytics_optimization' ? deriveAllToAnalyticsContext(priorSteps, matchedCapability.id) : {};
+    let derivedContext = mergeContext({}, selectorContext);
+    derivedContext = mergeContext(derivedContext, pairContext);
+    derivedContext = mergeContext(derivedContext, analyticsContext);
+
+    if (Object.keys(derivedContext).length > 0) {
+      effectiveResearchParams = { ...derivedContext, ...(researchParams || {}) };
+    }
+  }
+
   let executionRequest;
   let outcome;
 
@@ -592,7 +662,7 @@ async function buildPlanStep(
       tool_id: null,
       specialist_id: target.type === 'specialist' ? target.id : null,
       is_shared_infrastructure: target.type === 'shared_infrastructure',
-      research_params: researchParams,
+      research_params: effectiveResearchParams,
     };
     outcome = {
       status: 'not_available',
@@ -604,7 +674,7 @@ async function buildPlanStep(
     executionRequest = createExecutionRequest(
       objective,
       { category: matchedCategory, tool: toolMatch },
-      researchParams
+      effectiveResearchParams
     );
     outcome = await executeSelectedCapability(executionRequest, runTokenTracker);
   }
@@ -657,7 +727,7 @@ function aggregatePlanState(plan) {
 // only, never persisted, see module header) plus every field the caller needs.
 // tokensUsedThisRun surfaces agent/core/tokenControls.js's running total so token
 // usage is visible in the response, not just enforced silently inside execution.
-function buildRoutingResponse({ objective, routing, tokensUsedThisRun = 0 }) {
+function buildRoutingResponse({ objective, routing, tokensUsedThisRun = 0, growthOpportunityDrafts = null }) {
   const needsMoreInfo = routing.status === 'clarification_required';
   const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
     ? aggregatePlanState(routing.plan)
@@ -682,6 +752,11 @@ function buildRoutingResponse({ objective, routing, tokensUsedThisRun = 0 }) {
     verification_status: verificationStatus,
     tokens_used: tokensUsedThisRun,
     state,
+    // "Analytics -> Optimization" draft candidates for
+    // agent/core/growthOpportunityEngine.js - null (never an empty-by-omission array)
+    // when there was no plan to gather them from at all (a clarification-required
+    // response); an array (possibly empty) whenever a real plan ran.
+    growth_opportunity_drafts: growthOpportunityDrafts,
   };
 }
 
@@ -728,16 +803,26 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
 
   const plan = [];
   for (let i = 0; i < routingResult.targets.length; i += 1) {
+    // plan already holds every step completed so far (0..i-1) at this point - passed
+    // as priorSteps so buildPlanStep can derive structured cross-agent context for
+    // this step from them (see agent/core/crossAgentContext.js).
     plan.push(
       await buildPlanStep(
         routingResult.targets[i],
         objective,
         routingResult.segments[i],
         runTokenTracker,
-        researchParams
+        researchParams,
+        plan
       )
     );
   }
+
+  // "Analytics -> Optimization": every growth-opportunity-shaped record produced
+  // anywhere in this plan, gathered into draft candidates for the standalone
+  // agent/core/growthOpportunityEngine.js - see gatherGrowthOpportunityDrafts's own
+  // header for why this never calls rankGrowthOpportunities() automatically.
+  const growthOpportunityDrafts = gatherGrowthOpportunityDrafts(plan);
 
   return buildRoutingResponse({
     objective,
@@ -750,6 +835,7 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
       plan,
     },
     tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
+    growthOpportunityDrafts,
   });
 }
 

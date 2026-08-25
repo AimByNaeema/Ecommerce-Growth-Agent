@@ -293,14 +293,16 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.strictEqual(step.current_task, 'keyword search visibility');
     assert.strictEqual(step.selected_specialist.id, 'seo');
     assert.deepStrictEqual(step.tool_calls, ['keyword_research']);
-    // keyword_research is implemented, but no research_params were supplied for this
-    // free-text-only call - the tool itself reports that honestly (never a fabricated
-    // result) rather than the orchestrator finding it not_available, the same pattern
-    // as the 'without researchParams' market_research case below.
+    // keyword_research is implemented and its matched capability (keyword_research)
+    // is injected into researchParams (see agent/core/orchestratorExecutionContract.js's
+    // TOOL_CAPABILITY_SELECTORS), so the tool receives a non-null researchParams and
+    // reports the specific real gap (no keywords array) rather than a generic
+    // "nothing was supplied at all" message - honest and more precise, never a
+    // fabricated result.
     assert.strictEqual(step.completion_state, 'complete');
     assert.strictEqual(step.outputs.status, 'failed');
     assert.strictEqual(step.outputs.result, null);
-    assert.ok(step.outputs.error.includes('No structured research input was supplied'));
+    assert.ok(step.outputs.error.includes('requires a non-empty `keywords` array'));
   });
 
   await testAsync('runOrchestratorContract: a clean single-specialist task (Listing) produces a one-step plan of shared execution state', async () => {
@@ -311,14 +313,14 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     const step = response.routing.plan[0];
     assert.strictEqual(step.selected_specialist.id, 'listing');
     assert.deepStrictEqual(step.tool_calls, ['listing_content_generation']);
-    // listing_content_generation is implemented, but no research_params were supplied
-    // for this free-text-only call - the tool itself reports that honestly (never a
-    // fabricated result) rather than the orchestrator finding it not_available, the
-    // same pattern as the SEO/market_research 'without researchParams' cases.
+    // listing_content_generation is implemented and its matched capability
+    // (listing_content) is injected into researchParams, so the tool reports the
+    // specific real gap (no productReference) rather than a generic
+    // "nothing was supplied at all" message.
     assert.strictEqual(step.completion_state, 'complete');
     assert.strictEqual(step.outputs.status, 'failed');
     assert.strictEqual(step.outputs.result, null);
-    assert.ok(step.outputs.error.includes('No structured research input was supplied'));
+    assert.ok(step.outputs.error.includes('requires a non-empty `productReference` string'));
   });
 
   await testAsync('runOrchestratorContract: a clean single-specialist task (Marketing) produces a one-step plan of shared execution state', async () => {
@@ -329,14 +331,13 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     const step = response.routing.plan[0];
     assert.strictEqual(step.selected_specialist.id, 'marketing');
     assert.deepStrictEqual(step.tool_calls, ['marketing_analysis']);
-    // marketing_analysis is implemented, but no research_params were supplied for this
-    // free-text-only call - the tool itself reports that honestly (never a fabricated
-    // result), the same pattern as the SEO/Listing/market_research 'without
-    // researchParams' cases.
+    // marketing_analysis is implemented and its matched capability (marketing_strategy)
+    // is injected into researchParams, so the tool reports the specific real gap (no
+    // marketingChannel) rather than a generic "nothing was supplied at all" message.
     assert.strictEqual(step.completion_state, 'complete');
     assert.strictEqual(step.outputs.status, 'failed');
     assert.strictEqual(step.outputs.result, null);
-    assert.ok(step.outputs.error.includes('No structured research input was supplied'));
+    assert.ok(step.outputs.error.includes('requires a non-empty `marketingChannel` string'));
   });
 
   await testAsync('runOrchestratorContract: a multi-capability task produces a controlled 2-step plan, each step self-contained', async () => {
@@ -351,15 +352,15 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     // Neither step's state carries the other specialist's tool_calls/outputs - each is
     // independently minimal (the whole point of the shared execution state design).
     // social_content_planning is implemented and now scores highest against this
-    // clause's own wording ("social", "media"), but no research_params were supplied
-    // for this free-text-only call - the tool itself reports that honestly (never a
-    // fabricated result), the same pattern as the SEO/Listing/Marketing/market_research
-    // 'without researchParams' cases.
+    // clause's own wording ("social", "media"); its matched capability (instagram, the
+    // tool's own default) is injected into researchParams, so the tool reports the
+    // specific real gap (no contentReference) rather than a generic
+    // "nothing was supplied at all" message.
     assert.deepStrictEqual(socialStep.tool_calls, ['social_content_planning']);
     assert.strictEqual(socialStep.completion_state, 'complete');
     assert.strictEqual(socialStep.outputs.status, 'failed');
     assert.strictEqual(socialStep.outputs.result, null);
-    assert.ok(socialStep.outputs.error.includes('No structured research input was supplied'));
+    assert.ok(socialStep.outputs.error.includes('requires a non-empty `contentReference` string'));
     assert.strictEqual(researchStep.selected_specialist.id !== socialStep.selected_specialist.id, true);
   });
 
@@ -407,6 +408,102 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     // the documented, deterministic tie-break (declared order, first wins) resolves
     // it to 'instagram' rather than guessing among equally-scored candidates.
     assert.strictEqual(socialStep.inputs.capability_id, 'instagram');
+  });
+
+  // --- Structured cross-agent context passing: genuine end-to-end multi-step runs --
+  //
+  // Each fixture's objective wording and researchParams were empirically verified by
+  // running the real orchestrator (not hand-predicted) - same practice as the
+  // capability-registry connection tests above. These exercise the full real pipeline
+  // for the 3 declared flows whose both ends are tool-reachable today (SEO/Listing,
+  // Marketing/Social & Advertising, and the growth-opportunity flows through
+  // Analytics) - see agent/core/crossAgentContext.js's own unit tests
+  // (verification/testing/crossAgentContext.test.js) for the other 2 declared flows
+  // (Research -> Product, Product -> Listing/Marketing), which are correct and fully
+  // wired but not yet live-reachable: agent/core/productAgent.js has no tool wired to
+  // it in tools/toolRegistry.js today (a pre-existing, separately-scoped gap - see
+  // specialistCapabilityRegistry's own honest tool_ids: [] for every Product task).
+
+  await testAsync('SEO -> Listing: a real product_seo result feeds listing_content\'s seoRecommendations for real, in one plan', async () => {
+    const response = await runOrchestratorContract('seo analysis and refresh my listing', {
+      researchParams: {
+        productReference: 'Insulated Hiking Jacket',
+        productTitle: 'Insulated Hiking Jacket',
+        description: 'Warm and sustainable.',
+        keywords: ['insulated jacket', 'hiking gear'],
+      },
+    });
+    const [seoStep, listingStep] = response.routing.plan;
+    assert.strictEqual(seoStep.selected_specialist.id, 'seo');
+    assert.strictEqual(seoStep.inputs.capability_id, 'product_seo');
+    assert.strictEqual(listingStep.selected_specialist.id, 'listing');
+    assert.strictEqual(listingStep.inputs.capability_id, 'listing_content');
+    const listingRecord = listingStep.outputs.result.specialized_records[0];
+    assert.strictEqual(listingRecord.product_title, 'Insulated Hiking Jacket');
+    assert.deepStrictEqual(listingStep.outputs.result.findings, [
+      'SEO-recommended keyword: insulated jacket',
+      'SEO-recommended keyword: hiking gear',
+    ]);
+  });
+
+  await testAsync('Marketing -> Social & Advertising: a real campaign_planning result feeds content_calendar\'s campaignContext for real, in one plan', async () => {
+    const response = await runOrchestratorContract('plan my campaign and schedule a social calendar entry', {
+      researchParams: {
+        campaignReference: 'Winter Launch',
+        objective: 'Drive awareness',
+        audience: 'Hikers',
+        entryReference: 'Nov-15-Post',
+        date: '2026-11-15',
+        platform: 'instagram',
+      },
+    });
+    const [marketingStep, socialStep] = response.routing.plan;
+    assert.strictEqual(marketingStep.selected_specialist.id, 'marketing');
+    assert.strictEqual(marketingStep.inputs.capability_id, 'campaign_planning');
+    assert.strictEqual(socialStep.selected_specialist.id, 'social_advertising');
+    assert.strictEqual(socialStep.inputs.capability_id, 'content_calendar');
+    const calendarEntry = socialStep.outputs.result.specialized_records[0];
+    assert.strictEqual(calendarEntry.campaign, 'Winter Launch');
+  });
+
+  await testAsync('All -> Analytics + Analytics -> Optimization: a real Marketing retention result feeds Analytics\' growth_opportunities and the growth_opportunity_drafts response field, in one plan', async () => {
+    const response = await runOrchestratorContract('launch a retention campaign and surface growth opportunities for optimization', {
+      researchParams: {
+        productReference: 'Insulated Jacket',
+        targetSegment: 'Lapsed customers',
+        offer: 'Win-back 15% off',
+        recommendation: 'Send a win-back email.',
+        evidence: ['(placeholder evidence)'],
+      },
+    });
+    const [marketingStep, analyticsStep] = response.routing.plan;
+    assert.strictEqual(marketingStep.inputs.capability_id, 'retention');
+    assert.strictEqual(analyticsStep.selected_specialist.id, 'analytics_optimization');
+    assert.strictEqual(analyticsStep.inputs.capability_id, 'growth_opportunities');
+    assert.strictEqual(analyticsStep.outputs.status, 'success');
+    // "All -> Analytics": the real opportunity Marketing produced is what Analytics
+    // actually scored - not a fabricated one.
+    assert.strictEqual(analyticsStep.outputs.result.specialized_records[0].product_reference, 'Insulated Jacket');
+
+    // "Analytics -> Optimization": one draft candidate for
+    // agent/core/growthOpportunityEngine.js, deduped (the same real record reached
+    // both Marketing's and Analytics' output) - real fields relayed, judgment fields
+    // honestly named as missing, never invented.
+    assert.strictEqual(response.growth_opportunity_drafts.length, 1);
+    const [draft] = response.growth_opportunity_drafts;
+    assert.strictEqual(draft.category, 'retention');
+    assert.strictEqual(draft.requiredAction, 'Send a win-back email.');
+    assert.deepStrictEqual(draft.missing_for_ranking, ['expectedImpactCategory', 'expectedImpactMagnitude', 'actionClassification']);
+  });
+
+  await testAsync('growth_opportunity_drafts is null for a clarification-required response (no plan ran)', async () => {
+    const response = await runOrchestratorContract('zzqxvth wobble unicorn');
+    assert.strictEqual(response.growth_opportunity_drafts, null);
+  });
+
+  await testAsync('growth_opportunity_drafts is an empty array (not null) for a plan that produced no growth-opportunity-shaped output', async () => {
+    const response = await runOrchestratorContract('keyword search visibility');
+    assert.deepStrictEqual(response.growth_opportunity_drafts, []);
   });
 
   await testAsync('runOrchestratorContract: an ambiguous task requires clarification instead of assuming', async () => {
