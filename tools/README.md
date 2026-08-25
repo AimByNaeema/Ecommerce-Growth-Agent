@@ -46,3 +46,13 @@ already expects — this is the actual connection between real Shopify data and 
 Product Agent; see [`products/README.md`](../products/README.md#product-agent) for
 why that mapping lives here rather than in `agent/core/` (which never depends on
 `tools/` or `integrations/` in this codebase).
+
+Every `toolRegistry.js` entry now also carries an `operation` field —
+`'read' | 'write' | 'execute'` — describing what kind of action the tool performs,
+independent of its `category` (which domain owns it) and independent of
+`approvals/approvalArchitecture.js`'s classification (whether a human must sign off).
+This is the axis [`agent/core/toolPermissions.js`](../agent/core/toolPermissions.js)'s
+`SPECIALIST_ROLE_PERMISSIONS` gates on: each specialist's role covers only the
+operation types its domain actually needs (e.g. Research is read-only; Listing is
+write-only), so a tool it would otherwise reach by category ownership is still denied
+if the tool's operation falls outside that role. No tool is `execute` today.

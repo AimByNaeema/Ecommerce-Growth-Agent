@@ -11,7 +11,7 @@ const {
 } = require('../../agent/core/specialistCapabilityRegistry');
 const { getSpecialistById } = require('../../agent/core/specialistRegistry');
 const { getToolsByCategory, getToolById } = require('../../tools/toolRegistry');
-const { SPECIALIST_TO_CATEGORIES, checkToolAccess } = require('../../agent/core/toolPermissions');
+const { SPECIALIST_TO_CATEGORIES, checkToolAccess, SPECIALIST_ROLE_PERMISSIONS } = require('../../agent/core/toolPermissions');
 const { RESEARCH_TYPES, RESEARCH_AGENT_RESULT_FIELDS } = require('../../agent/core/researchAgentResultModel');
 const { SEO_CAPABILITIES, SEO_AGENT_RESULT_FIELDS } = require('../../agent/core/seoAgentResultModel');
 const { LISTING_CAPABILITIES, LISTING_AGENT_RESULT_FIELDS } = require('../../agent/core/listingAgentResultModel');
@@ -236,6 +236,24 @@ test('getCapabilityTask() finds a known task and returns undefined for an unknow
 test('getSpecialistCapabilityEntriesByStatus() returns all 7 as implemented and 0 as not_implemented', () => {
   assert.strictEqual(getSpecialistCapabilityEntriesByStatus('implemented').length, 7);
   assert.strictEqual(getSpecialistCapabilityEntriesByStatus('not_implemented').length, 0);
+});
+
+test('role-based permissions: every specialist\'s tool_access for a required, implemented tool reports operation_permitted true - each specialist only accesses tools its role covers', () => {
+  for (const entry of SPECIALIST_CAPABILITY_REGISTRY) {
+    for (const access of entry.permissions.tool_access) {
+      if (access.decision === 'unavailable') continue; // not_implemented tools have no role verdict to check
+      assert.strictEqual(
+        access.operation_permitted,
+        true,
+        `${entry.id}'s tool_access for '${access.tool_id}' should be operation_permitted (role: ${SPECIALIST_ROLE_PERMISSIONS[entry.id]})`
+      );
+      const tool = getToolById(access.tool_id);
+      assert.ok(
+        SPECIALIST_ROLE_PERMISSIONS[entry.id].includes(tool.operation),
+        `${entry.id}'s role (${SPECIALIST_ROLE_PERMISSIONS[entry.id]}) does not list '${tool.operation}', the real operation of '${access.tool_id}'`
+      );
+    }
+  }
 });
 
 test('getSpecialistCapabilityRegistry() returns the same array getSpecialistCapabilityById reads from', () => {

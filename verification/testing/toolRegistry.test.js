@@ -4,10 +4,12 @@ const assert = require('node:assert');
 const {
   TOOL_CATEGORIES,
   TOOL_STATUSES,
+  TOOL_OPERATIONS,
   TOOL_REGISTRY,
   getToolById,
   getToolsByCategory,
   getToolsByStatus,
+  getToolsByOperation,
 } = require('../../tools/toolRegistry');
 
 const EXPECTED_ORDER = [
@@ -91,11 +93,38 @@ test('tool ids are unique', () => {
   assert.strictEqual(new Set(ids).size, ids.length);
 });
 
-test('every entry has a valid category and status', () => {
+test('every entry has a valid category, status, and operation', () => {
   for (const tool of TOOL_REGISTRY) {
     assert.ok(TOOL_CATEGORIES.includes(tool.category), `${tool.id} has an invalid category: ${tool.category}`);
     assert.ok(TOOL_STATUSES.includes(tool.status), `${tool.id} has an invalid status: ${tool.status}`);
+    assert.ok(TOOL_OPERATIONS.includes(tool.operation), `${tool.id} has an invalid operation: ${tool.operation}`);
   }
+});
+
+test('TOOL_OPERATIONS is exactly read/write/execute', () => {
+  assert.deepStrictEqual(TOOL_OPERATIONS, ['read', 'write', 'execute']);
+});
+
+test('no tool is "execute" today - no tool is wired to an external mutation yet', () => {
+  assert.strictEqual(getToolsByOperation('execute').length, 0);
+});
+
+test('getToolsByOperation() filters correctly', () => {
+  const writeTools = getToolsByOperation('write');
+  assert.deepStrictEqual(
+    writeTools.map((tool) => tool.id).sort(),
+    [
+      'ai_reasoning_completion',
+      'content_calendar_generation',
+      'listing_content_generation',
+      'marketing_analysis',
+      'paid_advertising_planning',
+      'platform_content_generation',
+      'social_content_planning',
+      'social_media_strategy_generation',
+      'advertising_strategy_planning',
+    ].sort()
+  );
 });
 
 test('every entry except the implemented set is not_implemented - do not implement other tools yet', () => {

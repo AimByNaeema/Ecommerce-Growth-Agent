@@ -6,7 +6,10 @@ const {
   SHARED_INFRASTRUCTURE_CATEGORIES,
   AUTO_APPROVED_CLASSIFICATIONS,
   TOOL_CLASSIFICATIONS,
+  SPECIALIST_ROLE_PERMISSIONS,
+  SHARED_INFRASTRUCTURE_ROLE_PERMISSIONS,
   isSpecialistPermittedForCategory,
+  isOperationPermittedForSpecialist,
   evaluateToolAccess,
   checkToolAccess,
 } = require('../../agent/core/toolPermissions');
@@ -14,6 +17,8 @@ const {
   AUTO_APPROVED_CLASSIFICATIONS: ARCHITECTURE_AUTO_APPROVED_CLASSIFICATIONS,
   getClassificationById,
 } = require('../../approvals/approvalArchitecture');
+const { TOOL_REGISTRY, TOOL_OPERATIONS, getToolById } = require('../../tools/toolRegistry');
+const { SPECIALIST_REGISTRY } = require('../../agent/core/specialistRegistry');
 
 // checkToolAccess is the real, tools/toolRegistry.js-backed API - it is exercised here
 // against real registry entries wherever real data can produce the outcome. Every
@@ -127,7 +132,10 @@ test('APPROVAL_REQUIRED: an implemented, permitted tool with a classification ou
   // No tool in today's real registry is both implemented and approval_required (the
   // only implemented tool is analysis_only) - this synthetic shape proves the branch
   // works correctly for when a write-capable tool is eventually added.
-  const hypotheticalWriteTool = { id: 'hypothetical_publish_listing', status: 'implemented', category: 'seo' };
+  // operation: 'read' matches SEO's role (SPECIALIST_ROLE_PERMISSIONS.seo = ['read'])
+  // so this fixture reaches the approval branch being tested here, not the role/
+  // operation denial branch - that branch has its own dedicated tests below.
+  const hypotheticalWriteTool = { id: 'hypothetical_publish_listing', status: 'implemented', category: 'seo', operation: 'read' };
   assert.ok(!AUTO_APPROVED_CLASSIFICATIONS.includes('externally_executable'));
 
   const result = evaluateToolAccess({
@@ -143,22 +151,136 @@ test('APPROVAL_REQUIRED: an implemented, permitted tool with a classification ou
 });
 
 test('APPROVAL_REQUIRED: an implemented, permitted tool with no classification at all defaults to requiring approval, never auto-allowed', () => {
+  // operation: 'write' matches Marketing's role (SPECIALIST_ROLE_PERMISSIONS.marketing
+  // = ['write']), so this reaches the approval branch, not the role denial branch.
   const result = evaluateToolAccess({
     specialistId: 'marketing',
-    tool: { id: 'hypothetical_unclassified_tool', status: 'implemented', category: 'marketing' },
+    tool: { id: 'hypothetical_unclassified_tool', status: 'implemented', category: 'marketing', operation: 'write' },
     classification: null,
   });
   assert.strictEqual(result.decision, 'approval_required');
 });
 
-test('ALLOWED: evaluateToolAccess only reaches allowed once available, permitted, and auto-approved all hold', () => {
+test('ALLOWED: evaluateToolAccess only reaches allowed once available, category-permitted, role-permitted, and auto-approved all hold', () => {
   const result = evaluateToolAccess({
     specialistId: 'marketing',
-    tool: { id: 'hypothetical_analysis_tool', status: 'implemented', category: 'marketing' },
+    tool: { id: 'hypothetical_analysis_tool', status: 'implemented', category: 'marketing', operation: 'write' },
     classification: 'analysis_only',
   });
   assert.strictEqual(result.decision, 'allowed');
   assert.strictEqual(result.approval_required, false);
+  assert.strictEqual(result.category_permitted, true);
+  assert.strictEqual(result.operation_permitted, true);
+});
+
+// --- Role-based (READ/WRITE/EXECUTE) permissions ------------------------------------
+
+test('SPECIALIST_ROLE_PERMISSIONS declares a role for every specialist in specialistRegistry.js, using only real operation ids', () => {
+  for (const specialist of SPECIALIST_REGISTRY) {
+    const role = SPECIALIST_ROLE_PERMISSIONS[specialist.id];
+    assert.ok(role && role.length > 0, `${specialist.id} has no declared role permissions`);
+    for (const operation of role) {
+      assert.ok(TOOL_OPERATIONS.includes(operation), `${specialist.id}'s role includes an invalid operation '${operation}'`);
+    }
+  }
+});
+
+test('no specialist role grants "execute" today - no tool is externally_executable yet, matching approvals/approvalArchitecture.js', () => {
+  for (const role of Object.values(SPECIALIST_ROLE_PERMISSIONS)) {
+    assert.ok(!role.includes('execute'), 'no specialist role should include execute yet');
+  }
+  assert.ok(!SHARED_INFRASTRUCTURE_ROLE_PERMISSIONS.includes('execute'));
+});
+
+test('isOperationPermittedForSpecialist grants a specialist only its own role\'s operations', () => {
+  assert.strictEqual(isOperationPermittedForSpecialist('research', 'read'), true);
+  assert.strictEqual(isOperationPermittedForSpecialist('research', 'write'), false);
+  assert.strictEqual(isOperationPermittedForSpecialist('listing', 'write'), true);
+  assert.strictEqual(isOperationPermittedForSpecialist('listing', 'read'), false);
+  assert.strictEqual(isOperationPermittedForSpecialist('social_advertising', 'read'), true);
+  assert.strictEqual(isOperationPermittedForSpecialist('social_advertising', 'write'), true);
+});
+
+test('isOperationPermittedForSpecialist treats a null specialistId as shared infrastructure only', () => {
+  assert.strictEqual(isOperationPermittedForSpecialist(null, 'read'), true);
+  assert.strictEqual(isOperationPermittedForSpecialist(null, 'write'), true);
+  assert.strictEqual(isOperationPermittedForSpecialist(null, 'execute'), false);
+});
+
+test('every real, implemented tool\'s operation is covered by its owning specialist\'s role - today\'s registry is fully role-consistent', () => {
+  for (const tool of TOOL_REGISTRY) {
+    if (tool.status !== 'implemented') continue;
+    const specialistId = CATEGORY_TO_SPECIALIST[tool.category] || null;
+    assert.strictEqual(
+      isOperationPermittedForSpecialist(specialistId, tool.operation),
+      true,
+      `${tool.id} (operation '${tool.operation}') is not covered by ${specialistId || '(shared infrastructure)'}'s role`
+    );
+  }
+});
+
+test('DENIAL: a specialist that owns the category is still denied a tool whose operation falls outside its role', () => {
+  // Research's role is read-only (SPECIALIST_ROLE_PERMISSIONS.research) - a
+  // hypothetical WRITE tool in the 'research' category (which Research does own) must
+  // still be denied. This is the scenario category ownership alone cannot catch - the
+  // real value of a separate role/operation gate.
+  const result = evaluateToolAccess({
+    specialistId: 'research',
+    tool: { id: 'hypothetical_publish_research_report', status: 'implemented', category: 'research', operation: 'write' },
+    classification: 'analysis_only',
+  });
+  assert.strictEqual(result.decision, 'denied');
+  assert.strictEqual(result.category_permitted, true);
+  assert.strictEqual(result.operation_permitted, false);
+  assert.strictEqual(result.permitted, false);
+  assert.ok(/role does not permit 'write'/.test(result.reason));
+});
+
+test('DENIAL: a WRITE-only specialist is denied a READ tool even inside its own category', () => {
+  // Listing's role is write-only - a hypothetical READ tool in the 'listing' category
+  // must still be denied, proving the gate works in both directions.
+  const result = evaluateToolAccess({
+    specialistId: 'listing',
+    tool: { id: 'hypothetical_listing_analytics', status: 'implemented', category: 'listing', operation: 'read' },
+    classification: 'analysis_only',
+  });
+  assert.strictEqual(result.decision, 'denied');
+  assert.strictEqual(result.operation_permitted, false);
+});
+
+test('AUTHORIZATION: a specialist whose role covers the operation, and who owns the category, is not blocked by the role gate', () => {
+  const result = evaluateToolAccess({
+    specialistId: 'research',
+    tool: { id: 'hypothetical_trend_report', status: 'implemented', category: 'research', operation: 'read' },
+    classification: 'analysis_only',
+  });
+  assert.strictEqual(result.category_permitted, true);
+  assert.strictEqual(result.operation_permitted, true);
+  assert.strictEqual(result.decision, 'allowed');
+});
+
+test('AUTHORIZATION: role denial never masks as a different decision - it is always "denied", same as a category denial', () => {
+  const categoryDenied = evaluateToolAccess({
+    specialistId: 'marketing',
+    tool: { id: 'x', status: 'implemented', category: 'seo', operation: 'read' },
+    classification: 'analysis_only',
+  });
+  const roleDenied = evaluateToolAccess({
+    specialistId: 'research',
+    tool: { id: 'y', status: 'implemented', category: 'research', operation: 'write' },
+    classification: 'analysis_only',
+  });
+  assert.strictEqual(categoryDenied.decision, 'denied');
+  assert.strictEqual(roleDenied.decision, 'denied');
+  assert.strictEqual(categoryDenied.category_permitted, false);
+  assert.strictEqual(roleDenied.category_permitted, true);
+});
+
+test('checkToolAccess (real registry-backed): a real tool\'s decision reports category_permitted, operation_permitted, and operation honestly', () => {
+  const result = checkToolAccess({ specialistId: null, toolId: 'business_configuration_retrieval' });
+  assert.strictEqual(result.category_permitted, true);
+  assert.strictEqual(result.operation_permitted, true);
+  assert.strictEqual(result.operation, getToolById('business_configuration_retrieval').operation);
 });
 
 // --- approvals/approvalArchitecture.js reuse (not duplicated) ----------------------

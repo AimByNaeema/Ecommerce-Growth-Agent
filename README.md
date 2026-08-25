@@ -447,3 +447,20 @@ classifications auto-proceed, reused (never re-declared) by
 threaded through one run the same way `runTokenTracker` already was. No external
 service is connected yet, so no `externally_executable` action can run end-to-end
 today, but the classification, request lifecycle, and Chief-level wiring are all real.
+Tool permissions are now role-based on a second, independent axis:
+[`tools/toolRegistry.js`](tools/toolRegistry.js) tags every tool with an `operation` —
+`read`, `write`, or `execute` — describing what kind of action it performs, separate
+from `category` (which domain owns it) and separate from the approval classification
+(whether a human must sign off).
+[`agent/core/toolPermissions.js`](agent/core/toolPermissions.js)'s
+`SPECIALIST_ROLE_PERMISSIONS` declares, per specialist, which operation types its role
+actually needs (Research/Product/SEO/Analytics & Optimization are read-only; Listing
+and Marketing are write-only; Social & Advertising needs both) — a real ceiling, not
+just a restatement of category ownership: a tool a specialist would otherwise reach by
+category is still denied if its operation falls outside that specialist's role, which
+would catch a future mis-assigned tool rather than silently expanding to match
+whatever tools happen to exist. `evaluateToolAccess()`'s decision order is now
+availability → category → role/operation → approval, always in that order, always
+before `agent/core/orchestratorExecutionContract.js`'s `TOOL_EXECUTORS` is ever read —
+so the permission check happens before execution by construction, not by convention.
+No specialist role grants `execute` yet, matching that no tool is `execute` yet.

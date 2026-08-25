@@ -46,6 +46,25 @@ const TOOL_CATEGORIES = [
 
 const TOOL_STATUSES = ['not_implemented', 'implemented'];
 
+// The operation type each tool performs, independent of both `category` (which
+// domain owns it) and approvals/approvalArchitecture.js's classification (whether a
+// human must sign off before it proceeds). This is the axis
+// agent/core/toolPermissions.js's SPECIALIST_ROLE_PERMISSIONS gates on: a specialist's
+// role grants it some subset of these operation types, and a tool it would otherwise
+// be permitted to use (by category) is still denied if its role doesn't cover the
+// tool's operation.
+//   - 'read'    - retrieves or analyzes existing data; never authors new marketable
+//                 content (business/product data retrieval, all research, SEO
+//                 analysis, analytics, advertising performance analysis).
+//   - 'write'   - composes new content/drafts/deliverables a human would review
+//                 (listing content, marketing/social/ad content and strategy,
+//                 campaign/content-calendar entries, the raw AI reasoning completion).
+//   - 'execute' - would call or change an external system directly. No tool is
+//                 'execute' today - none is wired to any external mutation yet (see
+//                 approvals/approvalArchitecture.js's 'externally_executable' class,
+//                 which is in the same honest position) - reserved for when one is.
+const TOOL_OPERATIONS = ['read', 'write', 'execute'];
+
 const TOOL_REGISTRY = [
   {
     id: 'business_configuration_retrieval',
@@ -53,6 +72,7 @@ const TOOL_REGISTRY = [
     description:
       "Retrieve the connected Shopify store's shop identity (name, domain, email) via integrations/adapters/shopifyClient.js's getShopInfo() - see tools/businessConfigurationRetrieval.js.",
     category: 'configuration',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -61,6 +81,7 @@ const TOOL_REGISTRY = [
     description:
       "Retrieve read-only product data (products, variants, inventory, prices, SKUs, status, collections, metadata) from the connected Shopify store via integrations/adapters/shopifyClient.js's getProducts() - see tools/productDataRetrievalTool.js. No writes.",
     category: 'products',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -69,6 +90,7 @@ const TOOL_REGISTRY = [
     description:
       'Run product research per the products/productResearchArchitecture.js pipeline.',
     category: 'products',
+    operation: 'read',
     status: 'not_implemented',
   },
   {
@@ -77,6 +99,7 @@ const TOOL_REGISTRY = [
     description:
       "Produce market research records conforming to agent/core/marketResearchModel.js via agent/core/researchAgent.js's runMarketResearch() - see tools/marketResearchTool.js.",
     category: 'research',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -85,6 +108,7 @@ const TOOL_REGISTRY = [
     description:
       "Produce customer segment research records conforming to agent/core/customerSegmentResearchModel.js via agent/core/researchAgent.js's runCustomerMarketIntelligence() - see tools/customerResearchTool.js.",
     category: 'customer_market_intelligence',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -93,6 +117,7 @@ const TOOL_REGISTRY = [
     description:
       "Produce competitor research records conforming to agent/core/competitorResearchModel.js via agent/core/researchAgent.js's runCompetitorResearch() - see tools/competitorResearchTool.js.",
     category: 'research',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -101,6 +126,7 @@ const TOOL_REGISTRY = [
     description:
       "Produce agent/core/seoResearchModel.js keyword records and search-intent groupings via agent/core/seoAgent.js's runKeywordResearch()/analyzeSearchIntent(), following the workflows/keywordResearchWorkflow.js pipeline - see tools/keywordResearchTool.js.",
     category: 'seo',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -109,6 +135,7 @@ const TOOL_REGISTRY = [
     description:
       "Analyze product/collection/content on-page SEO and SEO opportunity coverage via agent/core/seoAgent.js, composing agent/core/listingOptimizationModel.js and agent/core/onPageOptimizationModel.js records - see tools/seoAnalysisTool.js.",
     category: 'seo',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -117,6 +144,7 @@ const TOOL_REGISTRY = [
     description:
       "Compose agent/core/listingContentModel.js listing-content records (title, description, benefits, features, selling points, FAQs, attributes, variants) and agent/core/marketplaceListingFormatModel.js marketplace-formatted records via agent/core/listingAgent.js - see tools/listingContentTool.js.",
     category: 'listing',
+    operation: 'write',
     status: 'implemented',
   },
   {
@@ -125,6 +153,7 @@ const TOOL_REGISTRY = [
     description:
       "Produce agent/core/marketingAnalysisModel.js, agent/core/growthOpportunityModel.js, and agent/core/customerSegmentResearchModel.js records via agent/core/marketingAgent.js's 8 capabilities (marketing strategy, audience segmentation, offers, promotions, retention, campaign planning, email strategy, conversion opportunities) - see tools/marketingAnalysisTool.js.",
     category: 'marketing',
+    operation: 'write',
     status: 'implemented',
   },
   {
@@ -133,6 +162,7 @@ const TOOL_REGISTRY = [
     description:
       "Compose agent/core/socialContentModel.js social media content records via agent/core/socialAdvertisingAgent.js's 5 social capabilities (instagram, facebook, tiktok, pinterest, youtube) - see tools/socialContentTool.js.",
     category: 'social_advertising',
+    operation: 'write',
     status: 'implemented',
   },
   {
@@ -141,6 +171,7 @@ const TOOL_REGISTRY = [
     description:
       "Compose agent/core/adCampaignModel.js paid ad campaign records via agent/core/socialAdvertisingAgent.js's 3 advertising capabilities (meta_ads, google_ads, tiktok_ads) - see tools/paidAdvertisingTool.js.",
     category: 'social_advertising',
+    operation: 'write',
     status: 'implemented',
   },
   {
@@ -149,6 +180,7 @@ const TOOL_REGISTRY = [
     description:
       "Compose agent/core/socialMediaStrategyModel.js cross-platform strategy records (content pillars, audience, platform selection, posting strategy, content themes, campaign themes, KPIs) via agent/core/socialAdvertisingAgent.js's social_media_strategy capability - see tools/socialMediaStrategyTool.js.",
     category: 'social_advertising',
+    operation: 'write',
     status: 'implemented',
   },
   {
@@ -157,6 +189,7 @@ const TOOL_REGISTRY = [
     description:
       "Compose agent/core/platformContentModel.js content records (hooks, captions, CTAs, content ideas, short-form video concepts, carousel concepts, creative briefs, all adapted to one selected platform) via agent/core/socialAdvertisingAgent.js's content_generation capability - see tools/platformContentTool.js.",
     category: 'social_advertising',
+    operation: 'write',
     status: 'implemented',
   },
   {
@@ -165,6 +198,7 @@ const TOOL_REGISTRY = [
     description:
       "Compose agent/core/contentCalendarModel.js calendar entries (date, platform, content type, topic, hook, CTA, campaign, product, KPI) via agent/core/socialAdvertisingAgent.js's content_calendar capability, optionally informed by Marketing Agent campaign context via agent/core/marketingAgent.js's campaign_plan builder - see tools/contentCalendarTool.js.",
     category: 'social_advertising',
+    operation: 'write',
     status: 'implemented',
   },
   {
@@ -173,6 +207,7 @@ const TOOL_REGISTRY = [
     description:
       "Compose agent/core/advertisingStrategyModel.js pre-launch advertising strategy records (campaign objective, audience, offer, creative angle, ad copy, CTA, budget recommendation, KPI, testing plan) via agent/core/socialAdvertisingAgent.js's advertising_strategy capability - see tools/advertisingStrategyTool.js.",
     category: 'social_advertising',
+    operation: 'write',
     status: 'implemented',
   },
   {
@@ -181,6 +216,7 @@ const TOOL_REGISTRY = [
     description:
       "Compose agent/core/advertisingPerformanceModel.js performance records (impressions, CTR, CPC, CPM, conversions, CPA, ROAS) via agent/core/socialAdvertisingAgent.js's advertising_performance capability, separating caller-supplied actual metrics from metrics agent/core/advertisingPerformanceCalculator.js derives from them, and from recommendations - see tools/advertisingPerformanceTool.js.",
     category: 'social_advertising',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -189,6 +225,7 @@ const TOOL_REGISTRY = [
     description:
       "Compose agent/core/analyticsModel.js snapshot records (sales, products, customers, conversion, traffic, marketing, advertising, inventory) and agent/core/growthOpportunityModel.js records (growth opportunities) from CALLER-SUPPLIED evidence, via agent/core/analyticsAgent.js's 9 capabilities - see tools/analyticsTool.js.",
     category: 'analytics',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -197,6 +234,7 @@ const TOOL_REGISTRY = [
     description:
       "Retrieve read-only LIVE data (orders, products, customers, inventory) from the connected Shopify store via integrations/adapters/shopifyClient.js, compute agent/core/analyticsMetricsCalculator.js's calculated/estimated metrics from it, and compose the result via agent/core/analyticsAgent.js's sales/products/customers/inventory capabilities - see tools/analyticsDataTool.js. No writes; customers uses non-PII fields only.",
     category: 'analytics',
+    operation: 'read',
     status: 'implemented',
   },
   {
@@ -205,6 +243,7 @@ const TOOL_REGISTRY = [
     description:
       "Run one structured Claude completion (instruction + optional context) via agent/core/claudeClient.js's sendMessage() - see tools/aiReasoningCompletion.js. Every call is capped/budgeted by agent/core/tokenControls.js.",
     category: 'ai_reasoning',
+    operation: 'write',
     status: 'implemented',
   },
   {
@@ -213,6 +252,7 @@ const TOOL_REGISTRY = [
     description:
       'Retrieve persisted state from memory/state/ per agent/core/memoryRules.js and agent/core/stateModel.js.',
     category: 'memory',
+    operation: 'read',
     status: 'not_implemented',
   },
   {
@@ -221,6 +261,7 @@ const TOOL_REGISTRY = [
     description:
       "Verify results/evidence per agent/core/researchRecordModel.js's confidence/verification_status convention and the agent contract's verify_results stage.",
     category: 'verification',
+    operation: 'read',
     status: 'not_implemented',
   },
 ];
@@ -241,14 +282,20 @@ function getToolsByStatus(status) {
   return TOOL_REGISTRY.filter((tool) => tool.status === status);
 }
 
+function getToolsByOperation(operation) {
+  return TOOL_REGISTRY.filter((tool) => tool.operation === operation);
+}
+
 module.exports = {
   TOOL_CATEGORIES,
   TOOL_STATUSES,
+  TOOL_OPERATIONS,
   TOOL_REGISTRY,
   getToolRegistry,
   getToolById,
   getToolsByCategory,
   getToolsByStatus,
+  getToolsByOperation,
 };
 
 if (require.main === module) {
@@ -258,7 +305,7 @@ if (require.main === module) {
     if (toolsInCategory.length === 0) continue;
     console.log(`[${category}]`);
     for (const tool of toolsInCategory) {
-      console.log(`  - ${tool.id} (${tool.status}): ${tool.title}`);
+      console.log(`  - ${tool.id} (${tool.status}, ${tool.operation}): ${tool.title}`);
       console.log(`      ${tool.description}`);
     }
   }

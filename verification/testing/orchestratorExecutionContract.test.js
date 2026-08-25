@@ -20,6 +20,7 @@ const claudeClient = require('../../agent/core/claudeClient');
 const { getMaxTokensPerRun } = require('../../agent/core/tokenControls');
 const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
+const { getToolById } = require('../../tools/toolRegistry');
 
 // This test never makes a real network call - the one real tool it can reach
 // (business_configuration_retrieval) fails fast on its own "not configured" check
@@ -782,6 +783,64 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     // 'marketing' does not own the 'configuration' category - approval never overrides
     // permission, only the approval gate itself.
     assert.strictEqual(outcome.status, 'denied');
+  });
+
+  // --- Role-based (READ/WRITE/EXECUTE) permission: enforced before execution -----
+  //
+  // Every real, implemented tool today already falls inside its owning specialist's
+  // role (see verification/testing/toolPermissions.test.js's own consistency check),
+  // so - same honest gap/technique as the approval-flow tests above - this
+  // temporarily reclassifies one real tool's `operation` via tools/toolRegistry.js's
+  // mutable TOOL_REGISTRY entry, restoring it in a finally block, to prove the real
+  // Chief dispatch path (executeSelectedCapability) actually enforces the role gate
+  // before agent/core/orchestratorExecutionContract.js's TOOL_EXECUTORS is ever read -
+  // not just that agent/core/toolPermissions.js's pure functions compute the right
+  // answer in isolation.
+
+  await testAsync('executeSelectedCapability denies a real, category-owned tool whose operation falls outside the specialist role, and never touches its executor', async () => {
+    const marketResearchTool = getToolById('market_research');
+    const originalOperation = marketResearchTool.operation;
+    marketResearchTool.operation = 'write'; // Research's role is read-only.
+    try {
+      const executionRequest = {
+        objective: 'run market research',
+        category: 'research',
+        tool_id: 'market_research',
+        specialist_id: 'research',
+        is_shared_infrastructure: false,
+        research_params: { market: 'European Union', demandSignals: ['x'], evidence: ['y'] },
+      };
+      const outcome = await executeSelectedCapability(executionRequest);
+      // 'denied', not 'success' or 'error' from inside the executor - the gate stops
+      // dispatch before TOOL_EXECUTORS.market_research is ever called, so no real
+      // research record (which the researchParams above would otherwise produce
+      // successfully - see the researchParams passthrough test elsewhere in this
+      // file) is ever returned.
+      assert.strictEqual(outcome.status, 'denied');
+      assert.strictEqual(outcome.data, null);
+      assert.ok(/role does not permit 'write'/.test(outcome.error));
+    } finally {
+      marketResearchTool.operation = originalOperation;
+    }
+  });
+
+  await testAsync('runOrchestratorContract: the full pipeline honestly reports denied (not a fabricated result) when a real plan step\'s tool falls outside its specialist\'s role', async () => {
+    const marketResearchTool = getToolById('market_research');
+    const originalOperation = marketResearchTool.operation;
+    marketResearchTool.operation = 'write';
+    try {
+      const response = await runOrchestratorContract('run market research', {
+        researchParams: { market: 'European Union', demandSignals: ['x'], evidence: ['y'] },
+      });
+      assert.strictEqual(response.routing.status, 'planned');
+      const step = response.routing.plan[0];
+      assert.strictEqual(step.outputs, null);
+      assert.deepStrictEqual(step.errors.length, 1);
+      assert.ok(/role does not permit/.test(step.errors[0]));
+      assert.strictEqual(step.completion_state, 'blocked');
+    } finally {
+      marketResearchTool.operation = originalOperation;
+    }
   });
 
   await testAsync('runOrchestratorContract: pending_approvals is null for a clarification-required response and an empty array for a real, fully auto-approved plan today', async () => {

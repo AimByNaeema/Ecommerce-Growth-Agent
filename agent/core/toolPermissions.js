@@ -7,11 +7,26 @@
 // section 3's "Permissions" shared infrastructure component: least-privilege access
 // control, so a specialist only gets the tools its own domain actually owns.
 //
+// ROLE-BASED PERMISSIONS (READ/WRITE/EXECUTE): permission is now two independent
+// gates, both required. (1) CATEGORY ownership (CATEGORY_TO_SPECIALIST/
+// SPECIALIST_TO_CATEGORIES below) - which tool DOMAINS a specialist may touch at all.
+// (2) ROLE operation permission (SPECIALIST_ROLE_PERMISSIONS below) - which
+// tools/toolRegistry.js `operation` types ('read'/'write'/'execute') that specialist's
+// role covers. A specialist can be denied a tool it would otherwise own by category if
+// that tool's operation type falls outside its role - e.g. a hypothetical 'write'
+// tool added to the 'research' category would still be denied to Research, whose role
+// is READ-only, catching future mis-assigned tools rather than only checking today's
+// actual tool set. This is a real, additional least-privilege boundary, not a
+// restatement of category ownership.
+//
 // This module makes zero execution decisions of its own - no I/O, no tool calls. The
 // Chief/Orchestrator (agent/core/orchestratorExecutionContract.js) must go through
 // checkToolAccess() before ever invoking a tool executor; there is no separate,
 // unguarded execution path. That is what "do not give the Chief unrestricted
-// execution access" means in practice: every real dispatch is gated here first.
+// execution access" means in practice: every real dispatch is gated here first -
+// availability, then category, then role/operation, then approval, always in that
+// order, always before agent/core/orchestratorExecutionContract.js's TOOL_EXECUTORS is
+// ever read.
 
 const { getToolById } = require('../../tools/toolRegistry');
 const { TOOL_CATEGORIES } = require('../../tools/toolRegistry');
@@ -83,6 +98,54 @@ const TOOL_CLASSIFICATIONS = {
   analytics_data_retrieval: 'analysis_only',
 };
 
+// Which tools/toolRegistry.js `operation` types ('read'/'write'/'execute') each of
+// the 7 approved specialists' ROLE covers - independent of, and in addition to,
+// CATEGORY_TO_SPECIALIST above. Hand-declared (not derived from today's tool set) so
+// it acts as a real ceiling: it reflects what each specialist's role actually needs to
+// do, and would deny a future tool added to an owned category if that tool's
+// operation falls outside the role, rather than silently expanding to match whatever
+// tools happen to exist.
+const SPECIALIST_ROLE_PERMISSIONS = {
+  // Research: market/competitor/customer research and analysis only - never authors
+  // new marketable content, never calls an external system.
+  research: ['read'],
+  // Product: catalog/opportunity analysis and scoring - reads and evaluates existing
+  // product data; authoring new listing content is Listing's role, not Product's.
+  product: ['read'],
+  // SEO: keyword research and on-page SEO analysis - diagnostic only; it informs
+  // Listing's content rewrites but never edits content itself.
+  seo: ['read'],
+  // Listing: its entire role is authoring new listing content and marketplace
+  // formats - a pure content-creation role with no analysis tools of its own.
+  listing: ['write'],
+  // Marketing: its entire role is composing marketing strategy/campaign/offer
+  // content - a content-creation role.
+  marketing: ['write'],
+  // Social & Advertising: composes social/ad content and strategy ('write') but also
+  // analyzes past advertising performance ('read') - the one role needing both today.
+  social_advertising: ['read', 'write'],
+  // Analytics & Optimization: reads/analyzes store performance data - never authors
+  // new marketable content itself.
+  analytics_optimization: ['read'],
+};
+
+// The orchestrator's own shared-infrastructure access (specialistId === null) - not a
+// specialist role. Needs 'read' (business_configuration_retrieval, the not-yet-
+// implemented memory_retrieval/verification) and 'write' (ai_reasoning_completion, a
+// drafted completion). No shared-infrastructure tool is 'execute' today.
+const SHARED_INFRASTRUCTURE_ROLE_PERMISSIONS = ['read', 'write'];
+
+// Whether a specialist's role (by id) covers a given tool operation type. Mirrors
+// isSpecialistPermittedForCategory's null-handling exactly: specialistId === null is
+// the orchestrator's own shared-infrastructure access, not a specialist.
+function isOperationPermittedForSpecialist(specialistId, operation) {
+  if (specialistId === null || specialistId === undefined) {
+    return SHARED_INFRASTRUCTURE_ROLE_PERMISSIONS.includes(operation);
+  }
+  const allowedOperations = SPECIALIST_ROLE_PERMISSIONS[specialistId] || [];
+  return allowedOperations.includes(operation);
+}
+
 // AUTO_APPROVED_CLASSIFICATIONS and requiresApproval() are imported from
 // approvals/approvalArchitecture.js above - that module is now the single source of
 // truth for which classifications may proceed automatically (the
@@ -102,19 +165,24 @@ function isSpecialistPermittedForCategory(specialistId, category) {
 }
 
 // The pure decision function: given an already-resolved tool (or null) and its
-// approval classification, decides availability -> permission -> approval, in that
-// order (an unavailable tool can't meaningfully be "permitted"; a permitted tool may
-// still need approval). Exported directly (not just via checkToolAccess) so it can be
-// exercised against tool shapes tools/toolRegistry.js does not currently contain any
-// example of yet - today's only implemented tool happens to be auto-approved, so
-// there is no real approval_required tool to test end-to-end against; this keeps that
-// branch honestly testable without inventing a new tool in the registry.
+// approval classification, decides availability -> category permission -> role
+// (operation) permission -> approval, in that order (an unavailable tool can't
+// meaningfully be "permitted"; a category-permitted tool may still be denied by role;
+// a fully permitted tool may still need approval). Exported directly (not just via
+// checkToolAccess) so it can be exercised against tool shapes tools/toolRegistry.js
+// does not currently contain any example of yet - e.g. every real, implemented tool
+// today happens to already fall inside its owning specialist's role, so there is no
+// real role-denied or approval_required tool to test end-to-end against; this keeps
+// those branches honestly testable without inventing a new tool in the registry.
 function evaluateToolAccess({ specialistId, tool, classification = null }) {
   if (!tool) {
     return {
       tool_id: null,
       available: false,
+      category_permitted: null,
+      operation_permitted: null,
       permitted: false,
+      operation: null,
       approval_required: null,
       classification: null,
       decision: 'unavailable',
@@ -127,7 +195,10 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
     return {
       tool_id: tool.id,
       available: false,
+      category_permitted: null,
+      operation_permitted: null,
       permitted: null,
+      operation: tool.operation || null,
       approval_required: null,
       classification: null,
       decision: 'unavailable',
@@ -135,16 +206,39 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
     };
   }
 
-  const permitted = isSpecialistPermittedForCategory(specialistId, tool.category);
-  if (!permitted) {
+  const categoryPermitted = isSpecialistPermittedForCategory(specialistId, tool.category);
+  if (!categoryPermitted) {
     return {
       tool_id: tool.id,
       available: true,
+      category_permitted: false,
+      operation_permitted: null,
       permitted: false,
+      operation: tool.operation || null,
       approval_required: null,
       classification: null,
       decision: 'denied',
       reason: `Specialist '${specialistId || '(shared infrastructure)'}' is not permitted to use tools in category '${tool.category}'.`,
+    };
+  }
+
+  const operationPermitted = isOperationPermittedForSpecialist(specialistId, tool.operation);
+  if (!operationPermitted) {
+    const allowedOperations =
+      specialistId === null || specialistId === undefined
+        ? SHARED_INFRASTRUCTURE_ROLE_PERMISSIONS
+        : SPECIALIST_ROLE_PERMISSIONS[specialistId] || [];
+    return {
+      tool_id: tool.id,
+      available: true,
+      category_permitted: true,
+      operation_permitted: false,
+      permitted: false,
+      operation: tool.operation || null,
+      approval_required: null,
+      classification: null,
+      decision: 'denied',
+      reason: `Specialist '${specialistId || '(shared infrastructure)'}'s role does not permit '${tool.operation}' operations (its role allows: ${allowedOperations.join(', ') || 'none'}).`,
     };
   }
 
@@ -153,7 +247,10 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
     return {
       tool_id: tool.id,
       available: true,
+      category_permitted: true,
+      operation_permitted: true,
       permitted: true,
+      operation: tool.operation || null,
       approval_required: true,
       classification: classification || null,
       decision: 'approval_required',
@@ -164,7 +261,10 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
   return {
     tool_id: tool.id,
     available: true,
+    category_permitted: true,
+    operation_permitted: true,
     permitted: true,
+    operation: tool.operation || null,
     approval_required: false,
     classification,
     decision: 'allowed',
@@ -188,7 +288,10 @@ module.exports = {
   SHARED_INFRASTRUCTURE_CATEGORIES,
   TOOL_CLASSIFICATIONS,
   AUTO_APPROVED_CLASSIFICATIONS,
+  SPECIALIST_ROLE_PERMISSIONS,
+  SHARED_INFRASTRUCTURE_ROLE_PERMISSIONS,
   isSpecialistPermittedForCategory,
+  isOperationPermittedForSpecialist,
   evaluateToolAccess,
   checkToolAccess,
 };
@@ -206,4 +309,12 @@ if (require.main === module) {
     console.log(`checkToolAccess(${JSON.stringify(example)}) ->`);
     console.log(`  decision: ${result.decision}${result.reason ? ` (${result.reason})` : ''}`);
   }
+
+  console.log('\nRole-based (READ/WRITE/EXECUTE) denial example - no real tool triggers this today, so evaluateToolAccess is exercised directly:');
+  const roleDenied = evaluateToolAccess({
+    specialistId: 'research',
+    tool: { id: 'hypothetical_write_tool', status: 'implemented', category: 'research', operation: 'write' },
+    classification: 'analysis_only',
+  });
+  console.log(`  Research's role is READ-only - a hypothetical WRITE tool in its own category -> decision: ${roleDenied.decision} (${roleDenied.reason})`);
 }
