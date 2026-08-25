@@ -72,6 +72,7 @@ const {
   checkToolAccess,
 } = require('./toolPermissions');
 const { createApprovalRequest } = require('../../approvals/approvalWorkflow');
+const { createAuditTracker, appendAuditEvent } = require('../../audit/auditTrail');
 const businessConfigurationRetrieval = require('../../tools/businessConfigurationRetrieval');
 const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
@@ -269,9 +270,17 @@ function gatherMinimumContext(executionRequest) {
 // is ever read, so a tool call always looks the same regardless of which path reached
 // it. Never fabricates a result: a missing executor or a thrown error both become an
 // explicit, honest 'error' outcome.
-async function runExecutor(toolId, executionRequest, runTokenTracker, classification) {
+async function runExecutor(toolId, executionRequest, runTokenTracker, classification, runAuditTracker = null) {
   const executor = TOOL_EXECUTORS[toolId];
   if (!executor) {
+    appendAuditEvent(runAuditTracker, {
+      type: 'error',
+      toolId,
+      specialistId: executionRequest ? executionRequest.specialist_id : null,
+      classification,
+      status: 'error',
+      summary: `No executor is wired for implemented tool '${toolId}'.`,
+    });
     return {
       status: 'error',
       data: null,
@@ -280,10 +289,58 @@ async function runExecutor(toolId, executionRequest, runTokenTracker, classifica
     };
   }
 
+  const specialistId = executionRequest ? executionRequest.specialist_id : null;
+  appendAuditEvent(runAuditTracker, {
+    type: 'tools',
+    toolId,
+    specialistId,
+    classification,
+    summary: `Invoking tool '${toolId}'.`,
+  });
+  appendAuditEvent(runAuditTracker, {
+    type: 'data_access',
+    toolId,
+    specialistId,
+    summary: `Tool '${toolId}' was passed its request data.`,
+    detail: { fields: Object.keys((executionRequest && executionRequest.research_params) || {}) },
+  });
+  appendAuditEvent(runAuditTracker, {
+    type: 'execution',
+    toolId,
+    specialistId,
+    classification,
+    summary: `Executing tool '${toolId}'.`,
+  });
+
   try {
     const data = await executor(executionRequest, runTokenTracker);
+    appendAuditEvent(runAuditTracker, {
+      type: 'result',
+      toolId,
+      specialistId,
+      classification,
+      status: 'success',
+      summary: `Tool '${toolId}' completed successfully.`,
+    });
+    if (classification === 'recommendation') {
+      appendAuditEvent(runAuditTracker, {
+        type: 'recommendation',
+        toolId,
+        specialistId,
+        classification,
+        summary: `Tool '${toolId}' produced a recommendation-classified result.`,
+      });
+    }
     return { status: 'success', data, error: null, classification };
   } catch (err) {
+    appendAuditEvent(runAuditTracker, {
+      type: 'error',
+      toolId,
+      specialistId,
+      classification,
+      status: 'error',
+      summary: err.message,
+    });
     return { status: 'error', data: null, error: err.message, classification };
   }
 }
@@ -303,7 +360,8 @@ async function runExecutor(toolId, executionRequest, runTokenTracker, classifica
 async function executeSelectedCapability(
   executionRequest,
   runTokenTracker = { tokensUsedThisRun: 0 },
-  runApprovalTracker = { requests: [] }
+  runApprovalTracker = { requests: [] },
+  runAuditTracker = null
 ) {
   const access = checkToolAccess({
     specialistId: executionRequest.specialist_id,
@@ -311,15 +369,30 @@ async function executeSelectedCapability(
   });
 
   if (access.decision === 'unavailable') {
+    const reason = access.tool_id ? access.reason : `Unknown tool: ${executionRequest.tool_id}`;
+    appendAuditEvent(runAuditTracker, {
+      type: 'error',
+      toolId: access.tool_id || null,
+      specialistId: executionRequest.specialist_id,
+      status: access.tool_id ? 'not_available' : 'error',
+      summary: reason,
+    });
     return {
       status: access.tool_id ? 'not_available' : 'error',
       data: null,
-      error: access.tool_id ? access.reason : `Unknown tool: ${executionRequest.tool_id}`,
+      error: reason,
       classification: null,
     };
   }
 
   if (access.decision === 'denied') {
+    appendAuditEvent(runAuditTracker, {
+      type: 'error',
+      toolId: access.tool_id || null,
+      specialistId: executionRequest.specialist_id,
+      status: 'denied',
+      summary: access.reason,
+    });
     return { status: 'denied', data: null, error: access.reason, classification: null };
   }
 
@@ -339,6 +412,14 @@ async function executeSelectedCapability(
       reason: access.reason,
     });
     runApprovalTracker.requests.push(approvalRequest);
+    appendAuditEvent(runAuditTracker, {
+      type: 'approval',
+      toolId: access.tool_id,
+      specialistId: executionRequest.specialist_id,
+      classification: access.classification,
+      status: 'pending',
+      summary: `Approval request '${approvalRequest.id}' created: ${access.reason}`,
+    });
     return {
       status: 'approval_required',
       data: null,
@@ -348,7 +429,7 @@ async function executeSelectedCapability(
     };
   }
 
-  return runExecutor(access.tool_id, executionRequest, runTokenTracker, access.classification);
+  return runExecutor(access.tool_id, executionRequest, runTokenTracker, access.classification, runAuditTracker);
 }
 
 // Resumes a previously gated action after a real human decision has been recorded via
@@ -359,7 +440,11 @@ async function executeSelectedCapability(
 // specialist permission are re-checked at resume time (approval only ever satisfies the
 // approval gate itself - a tool could have become unavailable, or specialist ownership
 // could have changed, since the request was first created).
-async function resumeApprovedExecution(decidedApprovalRequest, runTokenTracker = { tokensUsedThisRun: 0 }) {
+async function resumeApprovedExecution(
+  decidedApprovalRequest,
+  runTokenTracker = { tokensUsedThisRun: 0 },
+  runAuditTracker = null
+) {
   if (!decidedApprovalRequest || typeof decidedApprovalRequest !== 'object') {
     return {
       status: 'error',
@@ -370,6 +455,15 @@ async function resumeApprovedExecution(decidedApprovalRequest, runTokenTracker =
   }
 
   if (decidedApprovalRequest.status !== 'approved') {
+    appendAuditEvent(runAuditTracker, {
+      type: 'approval',
+      toolId: decidedApprovalRequest.tool_id || null,
+      specialistId: decidedApprovalRequest.specialist_id || null,
+      classification: decidedApprovalRequest.classification || null,
+      status: decidedApprovalRequest.status,
+      summary: `Approval request '${decidedApprovalRequest.id}' is '${decidedApprovalRequest.status}' - not executed.`,
+      detail: { decided_by: decidedApprovalRequest.decided_by || null },
+    });
     return {
       status: decidedApprovalRequest.status === 'rejected' ? 'denied' : 'approval_required',
       data: null,
@@ -378,12 +472,29 @@ async function resumeApprovedExecution(decidedApprovalRequest, runTokenTracker =
     };
   }
 
+  appendAuditEvent(runAuditTracker, {
+    type: 'approval',
+    toolId: decidedApprovalRequest.tool_id || null,
+    specialistId: decidedApprovalRequest.specialist_id || null,
+    classification: decidedApprovalRequest.classification || null,
+    status: 'approved',
+    summary: `Approval request '${decidedApprovalRequest.id}' approved - resuming execution.`,
+    detail: { decided_by: decidedApprovalRequest.decided_by || null },
+  });
+
   const access = checkToolAccess({
     specialistId: decidedApprovalRequest.specialist_id,
     toolId: decidedApprovalRequest.tool_id,
   });
 
   if (access.decision === 'unavailable' || access.decision === 'denied') {
+    appendAuditEvent(runAuditTracker, {
+      type: 'error',
+      toolId: decidedApprovalRequest.tool_id || null,
+      specialistId: decidedApprovalRequest.specialist_id || null,
+      status: access.decision === 'unavailable' ? 'not_available' : 'denied',
+      summary: access.reason,
+    });
     return {
       status: access.decision === 'unavailable' ? 'not_available' : 'denied',
       data: null,
@@ -392,7 +503,13 @@ async function resumeApprovedExecution(decidedApprovalRequest, runTokenTracker =
     };
   }
 
-  return runExecutor(access.tool_id, decidedApprovalRequest.execution_request, runTokenTracker, access.classification);
+  return runExecutor(
+    access.tool_id,
+    decidedApprovalRequest.execution_request,
+    runTokenTracker,
+    access.classification,
+    runAuditTracker
+  );
 }
 
 // Validate the result. Never treats an unverified/failed outcome as passed.
@@ -656,9 +773,19 @@ async function buildPlanStep(
   runTokenTracker = { tokensUsedThisRun: 0 },
   researchParams = null,
   priorSteps = [],
-  runApprovalTracker = { requests: [] }
+  runApprovalTracker = { requests: [] },
+  runAuditTracker = null
 ) {
   const capabilityEntry = target.type === 'specialist' ? getSpecialistCapabilityById(target.id) : null;
+  appendAuditEvent(runAuditTracker, {
+    type: 'agent',
+    specialistId: target.type === 'specialist' ? target.id : null,
+    capabilityId: null,
+    summary:
+      target.type === 'specialist'
+        ? `Routed clause "${currentTask}" to specialist '${target.id}'.`
+        : `Routed clause "${currentTask}" to shared infrastructure '${target.id}'.`,
+  });
   const candidateToolIds = capabilityEntry
     ? capabilityEntry.required_tools
     : target.type === 'shared_infrastructure'
@@ -751,7 +878,7 @@ async function buildPlanStep(
       { category: matchedCategory, tool: toolMatch },
       effectiveResearchParams
     );
-    outcome = await executeSelectedCapability(executionRequest, runTokenTracker, runApprovalTracker);
+    outcome = await executeSelectedCapability(executionRequest, runTokenTracker, runApprovalTracker, runAuditTracker);
   }
 
   // Only ai_reasoning_completion's structured output carries tokensUsed - every other
@@ -809,6 +936,7 @@ function buildRoutingResponse({
   tokensUsedThisRun = 0,
   growthOpportunityDrafts = null,
   pendingApprovals = null,
+  auditTrail = null,
 }) {
   const needsMoreInfo = routing.status === 'clarification_required';
   const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
@@ -847,6 +975,13 @@ function buildRoutingResponse({
     // approvals/approvalWorkflow.js's decideApprovalRequest(), then resumeApprovedExecution()
     // actually executes them - never automatically.
     pending_approvals: pendingApprovals,
+    // Every audit/auditTrail.js event recorded anywhere in this run (request, agent,
+    // tools, data_access, recommendation, approval, execution, result, error) - null
+    // (never an empty-by-omission array) only when understandObjective() itself threw
+    // before a tracker could even be created; an array (possibly just the initial
+    // 'request'/'error' events) on every other path, including clarification-required
+    // responses, so a partial trail is never silently dropped.
+    audit_trail: auditTrail,
   };
 }
 
@@ -860,10 +995,26 @@ function buildRoutingResponse({
 // only affects what a matched research tool is actually called with. Omitted by every
 // existing caller, so default behavior (and every existing test) is unchanged.
 async function runOrchestratorContract(rawTask, { researchParams = null } = {}) {
+  // One audit tracker per run - see audit/auditTrail.js. Created before anything else
+  // so even a validation failure on the very first line is itself a recorded event;
+  // never module-level state, same caller-held-per-run pattern as runTokenTracker/
+  // runApprovalTracker below.
+  const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const runAuditTracker = createAuditTracker(runId);
+
   let objective;
   try {
     objective = understandObjective(rawTask);
+    appendAuditEvent(runAuditTracker, {
+      type: 'request',
+      summary: `Objective received: ${objective}`,
+    });
   } catch (err) {
+    appendAuditEvent(runAuditTracker, {
+      type: 'error',
+      status: 'error',
+      summary: err.message,
+    });
     return buildRoutingResponse({
       objective: typeof rawTask === 'string' ? rawTask : null,
       routing: {
@@ -874,6 +1025,7 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
         unmatched_segment: null,
         plan: null,
       },
+      auditTrail: runAuditTracker.events,
     });
   }
 
@@ -883,6 +1035,7 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
     return buildRoutingResponse({
       objective,
       routing: { ...routingResult, plan: null },
+      auditTrail: runAuditTracker.events,
     });
   }
 
@@ -909,7 +1062,8 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
         runTokenTracker,
         researchParams,
         plan,
-        runApprovalTracker
+        runApprovalTracker,
+        runAuditTracker
       )
     );
   }
@@ -933,6 +1087,7 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
     tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
     growthOpportunityDrafts,
     pendingApprovals: runApprovalTracker.requests,
+    auditTrail: runAuditTracker.events,
   });
 }
 

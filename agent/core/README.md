@@ -125,3 +125,17 @@ built-in `process.loadEnvFile`. A missing API key, a network failure, or a non-s
 API response all throw a clear error — no reply is ever invented. Run
 `node agent/core/claudeClient.js` to check configuration and, if a real
 `ANTHROPIC_API_KEY` is set, send one live test message.
+
+[`orchestratorExecutionContract.js`](orchestratorExecutionContract.js)'s
+`runOrchestratorContract()` now creates one `../../audit/auditTrail.js` tracker per run
+(`createAuditTracker`) and threads it through routing, specialist selection, and every
+tool call via `appendAuditEvent` — recording a `request` event once the objective is
+understood, an `agent` event per routed specialist/capability, `tools`/`data_access`/
+`execution` events immediately before the single dispatch chokepoint (`runExecutor`)
+actually calls a tool, a `result` event (plus `recommendation` when the tool's
+classification is `'recommendation'`) on success or an `error` event on failure, and an
+`approval` event whenever `approvals/approvalWorkflow.js`'s `createApprovalRequest`
+fires or a gated action is later resumed. Every field passed through `detail` is
+redacted by `redactSensitiveData` first, so a secret can never leak into the trail.
+The full, ordered log is returned on the final response as `audit_trail` — see
+`../../audit/README.md` for the module itself.

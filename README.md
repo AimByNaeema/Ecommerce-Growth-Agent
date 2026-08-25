@@ -463,4 +463,23 @@ whatever tools happen to exist. `evaluateToolAccess()`'s decision order is now
 availability → category → role/operation → approval, always in that order, always
 before `agent/core/orchestratorExecutionContract.js`'s `TOOL_EXECUTORS` is ever read —
 so the permission check happens before execution by construction, not by convention.
+A centralized audit trail is now real, not just a planned component: new
+[`audit/auditRecordModel.js`](audit/auditRecordModel.js) defines one Audit Record
+(`id`, `run_id`, `type`, `timestamp`, `specialist_id`, `capability_id`, `tool_id`,
+`classification`, `status`, `summary`, `detail`), and new
+[`audit/auditTrail.js`](audit/auditTrail.js) provides `createAuditTracker(runId)` and
+`appendAuditEvent(tracker, fields)` (mutated in place, no-ops safely on a missing
+tracker) plus `redactSensitiveData()`, applied unconditionally to every record's
+`detail` field so a credential-shaped value is always replaced with `'[REDACTED]'` and
+an overlong string is truncated — a secret can never reach the trail.
+`agent/core/orchestratorExecutionContract.js`'s `runOrchestratorContract()` now creates
+one tracker per run and threads it through routing, specialist selection, and every
+tool call, recording a `request` event, an `agent` event per routed specialist, `tools`/
+`data_access`/`execution` events immediately before the single dispatch chokepoint
+(`runExecutor`) calls a tool, a `result` event (or `recommendation` when the tool's
+classification warrants it) on success, an `error` event on failure, and an `approval`
+event whenever a request is created or later decided — surfaced on every response as
+`audit_trail`, including clarification-required ones, so a partial trail is never
+silently dropped. No persistence layer — the trail lives for one run, held by its
+caller, the same standalone-deliverable pattern as every other engine here.
 No specialist role grants `execute` yet, matching that no tool is `execute` yet.

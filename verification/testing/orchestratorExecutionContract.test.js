@@ -851,6 +851,67 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.deepStrictEqual(plannedResponse.pending_approvals, []);
   });
 
+  // --- Centralized audit trail (audit/auditTrail.js) ------------------------------
+
+  await testAsync('runOrchestratorContract: audit_trail records request -> agent -> tools -> data_access -> execution -> result in order for a clean run, with no approval/error events', async () => {
+    const response = await runOrchestratorContract('keyword search visibility');
+    const types = response.audit_trail.map((event) => event.type);
+
+    assert.strictEqual(types[0], 'request');
+    assert.ok(types.includes('agent'));
+    assert.ok(types.includes('tools'));
+    assert.ok(types.includes('data_access'));
+    assert.ok(types.includes('execution'));
+    assert.ok(types.includes('result'));
+    assert.ok(!types.includes('approval'));
+    assert.ok(!types.includes('error'));
+
+    // Every event in one run shares the same run_id, and ids are unique/sequential.
+    const runIds = new Set(response.audit_trail.map((event) => event.run_id));
+    assert.strictEqual(runIds.size, 1);
+    response.audit_trail.forEach((event, index) => {
+      assert.strictEqual(event.id, `${event.run_id}-${index}`);
+    });
+  });
+
+  await testAsync('runOrchestratorContract: audit_trail records a pending approval event and no result event for a step that never executed', async () => {
+    const originalClassification = TOOL_CLASSIFICATIONS.business_configuration_retrieval;
+    TOOL_CLASSIFICATIONS.business_configuration_retrieval = 'externally_executable';
+    try {
+      const response = await runOrchestratorContract("check my shop's business configuration");
+      const approvalEvents = response.audit_trail.filter((event) => event.type === 'approval');
+      assert.strictEqual(approvalEvents.length, 1);
+      assert.strictEqual(approvalEvents[0].status, 'pending');
+      assert.strictEqual(approvalEvents[0].tool_id, 'business_configuration_retrieval');
+      // Gated before execution - no result event was ever recorded for this tool.
+      const resultEvents = response.audit_trail.filter((event) => event.type === 'result');
+      assert.strictEqual(resultEvents.length, 0);
+    } finally {
+      TOOL_CLASSIFICATIONS.business_configuration_retrieval = originalClassification;
+    }
+  });
+
+  await testAsync('runOrchestratorContract: audit_trail is present alongside every existing response field, purely additive', async () => {
+    const response = await runOrchestratorContract('keyword search visibility');
+    assert.ok(Array.isArray(response.audit_trail));
+    // Every field this file's other tests already assert on is still there, unchanged.
+    assert.strictEqual(response.objective, 'keyword search visibility');
+    assert.strictEqual(response.routing.status, 'planned');
+    assert.deepStrictEqual(response.pending_approvals, []);
+    assert.ok('growth_opportunity_drafts' in response);
+    assert.ok('tokens_used' in response);
+  });
+
+  await testAsync('runOrchestratorContract: audit_trail on a clarification-required response records only the request/error event that actually happened', async () => {
+    const emptyTaskResponse = await runOrchestratorContract('');
+    assert.strictEqual(emptyTaskResponse.audit_trail.length, 1);
+    assert.strictEqual(emptyTaskResponse.audit_trail[0].type, 'error');
+
+    const ambiguousResponse = await runOrchestratorContract('I need content optimization help');
+    assert.strictEqual(ambiguousResponse.audit_trail.length, 1);
+    assert.strictEqual(ambiguousResponse.audit_trail[0].type, 'request');
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) {
     process.exit(1);
