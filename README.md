@@ -396,4 +396,20 @@ bottleneck is honesty-graded down to `medium`, recorded in the plan's own
 `limitations`). Every recommended action carries one of
 `approvals/approvalArchitecture.js`'s 4 classifications, and `approval_requirements`
 is a mechanical rollup of everything that needs human sign-off. Also a standalone
-deliverable for this first pass, with no write/execute path of its own.
+deliverable for this first pass, with no write/execute path of its own. A reusable
+experiment (A/B-test) framework now exists too:
+[`agent/core/experimentEngine.js`](agent/core/experimentEngine.js) via
+[`agent/core/experimentModel.js`](agent/core/experimentModel.js) carries one experiment
+schema — hypothesis, variable, control, variant, target metric, duration, success
+criteria, result, decision — through its full lifecycle (design → run → decide),
+reused identically across all 8 named growth surfaces: products, pricing, listing,
+SEO, offers, marketing, social, advertising. `status` (draft/running/completed) is
+mechanically derived from what evidence actually exists, never asserted directly;
+`hypothesis`/`control`/`variant`/`result` stay caller-supplied fact, never computed or
+predicted. A decision to `ship_variant` or `keep_control` asserted before a result is
+actually recorded is honesty-downgraded to `inconclusive` (recorded in `limitations`,
+never applied silently), and every decision is tagged with one of
+`approvals/approvalArchitecture.js`'s 4 classifications via
+`growthOpportunityEngine.js`'s reused `buildApprovalRequirement()` — the same pattern
+`salesGrowthPlanner.js`'s recommended actions already use. Standalone deliverable, no
+write/execute path of its own.

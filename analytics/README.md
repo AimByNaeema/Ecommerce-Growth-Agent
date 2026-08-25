@@ -195,3 +195,60 @@ growth-rate or revenue prediction. Standalone deliverable, not wired into
 deliberate scope choice every other engine in this folder already made. It has no
 write/execute/publish code path anywhere: acting on any recommended action is a
 separate, human-approved action via [`../approvals/README.md`](../approvals/README.md).
+
+## Experiment Framework
+
+[`../agent/core/experimentEngine.js`](../agent/core/experimentEngine.js) is a reusable
+A/B-test lifecycle framework via
+[`../agent/core/experimentModel.js`](../agent/core/experimentModel.js): one schema —
+`hypothesis`, `variable`, `control`, `variant`, `target_metric`, `duration`,
+`success_criteria`, `result`, `decision` — reused identically across all 8 growth
+surfaces named in the prompt this answers (`products`, `pricing`, `listing`, `seo`,
+`offers`, `marketing`, `social`, `advertising`) via a generic `domain` enum, the same
+"one schema, many domains" pattern
+[`../agent/core/growthOpportunityEngineModel.js`](../agent/core/growthOpportunityEngineModel.js)'s
+`OPPORTUNITY_CATEGORIES` already establishes.
+
+Unlike this folder's other engines, an experiment has a real **lifecycle** rather than
+being a single-snapshot report, so `experimentEngine.js` exposes three pure functions
+instead of one compose-everything call, each returning a new record without mutating
+its input: `createExperiment()` (design stage), `recordExperimentResult()` (run
+stage), and `decideExperiment()` (decision stage). `status` (`draft` / `running` /
+`completed`) is the one field this engine computes itself, and only mechanically — from
+whether `duration.start_date` and a real `result` have actually been supplied — never
+asserted by the caller directly, the same "status is derived, not asserted" discipline
+`salesGrowthPlanModel.js`'s `domain_status` and this file's own dimension-status
+convention already use.
+
+`hypothesis`, `variable`, `control`, `variant`, `target_metric`, `duration`,
+`success_criteria`, and `result` are always caller-supplied fact — this engine never
+invents a hypothesis, computes a statistical-significance figure, or predicts an
+outcome. `decision.approval_requirement` reuses
+[`../agent/core/growthOpportunityEngine.js`](../agent/core/growthOpportunityEngine.js)'s
+`buildApprovalRequirement()` directly (not reimplemented), so every decision is tagged
+with one of [`../approvals/approvalArchitecture.js`](../approvals/approvalArchitecture.js)'s
+4 classifications via a caller-supplied `actionClassification`, exactly like every
+recommended action in `salesGrowthPlanner.js` already is.
+
+**Honesty guard**: `ship_variant` and `keep_control` are the two conclusive,
+production-affecting decision outcomes. Asserting either one before the experiment's
+`status` is `'completed'` (i.e. before a real result has been recorded) is downgraded
+to `'inconclusive'`, with the downgrade recorded in the record's own `limitations` —
+the same downgrade-and-record pattern `salesGrowthPlanner.js`'s `DOWNGRADED_SEVERITIES`
+already applies to bottleneck severity, never applied silently. `iterate` and
+`inconclusive` never require a completed result — both are honest calls a human can
+make at any stage.
+
+Distinct from `salesGrowthPlanModel.js`'s existing `experiment_ideas` field — that
+field is a one-line idea stub (`{domain, hypothesis, test_description,
+expected_outcome, evidence}`) with no control/variant, no duration, no result, and no
+decision; this module is the fuller run-to-decision lifecycle record, and the existing
+field is left untouched.
+
+Standalone deliverable, not wired into `tools/toolRegistry.js` or the
+Chief/Orchestrator — the same deliberate scope choice every other engine in this folder
+already made. It has no write/execute path of its own: `decideExperiment()`'s
+`ship_variant`/`keep_control` outcome is a recommendation tagged with an approval
+requirement, never applied to a real store, page, price, or ad account automatically —
+acting on it is a separate, human-approved action via
+[`../approvals/README.md`](../approvals/README.md).
