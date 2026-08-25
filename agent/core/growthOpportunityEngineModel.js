@@ -248,6 +248,7 @@ module.exports = {
   OPPORTUNITY_CATEGORIES,
   IMPACT_CATEGORIES,
   CONFIDENCE_MULTIPLIERS,
+  APPROVAL_REQUIREMENT_SUB_KEYS,
   RANKED_OPPORTUNITY_FIELDS,
   createEmptyRankedGrowthOpportunity,
   validateRankedGrowthOpportunityShape,

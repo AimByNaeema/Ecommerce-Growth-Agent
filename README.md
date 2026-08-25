@@ -379,4 +379,21 @@ with a fixed, documented severity tier (critical/high/medium/low) and returned i
 conversion-rate or business-impact estimate. Like those two checkers, it is a
 standalone deliverable (not wired into `tools/toolRegistry.js` or the
 Chief/Orchestrator) with no write/execute/publish code path anywhere, so no
-recommendation is ever applied to a real page automatically.
+recommendation is ever applied to a real page automatically. A Sales Growth Planner
+now combines caller-supplied evidence from **multiple specialist domains** —
+product, customer, analytics, SEO, marketing, social, advertising — into one
+cross-domain report:
+[`agent/core/salesGrowthPlanner.js`](agent/core/salesGrowthPlanner.js) via
+[`agent/core/salesGrowthPlanModel.js`](agent/core/salesGrowthPlanModel.js) returns
+current state, bottlenecks, opportunities, recommended actions, KPIs, experiment
+ideas, and approval requirements. It is the first module in this project to
+synthesize real records across that many domains at once; it composes rather than
+reimplements — `opportunities` is ranked by calling
+[`agent/core/growthOpportunityEngine.js`](agent/core/growthOpportunityEngine.js)'s
+existing ICE-style engine directly, and every other section is caller-supplied,
+structured and validated only, never invented (an unevidenced `critical`/`high`
+bottleneck is honesty-graded down to `medium`, recorded in the plan's own
+`limitations`). Every recommended action carries one of
+`approvals/approvalArchitecture.js`'s 4 classifications, and `approval_requirements`
+is a mechanical rollup of everything that needs human sign-off. Also a standalone
+deliverable for this first pass, with no write/execute path of its own.

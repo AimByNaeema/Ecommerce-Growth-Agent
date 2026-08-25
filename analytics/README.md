@@ -152,3 +152,46 @@ part of the 10-capability dispatcher above). It has no write/execute/publish cod
 anywhere: applying any recommendation to a real page is a separate, human-approved
 action (see [`../approvals/README.md`](../approvals/README.md)) — nothing here ever
 modifies a production page.
+
+## Sales Growth Planner
+
+[`../agent/core/salesGrowthPlanner.js`](../agent/core/salesGrowthPlanner.js) is the
+first module in this project that combines real, caller-supplied structured evidence
+from **multiple specialist domains** — product, customer, analytics, SEO, marketing,
+social, advertising — into one cross-domain report via
+[`../agent/core/salesGrowthPlanModel.js`](../agent/core/salesGrowthPlanModel.js):
+`current_state`, `bottlenecks`, `opportunities`, `recommended_actions`, `kpis`,
+`experiment_ideas`, and `approval_requirements`.
+
+Like every other engine in this folder, it never calls another specialist, fetches a
+live page, or makes an AI/API call itself — whoever calls it (a workflow, the
+Chief/Orchestrator, or a human) is responsible for gathering each domain's evidence
+first. `current_state` reuses `analyticsModel.js`'s exact per-category
+actual/calculated/estimated-metrics shape, keyed by domain instead of by analytics
+category. `opportunities` is composed by calling
+[`../agent/core/growthOpportunityEngine.js`](../agent/core/growthOpportunityEngine.js)'s
+`rankGrowthOpportunities()` directly — its ICE-style ranking (impact × confidence) and
+approval-classification tagging are reused, never reimplemented.
+
+`bottlenecks`, `recommended_actions`, `kpis`, and `experiment_ideas` are always
+caller-supplied hypotheses or facts, structured and validated only — the same
+"never invent an explanation, action, or target value" rule
+[`../agent/core/insightModel.js`](../agent/core/insightModel.js)'s `possible_cause`
+field already establishes. A bottleneck asserted `critical`/`high` severity with no
+supporting evidence is honesty-graded down to `medium` (recorded in the plan's own
+`limitations`, never silently applied) — the same downgrade-and-record pattern
+`growthOpportunityEngine.js` applies to confidence/verification_status. Every
+recommended action is tagged with one of
+[`../approvals/approvalArchitecture.js`](../approvals/approvalArchitecture.js)'s 4
+classifications via a caller-supplied `actionClassification`, exactly like every
+opportunity candidate already is; `approval_requirements` is a mechanical rollup of
+every opportunity/action already tagged `requires_human_approval: true` — never an
+independently-asserted judgment.
+
+`domain_coverage` is a mechanical checklist-coverage percentage across the 7 domains,
+mirroring the Conversion Optimization Checker's `quality_score` above — never a
+growth-rate or revenue prediction. Standalone deliverable, not wired into
+`tools/toolRegistry.js` or the Chief/Orchestrator in this first pass — the same
+deliberate scope choice every other engine in this folder already made. It has no
+write/execute/publish code path anywhere: acting on any recommended action is a
+separate, human-approved action via [`../approvals/README.md`](../approvals/README.md).

@@ -206,6 +206,7 @@ function rankGrowthOpportunities(candidates = []) {
 
 module.exports = {
   rankGrowthOpportunities,
+  buildApprovalRequirement,
 };
 
 if (require.main === module) {
