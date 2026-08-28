@@ -64,8 +64,9 @@ const SHARED_INFRASTRUCTURE_CATEGORIES = TOOL_CATEGORIES.filter(
   (category) => !(category in CATEGORY_TO_SPECIALIST)
 );
 
-// business_configuration_retrieval and product_data_retrieval are read-only GETs
-// against Shopify (no writes, no side effects) - both classified analysis_only.
+// business_configuration_retrieval, product_data_retrieval, and
+// collection_data_retrieval are read-only GETs against Shopify (no writes, no side
+// effects) - all three classified analysis_only.
 // ai_reasoning_completion only ever produces a draft/suggestion for a human to
 // consider (see
 // approvals/approvalArchitecture.js's own description of 'recommendation':
@@ -83,6 +84,7 @@ const TOOL_CLASSIFICATIONS = {
   competitor_research: 'analysis_only',
   customer_research: 'analysis_only',
   product_data_retrieval: 'analysis_only',
+  collection_data_retrieval: 'analysis_only',
   keyword_research: 'analysis_only',
   seo_analysis: 'analysis_only',
   listing_content_generation: 'analysis_only',

@@ -2,14 +2,14 @@
 
 // The ONE agent's connection to the owner's Shopify store (Admin GraphQL API). This is
 // a CONNECTION LAYER: it can reach the store, confirm the connection works
-// (getShopInfo), and read product, order, customer, and inventory data (getProducts,
-// getOrders, getCustomers, getInventoryLevels). Read-only only - no write/mutation of
-// any kind exists here, and it is not wired into agent/core/agentContract.js's stages
-// yet - that orchestration is later, explicitly scoped work. No response is ever
-// invented here: a missing config, a network failure, or a non-success/GraphQL-error
-// response all throw a clear error instead of returning fabricated data (same
-// convention as every research/analysis module already in this project, and as
-// agent/core/claudeClient.js).
+// (getShopInfo), and read product, collection, order, customer, and inventory data
+// (getProducts, getCollections, getOrders, getCustomers, getInventoryLevels).
+// Read-only only - no write/mutation of any kind exists here, and it is not wired into
+// agent/core/agentContract.js's stages yet - that orchestration is later, explicitly
+// scoped work. No response is ever invented here: a missing config, a network failure,
+// or a non-success/GraphQL-error response all throw a clear error instead of returning
+// fabricated data (same convention as every research/analysis module already in this
+// project, and as agent/core/claudeClient.js).
 //
 // Required Admin API scopes, read-only: read_products, read_orders, read_customers,
 // read_inventory. A store whose access token lacks one of these will get a GraphQL
@@ -370,12 +370,53 @@ async function getInventoryLevels({ limit = 50 } = {}) {
   }));
 }
 
+// Runs one GraphQL query covering the store's collections (title, handle, description,
+// image, and product count) - read-only, no mutation. This is a store-wide list
+// independent of any one product, unlike the collections[] nested inside each
+// getProducts() entry (which is scoped to one product's memberships and capped at 10).
+// Covered by the same read_products scope already required for getProducts() - Shopify
+// does not require a separate scope for collections.
+//
+// Returns: an array of normalized collection objects: { id, title, handle, description,
+// image: { url } | null, productsCount }
+// Throws: same conditions as getShopInfo(). Never returns fabricated collection data.
+async function getCollections({ limit = 50 } = {}) {
+  const query = `{
+    collections(first: ${Number(limit)}) {
+      edges { node {
+        id
+        title
+        handle
+        description
+        image { url }
+        productsCount { count }
+      } }
+    }
+  }`;
+
+  const { raw } = await runAdminGraphqlQuery(query, 'getCollections');
+
+  if (!raw || !raw.data || !raw.data.collections) {
+    throw new Error('Shopify Admin API response did not include collection data.');
+  }
+
+  return raw.data.collections.edges.map(({ node }) => ({
+    id: node.id,
+    title: node.title,
+    handle: node.handle,
+    description: node.description,
+    image: node.image ? { url: node.image.url } : null,
+    productsCount: node.productsCount ? node.productsCount.count : undefined,
+  }));
+}
+
 module.exports = {
   getShopInfo,
   getProducts,
   getOrders,
   getCustomers,
   getInventoryLevels,
+  getCollections,
   isConfigured,
   loadEnvOnce,
   DEFAULT_API_VERSION,
@@ -413,6 +454,10 @@ if (require.main === module) {
       const inventoryLevels = await getInventoryLevels({ limit: 5 });
       console.log(`\nRetrieved ${inventoryLevels.length} inventory item(s) (read-only, first 5).`);
       console.log(JSON.stringify(inventoryLevels, null, 2));
+
+      const collections = await getCollections({ limit: 5 });
+      console.log(`\nRetrieved ${collections.length} collection(s) (read-only, first 5).`);
+      console.log(JSON.stringify(collections, null, 2));
     })
     .catch((err) => {
       console.error(`STOP: ${err.message}`);

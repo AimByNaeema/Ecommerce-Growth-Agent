@@ -47,6 +47,11 @@ Product Agent; see [`products/README.md`](../products/README.md#product-agent) f
 why that mapping lives here rather than in `agent/core/` (which never depends on
 `tools/` or `integrations/` in this codebase).
 
+[`collectionDataRetrievalTool.js`](collectionDataRetrievalTool.js) is the same
+thin, read-only wrapper pattern around `getCollections()` — a store-wide collection
+catalog (title, handle, description, image, product count) independent of any one
+product. No downstream agent mapping exists for it yet.
+
 Every `toolRegistry.js` entry now also carries an `operation` field —
 `'read' | 'write' | 'execute'` — describing what kind of action the tool performs,
 independent of its `category` (which domain owns it) and independent of

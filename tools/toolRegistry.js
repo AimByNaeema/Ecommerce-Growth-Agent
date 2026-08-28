@@ -6,17 +6,17 @@
 // this file (that lives in agent/core/orchestratorExecutionContract.js, gated by
 // agent/core/toolPermissions.js), so tools are not called *from here*.
 // business_configuration_retrieval, ai_reasoning_completion, market_research,
-// competitor_research, customer_research, product_data_retrieval, keyword_research,
-// seo_analysis, listing_content_generation, marketing_analysis,
-// social_content_planning, paid_advertising_planning,
+// competitor_research, customer_research, product_data_retrieval,
+// collection_data_retrieval, keyword_research, seo_analysis, listing_content_generation,
+// marketing_analysis, social_content_planning, paid_advertising_planning,
 // social_media_strategy_generation, platform_content_generation,
 // content_calendar_generation, advertising_strategy_planning,
 // advertising_performance_analysis, analytics, and analytics_data_retrieval are the
-// nineteen entries actually implemented (see tools/businessConfigurationRetrieval.js,
+// twenty entries actually implemented (see tools/businessConfigurationRetrieval.js,
 // tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
 // tools/competitorResearchTool.js, tools/customerResearchTool.js,
-// tools/productDataRetrievalTool.js, tools/keywordResearchTool.js,
-// tools/seoAnalysisTool.js, tools/listingContentTool.js,
+// tools/productDataRetrievalTool.js, tools/collectionDataRetrievalTool.js,
+// tools/keywordResearchTool.js, tools/seoAnalysisTool.js, tools/listingContentTool.js,
 // tools/marketingAnalysisTool.js, tools/socialContentTool.js,
 // tools/paidAdvertisingTool.js, tools/socialMediaStrategyTool.js,
 // tools/platformContentTool.js, tools/contentCalendarTool.js,
@@ -80,6 +80,15 @@ const TOOL_REGISTRY = [
     title: 'Product data retrieval',
     description:
       "Retrieve read-only product data (products, variants, inventory, prices, SKUs, status, collections, metadata) from the connected Shopify store via integrations/adapters/shopifyClient.js's getProducts() - see tools/productDataRetrievalTool.js. No writes.",
+    category: 'products',
+    operation: 'read',
+    status: 'implemented',
+  },
+  {
+    id: 'collection_data_retrieval',
+    title: 'Collection data retrieval',
+    description:
+      "Retrieve read-only, store-wide collection data (title, handle, description, image, product count) from the connected Shopify store via integrations/adapters/shopifyClient.js's getCollections() - see tools/collectionDataRetrievalTool.js. No writes.",
     category: 'products',
     operation: 'read',
     status: 'implemented',

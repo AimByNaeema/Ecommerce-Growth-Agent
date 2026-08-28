@@ -7,6 +7,7 @@ const {
   getOrders,
   getCustomers,
   getInventoryLevels,
+  getCollections,
   isConfigured,
   loadEnvOnce,
   DEFAULT_API_VERSION,
@@ -126,6 +127,11 @@ async function testAsync(name, fn) {
 
 test('exports the expected connection-layer functions and constants', () => {
   assert.strictEqual(typeof getShopInfo, 'function');
+  assert.strictEqual(typeof getProducts, 'function');
+  assert.strictEqual(typeof getOrders, 'function');
+  assert.strictEqual(typeof getCustomers, 'function');
+  assert.strictEqual(typeof getInventoryLevels, 'function');
+  assert.strictEqual(typeof getCollections, 'function');
   assert.strictEqual(typeof isConfigured, 'function');
   assert.strictEqual(typeof loadEnvOnce, 'function');
   assert.strictEqual(typeof DEFAULT_API_VERSION, 'string');
@@ -458,6 +464,90 @@ test('exports the expected connection-layer functions and constants', () => {
       withMockedFetch(
         async () => jsonResponse(200, { data: {} }),
         () => assert.rejects(() => getInventoryLevels(), /did not include inventory data/)
+      )
+    );
+  });
+
+  // --- getCollections ----------------------------------------------------------------
+
+  const SAMPLE_COLLECTION_GRAPHQL_NODE = {
+    id: 'gid://shopify/Collection/1',
+    title: 'Winter Wear',
+    handle: 'winter-wear',
+    description: 'Cold-weather gear.',
+    image: { url: 'https://cdn.shopify.com/winter-wear.jpg' },
+    productsCount: { count: 24 },
+  };
+
+  await testAsync('getCollections rejects clearly when not configured, without calling fetch', async () => {
+    const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
+    const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    delete process.env.SHOPIFY_STORE_DOMAIN;
+    delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    let fetchCalled = false;
+    try {
+      await withMockedFetch(
+        async () => {
+          fetchCalled = true;
+          throw new Error('fetch should never be called when not configured');
+        },
+        () => assert.rejects(() => getCollections(), /SHOPIFY_STORE_DOMAIN/)
+      );
+      assert.strictEqual(fetchCalled, false);
+    } finally {
+      if (savedDomain === undefined) delete process.env.SHOPIFY_STORE_DOMAIN;
+      else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
+      if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+      else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+    }
+  });
+
+  await testAsync('getCollections normalizes a successful mocked response (id/title/handle/description/image/productsCount)', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { collections: { edges: [{ node: SAMPLE_COLLECTION_GRAPHQL_NODE }] } } }),
+        async () => {
+          const collections = await getCollections();
+          assert.strictEqual(collections.length, 1);
+          const [collection] = collections;
+          assert.strictEqual(collection.id, 'gid://shopify/Collection/1');
+          assert.strictEqual(collection.title, 'Winter Wear');
+          assert.strictEqual(collection.handle, 'winter-wear');
+          assert.strictEqual(collection.description, 'Cold-weather gear.');
+          assert.deepStrictEqual(collection.image, { url: 'https://cdn.shopify.com/winter-wear.jpg' });
+          assert.strictEqual(collection.productsCount, 24);
+        }
+      )
+    );
+  });
+
+  await testAsync('getCollections leaves image null (never fabricated) when the collection has no image', async () => {
+    const nodeWithoutImage = { ...SAMPLE_COLLECTION_GRAPHQL_NODE, image: null };
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { collections: { edges: [{ node: nodeWithoutImage }] } } }),
+        async () => {
+          const collections = await getCollections();
+          assert.strictEqual(collections[0].image, null);
+        }
+      )
+    );
+  });
+
+  await testAsync('getCollections throws when the mocked response carries GraphQL errors', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { errors: [{ message: 'Throttled' }] }),
+        () => assert.rejects(() => getCollections(), /GraphQL errors/)
+      )
+    );
+  });
+
+  await testAsync('getCollections throws when the mocked response is missing collection data', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: {} }),
+        () => assert.rejects(() => getCollections(), /did not include collection data/)
       )
     );
   });

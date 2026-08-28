@@ -463,6 +463,20 @@ whatever tools happen to exist. `evaluateToolAccess()`'s decision order is now
 availability → category → role/operation → approval, always in that order, always
 before `agent/core/orchestratorExecutionContract.js`'s `TOOL_EXECUTORS` is ever read —
 so the permission check happens before execution by construction, not by convention.
+The Shopify integration gained one more read-only capability:
+[`integrations/adapters/shopifyClient.js`](integrations/adapters/shopifyClient.js)'s
+new `getCollections()` reads the store's collection catalog (title, handle,
+description, image, product count) as a store-wide list, independent of any one
+product — unlike the collections already nested (id/title only, capped at 10) inside
+each `getProducts()` entry. It reuses the same shared request/retry core as every
+other getter, so it gets the same controlled-retry behavior for free. A new tenth
+tool, [`tools/collectionDataRetrievalTool.js`](tools/collectionDataRetrievalTool.js)
+(the `collection_data_retrieval` tool id, `products` category, classified
+`analysis_only` in `agent/core/toolPermissions.js` alongside
+`product_data_retrieval`), is the thin wrapper exposing it — same pass-through
+convention as every other tool wrapper here, no product/order/customer/inventory
+scope changes needed since collections are covered by the same `read_products` scope
+already required.
 A centralized audit trail is now real, not just a planned component: new
 [`audit/auditRecordModel.js`](audit/auditRecordModel.js) defines one Audit Record
 (`id`, `run_id`, `type`, `timestamp`, `specialist_id`, `capability_id`, `tool_id`,
