@@ -30,7 +30,7 @@ const GLOBAL_MARKET_COMPARISON_FIELDS = [
     title: 'Comparison rows',
     type: 'array',
     description:
-      'One row per market. Each row carries the country/market identity plus 7 evidence-backed facets (category, demand_signals, trends, risks, competition, pricing, products) and the underlying specialized_records it was built from - see workflows/globalEcommerceMarketResearchWorkflow.js.',
+      'One row per market. Each row carries the country/market identity plus 9 evidence-backed facets (category, demand_signals, trends, risks, opportunities, competition, pricing, customer_need, products) and the underlying specialized_records it was built from - see workflows/globalEcommerceMarketResearchWorkflow.js.',
   },
   {
     id: 'limitations',

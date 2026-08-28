@@ -1,11 +1,13 @@
 'use strict';
 
-// The global ecommerce market research workflow: compares markets side-by-side across
-// 9 dimensions - countries, markets, categories, products, trends, competition,
-// pricing, demand signals, and risks. Markets are the comparison axis (one row per
-// country/market, matching agent/core/researchAgent.js's runGlobalMarketResearch
-// market-entry shape); the other 7 items are evidence-backed facets compared across
-// those rows.
+// The global ecommerce market research workflow: compares markets side-by-side. Markets
+// are the comparison axis (one row per country/market, matching
+// agent/core/researchAgent.js's runGlobalMarketResearch market-entry shape); each row
+// carries 9 evidence-backed facets - category, demand_signals, trends, risks,
+// opportunities, competition, pricing, customer_need, and products - matching this
+// project's structured global market opportunity analysis (country/category/demand/
+// competition/pricing/trends/customer_need/risk/opportunity), with `products` kept as
+// an existing extra facet beyond that named list, not one of the 9 itself.
 //
 // Real, executable logic - unlike every other file in workflows/ (keywordResearchWorkflow.js,
 // productOpportunityAnalysisWorkflow.js, contentMarketingWorkflow.js,
@@ -131,6 +133,11 @@ function buildComparisonRow(entry, fnName) {
   const productRecords = normalizeArray(entry.products).map((productEntry) =>
     buildProductRecord(productEntry, fnName)
   );
+  const customerSegmentRecords = retrieveResearchData(
+    'customer_segment',
+    normalizeArray(entry.customerSegments),
+    fnName
+  );
 
   const category = buildScalarFacet(
     marketRecord.category,
@@ -154,6 +161,12 @@ function buildComparisonRow(entry, fnName) {
     marketRecord.risks,
     marketRecord.evidence,
     `risks in ${marketRecord.market}`,
+    rowLimitations
+  );
+  const opportunities = buildScalarFacet(
+    marketRecord.opportunities,
+    marketRecord.evidence,
+    `opportunities in ${marketRecord.market}`,
     rowLimitations
   );
 
@@ -182,6 +195,17 @@ function buildComparisonRow(entry, fnName) {
   }));
   const products = buildEntryFacet(productEntries, `Products in ${marketRecord.market}`, rowLimitations);
 
+  const customerNeedEntries = customerSegmentRecords.map((record) => ({
+    segment_definition: record.segment_definition,
+    needs: record.needs,
+    problems: record.problems,
+    buying_motivations: record.buying_motivations,
+    objections: record.objections,
+    preferences: record.preferences,
+    evidence: record.evidence,
+  }));
+  const customerNeed = buildEntryFacet(customerNeedEntries, `Customer need in ${marketRecord.market}`, rowLimitations);
+
   return {
     market: marketRecord.market,
     country: marketRecord.country,
@@ -189,14 +213,17 @@ function buildComparisonRow(entry, fnName) {
     demand_signals: demandSignals,
     trends,
     risks,
+    opportunities,
     competition,
     pricing,
+    customer_need: customerNeed,
     products,
     limitations: rowLimitations,
     specialized_records: {
       market: marketRecord,
       competitors: competitorRecords,
       products: productRecords,
+      customer_segments: customerSegmentRecords,
     },
   };
 }
@@ -244,7 +271,17 @@ if (require.main === module) {
         demandSignals: ['Rising search interest in insulated jackets (caller-supplied placeholder).'],
         trends: ['Growing preference for recycled materials (caller-supplied placeholder).'],
         risks: ['New EU textile labeling regulation (caller-supplied placeholder).'],
+        opportunities: ['Underserved demand for plus-size insulated jackets (caller-supplied placeholder).'],
         evidence: ['(placeholder market evidence reference)'],
+        customerSegments: [
+          {
+            segmentDefinition: 'Budget-conscious outdoor enthusiasts (caller-supplied placeholder).',
+            needs: ['Reliable warmth at a lower price point (caller-supplied placeholder).'],
+            problems: ['Existing options are seen as overpriced (caller-supplied placeholder).'],
+            buyingMotivations: ['Value for money (caller-supplied placeholder).'],
+            evidence: ['(placeholder customer segment evidence reference)'],
+          },
+        ],
         competitors: [
           {
             competitor: '(Example EU Competitor Co.)',

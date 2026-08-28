@@ -135,7 +135,12 @@ respectively, matching `tools/toolRegistry.js`'s existing `market_research`,
 `competitor_research`, and `customer_research` tool ids (now `implemented`). Each tool
 returns `{ status, result, error }` with `status` one of `success`, `empty`, `partial`,
 or `failed` — never fabricating a result when structured input is missing or
-incomplete. Global market research, trend research, and opportunity discovery are not
-yet wired to the tool registry — they remain callable only by calling `runResearch()`
-directly, since `tools/toolRegistry.js` doesn't scaffold separate tool ids for them
-yet.
+incomplete. `runResearch()`'s own `global_market_research`, `trend_research`, and
+`opportunity_discovery` research types are still not wired to the tool registry — they
+remain callable only by calling `runResearch()` directly, since `tools/toolRegistry.js`
+doesn't scaffold separate tool ids for them yet. The structured, 9-dimension global
+market opportunity comparison built on top of this agent (country/category/demand/
+competition/pricing/trends/customer_need/risk/opportunity, one row per market) is a
+separate, now-wired capability — see
+[`tools/globalMarketOpportunityTool.js`](../tools/globalMarketOpportunityTool.js) and
+[`workflows/README.md`](../workflows/README.md).

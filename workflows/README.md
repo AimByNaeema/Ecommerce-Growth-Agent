@@ -32,21 +32,27 @@ invented anywhere.
 
 [`globalEcommerceMarketResearchWorkflow.js`](globalEcommerceMarketResearchWorkflow.js)
 is real, executable logic — unlike the 4 workflows above, which are conceptual
-stage-lists only. It compares markets side-by-side across 9 dimensions: countries and
-markets are the comparison axis (one row per country/market), and categories, products,
-trends, competition, pricing, and demand signals/risks are evidence-backed facets
-compared across those rows. It reuses
+stage-lists only. It is this project's structured global ecommerce market opportunity
+analysis: countries/markets are the comparison axis (one row per country/market), and
+each row carries 9 evidence-backed facets — category, demand_signals, trends, risks,
+opportunities, competition, pricing, customer_need, and products — matching
+country/category/demand/competition/pricing/trends/customer_need/risk/opportunity,
+with `products` kept as an existing extra facet beyond that 9-item list. It reuses
 [`agent/core/researchAgent.js`](../agent/core/researchAgent.js)'s `retrieveResearchData()`
-for the market/competitor record-building (no duplicated logic), and
+for the market/competitor/customer_segment record-building (no duplicated logic), and
 [`agent/core/productModel.js`](../agent/core/productModel.js) for products. The result
 shape is [`agent/core/globalMarketComparisonModel.js`](../agent/core/globalMarketComparisonModel.js).
 No field is ever a computed number, percentage, score, or ranking — every facet is
 either caller-supplied content passed through as-is, or a structural evidence-presence
 signal (`has_evidence` / `status: empty|partial|success`), so no unsupported market
-statistic can be produced. Not yet wired to `tools/toolRegistry.js` or the
-orchestrator — that is a documented follow-up, matching how
-[`agent/core/researchAgent.js`](../agent/core/researchAgent.js) was connected in a
-separate, later prompt.
+statistic can be produced. Wired to `tools/toolRegistry.js` as the
+`global_market_opportunity_analysis` tool
+([`tools/globalMarketOpportunityTool.js`](../tools/globalMarketOpportunityTool.js)) and
+into the orchestrator's `TOOL_EXECUTORS` — reachable via the Chief like every other
+research tool. This is distinct from
+[`agent/core/researchAgent.js`](../agent/core/researchAgent.js)'s own
+`global_market_research`/`trend_research`/`opportunity_discovery` research types, which
+remain unwired (see [`research/README.md`](../research/README.md)).
 
 [`analyticsInsightWorkflow.js`](analyticsInsightWorkflow.js) defines the process that
 turns real analytics data into a verified result: DATA → FINDING → INTERPRETATION →

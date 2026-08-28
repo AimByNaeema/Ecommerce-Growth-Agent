@@ -497,3 +497,25 @@ event whenever a request is created or later decided — surfaced on every respo
 silently dropped. No persistence layer — the trail lives for one run, held by its
 caller, the same standalone-deliverable pattern as every other engine here.
 No specialist role grants `execute` yet, matching that no tool is `execute` yet.
+Structured global ecommerce market opportunity analysis is now complete and
+Chief-reachable:
+[`workflows/globalEcommerceMarketResearchWorkflow.js`](workflows/globalEcommerceMarketResearchWorkflow.js)'s
+`compareGlobalMarkets()` — already real, executable, evidence-only composition logic —
+gained 2 more evidence-backed row facets, `opportunities` (a one-line addition reusing
+the existing `buildScalarFacet` helper, surfacing a market record field that was already
+being collected but silently dropped) and `customer_need` (a new entry-list facet
+reusing `agent/core/researchAgent.js`'s existing `retrieveResearchData('customer_segment',
+...)` → `agent/core/customerSegmentResearchModel.js`, the same composition pattern
+already used for `competitors[]`/`products[]`). Every row now carries exactly the 9
+dimensions this project's opportunity analysis evaluates — country, category, demand,
+competition, pricing, trends, customer_need, risk, opportunity — each retaining its own
+source/evidence, with `products` kept as an existing extra facet beyond that named 9.
+A new eleventh tool,
+[`tools/globalMarketOpportunityTool.js`](tools/globalMarketOpportunityTool.js) (the
+`global_market_opportunity_analysis` tool id, `research` category, classified
+`analysis_only`), is the thin wrapper making this workflow reachable through the Chief
+for the first time — wired into `agent/core/orchestratorExecutionContract.js`'s
+`TOOL_EXECUTORS`, unlike the read-only Shopify collections tool from earlier, which was
+deliberately left unwired. Its `deriveStatus()` grades `success`/`partial`/`empty`
+per-row-per-facet rather than per flat record, the same three-tier honesty convention
+as every other research tool, adapted to a multi-facet-per-row result.

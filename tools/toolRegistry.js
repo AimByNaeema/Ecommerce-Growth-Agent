@@ -6,15 +6,16 @@
 // this file (that lives in agent/core/orchestratorExecutionContract.js, gated by
 // agent/core/toolPermissions.js), so tools are not called *from here*.
 // business_configuration_retrieval, ai_reasoning_completion, market_research,
-// competitor_research, customer_research, product_data_retrieval,
-// collection_data_retrieval, keyword_research, seo_analysis, listing_content_generation,
-// marketing_analysis, social_content_planning, paid_advertising_planning,
-// social_media_strategy_generation, platform_content_generation,
-// content_calendar_generation, advertising_strategy_planning,
-// advertising_performance_analysis, analytics, and analytics_data_retrieval are the
-// twenty entries actually implemented (see tools/businessConfigurationRetrieval.js,
-// tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
-// tools/competitorResearchTool.js, tools/customerResearchTool.js,
+// customer_research, global_market_opportunity_analysis, competitor_research,
+// product_data_retrieval, collection_data_retrieval, keyword_research, seo_analysis,
+// listing_content_generation, marketing_analysis, social_content_planning,
+// paid_advertising_planning, social_media_strategy_generation,
+// platform_content_generation, content_calendar_generation,
+// advertising_strategy_planning, advertising_performance_analysis, analytics, and
+// analytics_data_retrieval are the twenty-one entries actually implemented (see
+// tools/businessConfigurationRetrieval.js, tools/aiReasoningCompletion.js,
+// tools/marketResearchTool.js, tools/customerResearchTool.js,
+// tools/globalMarketOpportunityTool.js, tools/competitorResearchTool.js,
 // tools/productDataRetrievalTool.js, tools/collectionDataRetrievalTool.js,
 // tools/keywordResearchTool.js, tools/seoAnalysisTool.js, tools/listingContentTool.js,
 // tools/marketingAnalysisTool.js, tools/socialContentTool.js,
@@ -117,6 +118,15 @@ const TOOL_REGISTRY = [
     description:
       "Produce customer segment research records conforming to agent/core/customerSegmentResearchModel.js via agent/core/researchAgent.js's runCustomerMarketIntelligence() - see tools/customerResearchTool.js.",
     category: 'customer_market_intelligence',
+    operation: 'read',
+    status: 'implemented',
+  },
+  {
+    id: 'global_market_opportunity_analysis',
+    title: 'Global market opportunity analysis',
+    description:
+      "Structured global ecommerce market opportunity analysis across 9 evidence-backed dimensions per market/country row (country, category, demand, competition, pricing, trends, customer_need, risk, opportunity) via workflows/globalEcommerceMarketResearchWorkflow.js's compareGlobalMarkets() - see tools/globalMarketOpportunityTool.js. Deterministic composition only, no invented statistic; every fact retains its source/evidence.",
+    category: 'research',
     operation: 'read',
     status: 'implemented',
   },

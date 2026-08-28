@@ -52,7 +52,7 @@ test('produces one row per market, with markets_compared in the correct order', 
   assert.strictEqual(result.comparison.length, 2);
 });
 
-test('scalar facets (category/demand_signals/trends/risks) carry the right value and evidence', () => {
+test('scalar facets (category/demand_signals/trends/risks/opportunities) carry the right value and evidence', () => {
   const result = compareGlobalMarkets({
     markets: [
       {
@@ -61,6 +61,7 @@ test('scalar facets (category/demand_signals/trends/risks) carry the right value
         demandSignals: ['signal A'],
         trends: ['trend A'],
         risks: ['risk A'],
+        opportunities: ['opportunity A'],
         evidence: ['source A'],
       },
     ],
@@ -73,6 +74,8 @@ test('scalar facets (category/demand_signals/trends/risks) carry the right value
   assert.strictEqual(row.demand_signals.has_evidence, true);
   assert.deepStrictEqual(row.trends.value, ['trend A']);
   assert.deepStrictEqual(row.risks.value, ['risk A']);
+  assert.deepStrictEqual(row.opportunities.value, ['opportunity A']);
+  assert.strictEqual(row.opportunities.has_evidence, true);
 });
 
 test('scalar facets report has_evidence=false and a limitation when no evidence is supplied', () => {
@@ -82,6 +85,7 @@ test('scalar facets report has_evidence=false and a limitation when no evidence 
   const row = result.comparison[0];
   assert.strictEqual(row.category.has_evidence, false);
   assert.strictEqual(row.demand_signals.has_evidence, false);
+  assert.strictEqual(row.opportunities.has_evidence, false);
   assert.ok(row.limitations.some((l) => l.includes('No evidence was supplied for category in European Union')));
   assert.ok(result.limitations.some((l) => l.includes('[European Union] No evidence was supplied for category')));
 });
@@ -121,13 +125,56 @@ test('competition/pricing facets report partial when some competitors lack evide
   assert.ok(row.limitations.some((l) => l.includes('Competition in European Union evidence is partial')));
 });
 
-test('competition/pricing/products facets report empty when nothing is supplied', () => {
+test('competition/pricing/products/customer_need facets report empty when nothing is supplied', () => {
   const result = compareGlobalMarkets({ markets: [{ market: 'European Union' }] });
   const row = result.comparison[0];
   assert.strictEqual(row.competition.status, 'empty');
   assert.strictEqual(row.pricing.status, 'empty');
   assert.strictEqual(row.products.status, 'empty');
+  assert.strictEqual(row.customer_need.status, 'empty');
   assert.deepStrictEqual(row.competition.entries, []);
+  assert.deepStrictEqual(row.customer_need.entries, []);
+});
+
+test('customer_need facet reports success when every customer segment has evidence', () => {
+  const result = compareGlobalMarkets({
+    markets: [
+      {
+        market: 'European Union',
+        customerSegments: [
+          {
+            segmentDefinition: 'Budget-conscious outdoor enthusiasts',
+            needs: ['Reliable warmth at a lower price point'],
+            problems: ['Existing options are overpriced'],
+            evidence: ['seg-evidence-1'],
+          },
+        ],
+      },
+    ],
+  });
+  const row = result.comparison[0];
+  assert.strictEqual(row.customer_need.status, 'success');
+  assert.strictEqual(row.customer_need.entries.length, 1);
+  assert.strictEqual(row.customer_need.entries[0].segment_definition, 'Budget-conscious outdoor enthusiasts');
+  assert.deepStrictEqual(row.customer_need.entries[0].needs, ['Reliable warmth at a lower price point']);
+  assert.deepStrictEqual(row.customer_need.entries[0].evidence, ['seg-evidence-1']);
+});
+
+test('customer_need facet reports partial when some customer segments lack evidence', () => {
+  const result = compareGlobalMarkets({
+    markets: [
+      {
+        market: 'European Union',
+        customerSegments: [
+          { segmentDefinition: 'Segment A', needs: ['need A'] },
+          { segmentDefinition: 'Segment B', needs: ['need B'], evidence: ['seg-evidence-2'] },
+        ],
+      },
+    ],
+  });
+  const row = result.comparison[0];
+  assert.strictEqual(row.customer_need.status, 'partial');
+  assert.ok(row.limitations.some((l) => l.includes('Customer need in European Union evidence is partial')));
 });
 
 test('products facet reports success and carries pricing/availability with evidence', () => {
@@ -153,7 +200,7 @@ test('products facet reports success and carries pricing/availability with evide
   assert.strictEqual(row.products.entries[0].availability, 'available');
 });
 
-test('specialized_records retains the full validated market/competitor/product records - evidence is traceable, not just summarized', () => {
+test('specialized_records retains the full validated market/competitor/product/customer_segment records - evidence is traceable, not just summarized', () => {
   const result = compareGlobalMarkets({
     markets: [
       {
@@ -162,6 +209,7 @@ test('specialized_records retains the full validated market/competitor/product r
         evidence: ['market source'],
         competitors: [{ competitor: 'A', source: ['comp source'] }],
         products: [{ productIdentity: 'Jacket', source: ['prod source'] }],
+        customerSegments: [{ segmentDefinition: 'Segment A', evidence: ['seg source'] }],
       },
     ],
   });
@@ -172,6 +220,8 @@ test('specialized_records retains the full validated market/competitor/product r
   assert.deepStrictEqual(records.competitors[0].source, ['comp source']);
   assert.strictEqual(records.products[0].product_identity, 'Jacket');
   assert.deepStrictEqual(records.products[0].source, ['prod source']);
+  assert.strictEqual(records.customer_segments[0].segment_definition, 'Segment A');
+  assert.deepStrictEqual(records.customer_segments[0].evidence, ['seg source']);
 });
 
 test('no field anywhere in the result is a computed number/statistic - only pass-through content and structural signals', () => {

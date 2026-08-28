@@ -82,6 +82,7 @@ const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
 const competitorResearchTool = require('../../tools/competitorResearchTool');
 const customerResearchTool = require('../../tools/customerResearchTool');
+const globalMarketOpportunityTool = require('../../tools/globalMarketOpportunityTool');
 const keywordResearchTool = require('../../tools/keywordResearchTool');
 const seoAnalysisTool = require('../../tools/seoAnalysisTool');
 const listingContentTool = require('../../tools/listingContentTool');
@@ -130,6 +131,8 @@ const TOOL_EXECUTORS = {
     competitorResearchTool.runCompetitorResearchTool(executionRequest.research_params),
   customer_research: (executionRequest) =>
     customerResearchTool.runCustomerResearchTool(executionRequest.research_params),
+  global_market_opportunity_analysis: (executionRequest) =>
+    globalMarketOpportunityTool.runGlobalMarketOpportunityTool(executionRequest.research_params),
   keyword_research: (executionRequest) =>
     keywordResearchTool.runKeywordResearchTool(executionRequest.research_params),
   seo_analysis: (executionRequest) =>

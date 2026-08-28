@@ -35,6 +35,17 @@ is governed by
 report `success`/`empty`/`partial`/`failed` outcomes without ever fabricating a
 result when structured research input is missing or incomplete.
 
+[`globalMarketOpportunityTool.js`](globalMarketOpportunityTool.js) is the same thin
+wrapper pattern around
+[`workflows/globalEcommerceMarketResearchWorkflow.js`](../workflows/globalEcommerceMarketResearchWorkflow.js)'s
+`compareGlobalMarkets()` — structured global ecommerce market opportunity analysis
+across 9 evidence-backed dimensions (country, category, demand, competition, pricing,
+trends, customer_need, risk, opportunity) per market row. `status` is derived per row
+across all 9 facets rather than per flat record (`success` only when every row has
+evidence in every facet), the same three-tier honesty convention as
+`marketResearchTool.js`/`competitorResearchTool.js`, adapted to a multi-facet-per-row
+result.
+
 [`productDataRetrievalTool.js`](productDataRetrievalTool.js) is a thin, read-only
 wrapper around `integrations/adapters/shopifyClient.js`'s `getProducts()` — same
 pass-through convention as `businessConfigurationRetrieval.js` (returns/throws exactly

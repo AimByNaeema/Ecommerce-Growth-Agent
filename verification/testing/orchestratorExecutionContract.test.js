@@ -679,6 +679,29 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.ok(outputs.error.includes('No structured research input was supplied'));
   });
 
+  await testAsync('executeSelectedCapability: TOOL_EXECUTORS.global_market_opportunity_analysis is reachable via the real Chief dispatch path and executes for real', async () => {
+    const executionRequest = {
+      objective: 'analyze global market opportunity',
+      category: 'research',
+      tool_id: 'global_market_opportunity_analysis',
+      specialist_id: 'research',
+      research_params: {
+        markets: [
+          {
+            market: 'European Union',
+            category: 'outdoor apparel',
+            demandSignals: ['signal A'],
+            evidence: ['market-evidence-1'],
+          },
+        ],
+      },
+    };
+    const outcome = await executeSelectedCapability(executionRequest);
+    assert.strictEqual(outcome.status, 'success');
+    assert.strictEqual(outcome.data.result.comparison.length, 1);
+    assert.strictEqual(outcome.data.result.comparison[0].category.value, 'outdoor apparel');
+  });
+
   // --- Operational approval flow: pending -> approved/rejected -> resumed --------
   //
   // No tool in today's real registry is both implemented and approval_required (every
