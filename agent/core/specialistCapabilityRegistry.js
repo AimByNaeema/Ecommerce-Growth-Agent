@@ -83,6 +83,8 @@ const { PRODUCT_FIELDS } = require('./productModel');
 const { PRODUCT_AGENT_RESULT_FIELDS } = require('./productAgentResultModel');
 const { PRODUCT_OPPORTUNITY_SCORE_FIELDS } = require('./productOpportunityScoreModel');
 const { PRODUCT_RECOMMENDATION_FIELDS } = require('./productRecommendationModel');
+const { GLOBAL_MARKET_COMPARISON_FIELDS } = require('./globalMarketComparisonModel');
+const { MARKET_CONNECTED_OPPORTUNITY_FIELDS } = require('./marketConnectedOpportunityModel');
 
 // No existing enum covers productAgent.js's 3 exported functions plus
 // productOpportunityScoringEngine.js's and productRecommendationEngine.js's 1 each
@@ -94,8 +96,26 @@ const PRODUCT_CAPABILITY_IDS = [
   'product_discovery',
   'product_validation',
   'product_opportunity_analysis',
+  'market_product_opportunity_analysis',
   'product_opportunity_scoring',
   'product_recommendation',
+];
+
+// researchAgent.js's own RESEARCH_TYPES enum doesn't cover
+// global_market_opportunity_analysis - that capability is implemented via a separate
+// workflow (workflows/globalEcommerceMarketResearchWorkflow.js), not one of
+// researchAgent.js's own dispatch modes - the same reason PRODUCT_CAPABILITY_IDS
+// above already needed to be a registry-local list rather than an imported agent
+// enum. Order matches RESEARCH_TASKS below exactly.
+const RESEARCH_CAPABILITY_IDS = [
+  'market_research',
+  'global_market_research',
+  'competitor_research',
+  'trend_research',
+  'global_market_opportunity_analysis',
+  'customer_market_intelligence',
+  'opportunity_discovery',
+  'customer_segmentation',
 ];
 
 function fieldIds(fieldsList) {
@@ -268,6 +288,40 @@ const RESEARCH_TASKS = [
     fields: fieldIds(RESEARCH_AGENT_RESULT_FIELDS),
   }),
   buildTask({
+    id: 'global_market_opportunity_analysis',
+    title: 'Global market opportunity analysis',
+    description:
+      "Compose one agent/core/globalMarketComparisonModel.js comparison row per caller-supplied market, across 9 evidence facets (category, demand_signals, competition, pricing, trends, customer_need, risks, opportunities, products), via workflows/globalEcommerceMarketResearchWorkflow.js's compareGlobalMarkets(). The global_market_opportunity_analysis tool's only mode.",
+    toolIds: ['global_market_opportunity_analysis'],
+    required: ['markets', 'markets[].market'],
+    optional: [
+      'markets[].country',
+      'markets[].category',
+      'markets[].demandSignals',
+      'markets[].trends',
+      'markets[].risks',
+      'markets[].opportunities',
+      'markets[].evidence',
+      'markets[].customerSegments',
+      'markets[].customerSegments[].segmentDefinition',
+      'markets[].customerSegments[].needs',
+      'markets[].customerSegments[].evidence',
+      'markets[].competitors',
+      'markets[].competitors[].competitor',
+      'markets[].competitors[].positioning',
+      'markets[].competitors[].pricingEvidence',
+      'markets[].competitors[].strengths',
+      'markets[].competitors[].source',
+      'markets[].products',
+      'markets[].products[].productIdentity',
+      'markets[].products[].pricing',
+      'markets[].products[].source',
+      'topic',
+    ],
+    model: 'agent/core/globalMarketComparisonModel.js',
+    fields: fieldIds(GLOBAL_MARKET_COMPARISON_FIELDS),
+  }),
+  buildTask({
     id: 'customer_market_intelligence',
     title: 'Customer market intelligence',
     description:
@@ -420,6 +474,26 @@ const PRODUCT_TASKS = [
     ],
     model: 'agent/core/productAgentResultModel.js',
     fields: fieldIds(PRODUCT_AGENT_RESULT_FIELDS),
+  }),
+  buildTask({
+    id: 'market_product_opportunity_analysis',
+    title: 'Market-connected product opportunity analysis',
+    description:
+      "Compose one agent/core/marketConnectedOpportunityModel.js record by finding one caller-supplied product inside a real global_market_opportunity_analysis comparison row and assessing its demand/competition/market_relevance/commercial_potential dimensions via workflows/productOpportunityAnalysisWorkflow.js's analyzeProductOpportunityFromMarket() - the market_product_opportunity_analysis tool's only mode.",
+    toolIds: ['market_product_opportunity_analysis'],
+    required: ['marketRow', 'productIdentity'],
+    optional: [
+      'demandAssessment',
+      'demandConfidence',
+      'competitionAssessment',
+      'competitionConfidence',
+      'marketFitAssessment',
+      'marketFitConfidence',
+      'commercialPotentialAssessment',
+      'commercialPotentialConfidence',
+    ],
+    model: 'agent/core/marketConnectedOpportunityModel.js',
+    fields: fieldIds(MARKET_CONNECTED_OPPORTUNITY_FIELDS),
   }),
   buildTask({
     id: 'product_opportunity_scoring',
@@ -1131,6 +1205,7 @@ function getSpecialistCapabilityEntriesByStatus(status) {
 
 module.exports = {
   PRODUCT_CAPABILITY_IDS,
+  RESEARCH_CAPABILITY_IDS,
   SPECIALIST_CAPABILITY_REGISTRY,
   getSpecialistCapabilityRegistry,
   getSpecialistCapabilityById,

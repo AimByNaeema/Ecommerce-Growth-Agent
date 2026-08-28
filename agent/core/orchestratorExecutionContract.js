@@ -908,7 +908,15 @@ async function buildPlanStep(
   runToolResultCache = null,
   runUsageTracker = null,
   businessId = null,
-  runUsageLedger = null
+  runUsageLedger = null,
+  // Optional { toolId, capabilityId } - lets a deliberate, explicitly-sequenced
+  // caller (agent/core/growthWorkflowOrchestrator.js) pin exactly which tool/
+  // capability this step runs, bypassing the word-overlap scoring below. Free-text
+  // routing (runOrchestratorContract) never supplies this, so its behavior is
+  // unchanged. The forced tool must still be a real candidate for this target
+  // (checked below) - forcing never lets a step execute a tool outside the target's
+  // own real ownership.
+  forcedSelection = null
 ) {
   const capabilityEntry = target.type === 'specialist' ? getSpecialistCapabilityById(target.id) : null;
   appendAuditEvent(runAuditTracker, {
@@ -937,15 +945,21 @@ async function buildPlanStep(
 
   const objectiveWords = new Set(tokenize(objective));
   let toolMatch = null;
-  let bestScore = 0;
 
-  for (const toolId of candidateToolIds) {
-    const tool = getToolById(toolId);
-    if (!tool) continue;
-    const score = scoreWordOverlap(`${tool.id} ${tool.title} ${tool.description} ${tool.category}`, objectiveWords);
-    if (score > bestScore) {
-      bestScore = score;
-      toolMatch = tool;
+  if (forcedSelection && forcedSelection.toolId && candidateToolIds.includes(forcedSelection.toolId)) {
+    toolMatch = getToolById(forcedSelection.toolId) || null;
+  }
+
+  if (!toolMatch) {
+    let bestScore = 0;
+    for (const toolId of candidateToolIds) {
+      const tool = getToolById(toolId);
+      if (!tool) continue;
+      const score = scoreWordOverlap(`${tool.id} ${tool.title} ${tool.description} ${tool.category}`, objectiveWords);
+      if (score > bestScore) {
+        bestScore = score;
+        toolMatch = tool;
+      }
     }
   }
 
@@ -965,7 +979,10 @@ async function buildPlanStep(
   let matchedCapability = null;
   if (capabilityEntry && toolMatch) {
     const candidateTasks = capabilityEntry.supported_tasks.filter((task) => task.tool_ids.includes(toolMatch.id));
-    matchedCapability = bestMatchingTask(candidateTasks, objectiveWords);
+    matchedCapability =
+      forcedSelection && forcedSelection.capabilityId
+        ? candidateTasks.find((task) => task.id === forcedSelection.capabilityId) || null
+        : bestMatchingTask(candidateTasks, objectiveWords);
   }
 
   // STRUCTURED CROSS-AGENT CONTEXT PASSING (see agent/core/crossAgentContext.js): now

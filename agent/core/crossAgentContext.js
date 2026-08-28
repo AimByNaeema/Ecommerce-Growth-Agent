@@ -9,8 +9,9 @@
 // doesn't ask for, never a guessed/invented value.
 //
 // Supports exactly the flows named in this project's current scope:
-//   Research -> Product, Product -> Listing, SEO -> Listing, Product -> Marketing,
-//   Marketing -> Social & Advertising, All -> Analytics, Analytics -> Optimization.
+//   Research -> Product, Product -> Listing, SEO -> Listing, Listing -> SEO,
+//   Product -> Marketing, Marketing -> Social & Advertising, All -> Analytics,
+//   Analytics -> Optimization.
 //
 // THREE MECHANISMS, one principle (only real, declared-relevant data ever crosses a
 // specialist boundary; nothing is fabricated to fill a gap):
@@ -123,18 +124,29 @@ function extractResearchToProduct(fromCapabilityId, _toCapabilityId, fromOutput)
     : { competitionEvidence: [genericEntry] };
 }
 
+// Product's two capabilities that produce a real, evidence-assessed opportunity
+// record with a compatible shape (specialized_records.product_record, top-level
+// market/product_identity): productAgent.js's own product_opportunity_analysis, and
+// the market-connected variant (workflows/productOpportunityAnalysisWorkflow.js's
+// analyzeProductOpportunityFromMarket(), tool market_product_opportunity_analysis) -
+// verified field-by-field against agent/core/marketConnectedOpportunityModel.js,
+// which carries the same specialized_records.product_record/market/product_identity
+// fields the extractors below already read. Either is a valid "from" capability for
+// the Product -> Listing and Product -> Marketing flows.
+const PRODUCT_OPPORTUNITY_CAPABILITY_IDS = ['product_opportunity_analysis', 'market_product_opportunity_analysis'];
+
 // ---------------------------------------------------------------------------------
 // 2. Product -> Listing
 //
 // Listing's listing_content capability reads productInfo.description (fallback for
 // the listing description) and market/targetMarket (see
-// agent/core/listingAgent.js's resolveListingSources) - both real fields on the
-// product_opportunity_analysis result's own specialized_records.product_record and
+// agent/core/listingAgent.js's resolveListingSources) - both real fields on either
+// Product opportunity capability's own specialized_records.product_record and
 // top-level market field.
 // ---------------------------------------------------------------------------------
 
 function extractProductToListing(fromCapabilityId, _toCapabilityId, fromOutput) {
-  if (fromCapabilityId !== 'product_opportunity_analysis' || !fromOutput) return {};
+  if (!PRODUCT_OPPORTUNITY_CAPABILITY_IDS.includes(fromCapabilityId) || !fromOutput) return {};
   const productRecord = fromOutput.specialized_records && fromOutput.specialized_records.product_record;
 
   const context = {};
@@ -191,7 +203,7 @@ function extractSeoToListing(fromCapabilityId, _toCapabilityId, fromOutput) {
 const MARKETING_CHANNEL_CAPABILITIES = ['marketing_strategy', 'offers', 'promotions', 'email_strategy'];
 
 function extractProductToMarketing(fromCapabilityId, toCapabilityId, fromOutput) {
-  if (fromCapabilityId !== 'product_opportunity_analysis' || !fromOutput) return {};
+  if (!PRODUCT_OPPORTUNITY_CAPABILITY_IDS.includes(fromCapabilityId) || !fromOutput) return {};
   if (!isNonEmptyString(fromOutput.product_identity)) return {};
 
   const evidence = Array.isArray(fromOutput.source) ? [...fromOutput.source] : [];
@@ -246,10 +258,40 @@ function extractMarketingToSocialAdvertising(fromCapabilityId, toCapabilityId, f
   };
 }
 
+// ---------------------------------------------------------------------------------
+// 6. Listing -> SEO
+//
+// SEO's product_seo capability reads productTitle/description (see
+// agent/core/seoAgent.js's analyzeProductSeo, both plain optional passthrough
+// fields). Listing's listing_content capability composes exactly these two facts as
+// agent/core/listingContentModel.js's own product_title/description fields - but (
+// verified directly against a real run, not just the model schema) listingAgent.js's
+// generateListingContent() wraps that record in the same generic
+// researchAgentResultModel.js-style envelope every other specialist tool uses, with
+// the real listingContentModel.js record at specialized_records[0] - the exact same
+// array-wrapped shape extractSeoToListing already reads on the reverse flow, not a
+// bare top-level record. A direct relay, no rename needed, the reverse-direction
+// counterpart to extractSeoToListing above.
+// ---------------------------------------------------------------------------------
+
+function extractListingToSeo(fromCapabilityId, _toCapabilityId, fromOutput) {
+  if (fromCapabilityId !== 'listing_content' || !fromOutput) return {};
+
+  const record = Array.isArray(fromOutput.specialized_records) ? fromOutput.specialized_records[0] : null;
+  if (!record) return {};
+
+  const context = {};
+  if (isNonEmptyString(record.product_reference)) context.productReference = record.product_reference;
+  if (isNonEmptyString(record.product_title)) context.productTitle = record.product_title;
+  if (isNonEmptyString(record.description)) context.description = record.description;
+  return context;
+}
+
 const SPECIALIST_PAIR_EXTRACTORS = [
   { from: 'research', to: 'product', extract: extractResearchToProduct },
   { from: 'product', to: 'listing', extract: extractProductToListing },
   { from: 'seo', to: 'listing', extract: extractSeoToListing },
+  { from: 'listing', to: 'seo', extract: extractListingToSeo },
   { from: 'product', to: 'marketing', extract: extractProductToMarketing },
   { from: 'marketing', to: 'social_advertising', extract: extractMarketingToSocialAdvertising },
 ];

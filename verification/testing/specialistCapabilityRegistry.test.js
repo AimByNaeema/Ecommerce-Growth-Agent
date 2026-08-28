@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const {
   PRODUCT_CAPABILITY_IDS,
+  RESEARCH_CAPABILITY_IDS,
   SPECIALIST_CAPABILITY_REGISTRY,
   getSpecialistCapabilityRegistry,
   getSpecialistCapabilityById,
@@ -12,7 +13,7 @@ const {
 const { getSpecialistById } = require('../../agent/core/specialistRegistry');
 const { getToolsByCategory, getToolById } = require('../../tools/toolRegistry');
 const { SPECIALIST_TO_CATEGORIES, checkToolAccess, SPECIALIST_ROLE_PERMISSIONS } = require('../../agent/core/toolPermissions');
-const { RESEARCH_TYPES, RESEARCH_AGENT_RESULT_FIELDS } = require('../../agent/core/researchAgentResultModel');
+const { RESEARCH_AGENT_RESULT_FIELDS } = require('../../agent/core/researchAgentResultModel');
 const { SEO_CAPABILITIES, SEO_AGENT_RESULT_FIELDS } = require('../../agent/core/seoAgentResultModel');
 const { LISTING_CAPABILITIES, LISTING_AGENT_RESULT_FIELDS } = require('../../agent/core/listingAgentResultModel');
 const { MARKETING_CAPABILITIES, MARKETING_AGENT_RESULT_FIELDS } = require('../../agent/core/marketingAgentResultModel');
@@ -25,7 +26,7 @@ const { ANALYTICS_CAPABILITIES, ANALYTICS_AGENT_RESULT_FIELDS } = require('../..
 const EXPECTED_ORDER = ['research', 'product', 'seo', 'listing', 'marketing', 'social_advertising', 'analytics_optimization'];
 
 const CAPABILITY_ENUM_BY_SPECIALIST = {
-  research: RESEARCH_TYPES,
+  research: RESEARCH_CAPABILITY_IDS,
   product: PRODUCT_CAPABILITY_IDS,
   seo: SEO_CAPABILITIES,
   listing: LISTING_CAPABILITIES,
@@ -171,10 +172,14 @@ test('the known Research tool_ids gaps (global_market_research, trend_research, 
   }
 });
 
-test('all 5 Product supported_tasks have tool_ids: [] - no tool wraps productAgent.js today', () => {
+test('all 5 productAgent.js-backed Product supported_tasks have tool_ids: [] - no tool wraps productAgent.js\'s own functions today (market_product_opportunity_analysis is the one exception - a separate workflow, wired to a real tool)', () => {
   const productEntry = getSpecialistCapabilityById('product');
   for (const task of productEntry.supported_tasks) {
-    assert.deepStrictEqual(task.tool_ids, []);
+    if (task.id === 'market_product_opportunity_analysis') {
+      assert.deepStrictEqual(task.tool_ids, ['market_product_opportunity_analysis']);
+    } else {
+      assert.deepStrictEqual(task.tool_ids, []);
+    }
   }
 });
 
