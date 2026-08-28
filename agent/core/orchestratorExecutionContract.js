@@ -1095,6 +1095,51 @@ function aggregatePlanState(plan) {
   return { verification_status: 'unverified', task_status: 'in_progress' };
 }
 
+// Shared by any deliberate, explicitly-sequenced caller of buildPlanStep() (e.g.
+// agent/core/growthWorkflowOrchestrator.js, agent/core/optimizationCycleOrchestrator.js)
+// that needs to build a { type: 'specialist', id, title, text } target directly from
+// agent/core/specialistRegistry.js, without going through free-text routing.
+function buildSpecialistTarget(specialistId) {
+  const specialist = getSpecialistById(specialistId);
+  return {
+    type: 'specialist',
+    id: specialist.id,
+    title: specialist.title,
+    text: `${specialist.id} ${specialist.title} ${specialist.description}`,
+  };
+}
+
+// True when a buildPlanStep()-produced step is paused awaiting a real approval decision
+// (see executeSelectedCapability's 'approval_required' path above).
+function isGatedForApproval(step) {
+  return Array.isArray(step.approvals) && step.approvals.some((approval) => approval.status === 'required');
+}
+
+// Rebuilds a step's execution state after resumeApprovedExecution() has produced a real
+// resumed outcome, reusing the paused step's own already-derived request/current_task/
+// selected_specialist/inputs/required_context (none of those change on resume - only
+// the outcome does). Shared by any caller that pauses a buildPlanStep()-produced step
+// for approval and needs to fold the resumed outcome back into that same step shape
+// once decided.
+function reviseStepAfterResume(pausedStep, resumedOutcome) {
+  const verificationStatus = validateResult(resumedOutcome);
+  return deriveExecutionState({
+    request: pausedStep.request,
+    currentTask: pausedStep.current_task,
+    target: pausedStep.selected_specialist
+      ? { type: pausedStep.selected_specialist.type, id: pausedStep.selected_specialist.id, title: pausedStep.selected_specialist.title }
+      : null,
+    category: pausedStep.inputs ? pausedStep.inputs.category : null,
+    toolId: pausedStep.inputs ? pausedStep.inputs.tool_id : null,
+    capabilityId: pausedStep.inputs ? pausedStep.inputs.capability_id : null,
+    inputContract: pausedStep.inputs ? pausedStep.inputs.input_contract : null,
+    requiredContextIds: pausedStep.required_context,
+    outcome: resumedOutcome,
+    verificationStatus,
+    approvalRequestId: null,
+  });
+}
+
 // Assembles the final structured response around a routing result - state (in-memory
 // only, never persisted, see module header) plus every field the caller needs.
 // tokensUsedThisRun surfaces agent/core/tokenControls.js's running total so token
@@ -1346,6 +1391,9 @@ module.exports = {
   routeClause,
   planRouting,
   buildPlanStep,
+  buildSpecialistTarget,
+  isGatedForApproval,
+  reviseStepAfterResume,
   aggregatePlanState,
   buildRoutingResponse,
   runOrchestratorContract,

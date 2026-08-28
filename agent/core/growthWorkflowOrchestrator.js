@@ -44,14 +44,14 @@
 // usage/usageTracker.js's own header), _resumeState carries the live, in-memory
 // tracker objects directly - in-process resume only, no new persistence layer.
 
-const { getSpecialistById } = require('./specialistRegistry');
 const {
   buildPlanStep,
   resumeApprovedExecution,
   aggregatePlanState,
-  validateResult,
+  buildSpecialistTarget,
+  isGatedForApproval,
+  reviseStepAfterResume,
 } = require('./orchestratorExecutionContract');
-const { deriveExecutionState } = require('./executionState');
 const { gatherGrowthOpportunityDrafts } = require('./crossAgentContext');
 const { createAuditTracker } = require('../../audit/auditTrail');
 const { createUsageLedger, summarizeUsage } = require('../../usage/usageTracker');
@@ -117,19 +117,6 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim() !== '';
 }
 
-// Builds the same { type: 'specialist', id, title, text } shape
-// buildRoutingTargets() builds in orchestratorExecutionContract.js, so this pipeline's
-// stage targets never drift from agent/core/specialistRegistry.js.
-function buildStageTarget(specialistId) {
-  const specialist = getSpecialistById(specialistId);
-  return {
-    type: 'specialist',
-    id: specialist.id,
-    title: specialist.title,
-    text: `${specialist.id} ${specialist.title} ${specialist.description}`,
-  };
-}
-
 // A step's real tool/specialist output, unwrapped from the tools/*.js
 // { status, result, error } convention - null when the step never produced a real
 // result (matches agent/core/crossAgentContext.js's own realOutput helper).
@@ -174,34 +161,6 @@ function withSharedProductReference(researchParams, sharedProductIdentity) {
     return researchParams || {};
   }
   return { ...(researchParams || {}), productReference: sharedProductIdentity };
-}
-
-// Rebuilds a stage's execution state from a resumed outcome, reusing the paused
-// state's own already-derived request/current_task/selected_specialist/inputs/
-// required_context (none of those change on resume - only the outcome does) plus
-// agent/core/executionState.js's own deriveExecutionState()/
-// orchestratorExecutionContract.js's own validateResult() - never reimplemented.
-function reviseExecutionStateAfterResume(pausedStep, resumedOutcome) {
-  const verificationStatus = validateResult(resumedOutcome);
-  return deriveExecutionState({
-    request: pausedStep.request,
-    currentTask: pausedStep.current_task,
-    target: pausedStep.selected_specialist
-      ? { type: pausedStep.selected_specialist.type, id: pausedStep.selected_specialist.id, title: pausedStep.selected_specialist.title }
-      : null,
-    category: pausedStep.inputs ? pausedStep.inputs.category : null,
-    toolId: pausedStep.inputs ? pausedStep.inputs.tool_id : null,
-    capabilityId: pausedStep.inputs ? pausedStep.inputs.capability_id : null,
-    inputContract: pausedStep.inputs ? pausedStep.inputs.input_contract : null,
-    requiredContextIds: pausedStep.required_context,
-    outcome: resumedOutcome,
-    verificationStatus,
-    approvalRequestId: null,
-  });
-}
-
-function isGatedForApproval(step) {
-  return Array.isArray(step.approvals) && step.approvals.some((approval) => approval.status === 'required');
 }
 
 function buildPausedResponse(ctx, pendingApproval, nextStageIndex) {
@@ -268,7 +227,7 @@ function buildStoppedResponse(ctx) {
 async function executeStagesFrom(startIndex, ctx) {
   for (let i = startIndex; i < STAGE_DEFINITIONS.length; i += 1) {
     const stageDef = STAGE_DEFINITIONS[i];
-    const target = buildStageTarget(stageDef.specialistId);
+    const target = buildSpecialistTarget(stageDef.specialistId);
     const explicitParams = ctx.stageInputs[stageDef.key] || null;
 
     let researchParams = explicitParams ? { ...explicitParams } : {};
@@ -376,7 +335,7 @@ async function resumeGrowthWorkflow(decidedApprovalRequest, pausedWorkflowState)
 
   const pausedStageIndex = pausedWorkflowState.nextStageIndex - 1;
   const pausedStep = ctx.plan[pausedStageIndex];
-  ctx.plan[pausedStageIndex] = reviseExecutionStateAfterResume(pausedStep, resumedOutcome);
+  ctx.plan[pausedStageIndex] = reviseStepAfterResume(pausedStep, resumedOutcome);
 
   const resumedStageDef = STAGE_DEFINITIONS[pausedStageIndex];
   if (resumedStageDef && resumedStageDef.key === 'product' && resumedOutcome.status === 'success' && resumedOutcome.data) {
