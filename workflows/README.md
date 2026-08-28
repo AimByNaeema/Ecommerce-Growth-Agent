@@ -8,7 +8,30 @@ the process that turns evidence gathered by
 [`products/productResearchArchitecture.js`](../products/productResearchArchitecture.js)
 into a structured
 [`agent/core/opportunityAnalysisModel.js`](../agent/core/opportunityAnalysisModel.js)
-record. Pipeline only — no automated recommendation, score, or verdict is produced.
+record (`PRODUCT_OPPORTUNITY_ANALYSIS_STAGES`/`getProductOpportunityAnalysisWorkflow()` —
+still the conceptual 8-stage description of the full pipeline). No automated
+recommendation, score, or verdict is produced.
+
+This file also has real, executable composition logic:
+`analyzeProductOpportunityFromMarket()` connects global market intelligence (below) to
+Product Opportunity analysis — **Market -> Category -> Trend -> Product -> Competition
+-> Economics -> Opportunity**. It reuses
+[`agent/core/productAgent.js`](../agent/core/productAgent.js)'s
+`analyzeProductOpportunity()` unmodified for `demand`/`competition`/`market_relevance`/
+`risks`, deriving each dimension's evidence from one `compareGlobalMarkets()` row's
+`category`/`trends`/`demand_signals`/`competition` facets, and its now-exported
+`buildDimension()` for `commercial_potential` ("Economics" — pricing/cost inputs only,
+never a computed margin, built from the row's `pricing` facet). `assessment` is always
+whatever the caller of this function explicitly supplies (default `''`) and
+`confidence` is always whatever the caller explicitly asserts (default `'unassessed'`,
+downgraded back if unsupported) — never invented from evidence, which is how "do not
+present estimates as verified facts" is enforced structurally. `customer_fit`,
+`differentiation`, and `evidence_quality` are outside this pipeline's named scope and
+stay at their honest empty default. The result shape is
+[`agent/core/marketConnectedOpportunityModel.js`](../agent/core/marketConnectedOpportunityModel.js).
+Wired to `tools/toolRegistry.js` as the `market_product_opportunity_analysis` tool
+([`tools/marketProductOpportunityTool.js`](../tools/marketProductOpportunityTool.js))
+and into the orchestrator's `TOOL_EXECUTORS`.
 
 [`keywordResearchWorkflow.js`](keywordResearchWorkflow.js) defines the process that
 turns a product/category

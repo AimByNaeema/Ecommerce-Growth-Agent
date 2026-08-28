@@ -1,7 +1,12 @@
 'use strict';
 
 const assert = require('node:assert');
-const { discoverProducts, validateProduct, analyzeProductOpportunity } = require('../../agent/core/productAgent');
+const {
+  discoverProducts,
+  validateProduct,
+  analyzeProductOpportunity,
+  buildDimension,
+} = require('../../agent/core/productAgent');
 const { validateProductAgentResultShape } = require('../../agent/core/productAgentResultModel');
 const { validateProductRecordShape } = require('../../agent/core/productModel');
 const { validateOpportunityAnalysisShape } = require('../../agent/core/opportunityAnalysisModel');
@@ -277,6 +282,61 @@ test('no field anywhere in the result is a computed number, except opportunity_s
   assertNoNumericField(rest, 'result');
   assert.strictEqual(typeof opportunity_scoring.dimensions_total, 'number');
   assert.strictEqual(typeof opportunity_scoring.dimensions_evidence_backed, 'number');
+});
+
+// --- buildDimension (exported, reused by workflows/productOpportunityAnalysisWorkflow.js
+//     for commercial_potential / "Economics" - never one of analyzeProductOpportunity's
+//     own 4 assessed dimensions) --------------------------------------------------------
+
+test('buildDimension builds a real, evidence-backed commercial_potential dimension', () => {
+  const built = buildDimension(
+    {
+      commercialPotentialAssessment: 'Placeholder assessment.',
+      commercialPotentialEvidence: [{ topic: 'Pricing', finding: 'Priced above competitors.', source: ['s1'] }],
+      commercialPotentialConfidence: 'medium',
+    },
+    'commercial_potential',
+    'test'
+  );
+  assert.strictEqual(built.dimension.assessment, 'Placeholder assessment.');
+  assert.deepStrictEqual(built.dimension.evidence, ['Priced above competitors.', 's1']);
+  assert.strictEqual(built.dimension.confidence, 'medium');
+  assert.strictEqual(built.limitation, null);
+});
+
+test('buildDimension downgrades commercial_potential confidence to unassessed when asserted without evidence', () => {
+  const built = buildDimension(
+    { commercialPotentialAssessment: 'Looks strong.', commercialPotentialConfidence: 'high' },
+    'commercial_potential',
+    'test'
+  );
+  assert.strictEqual(built.dimension.confidence, 'unassessed');
+  assert.ok(built.limitation.includes('Commercial potential confidence was downgraded to unassessed'));
+});
+
+test('buildDimension reports commercial_potential honestly empty when nothing is supplied', () => {
+  const built = buildDimension({}, 'commercial_potential', 'test');
+  assert.deepStrictEqual(built.dimension, { assessment: '', evidence: [], confidence: 'unassessed' });
+  assert.ok(built.limitation.includes('Commercial potential has no evidence-backed assessment'));
+});
+
+test('adding commercial_potential to DIMENSION_LABELS/DIMENSION_PARAM_KEYS does not change analyzeProductOpportunity\'s existing 4-dimension behavior (regression check)', () => {
+  const entry = { topic: 'x', finding: 'y', source: ['s1'] };
+  const result = analyzeProductOpportunity({
+    productIdentity: 'A',
+    demandEvidence: [entry],
+    demandConfidence: 'medium',
+    competitionEvidence: [entry],
+    competitionConfidence: 'medium',
+    marketFitEvidence: [entry],
+    marketFitConfidence: 'medium',
+    productRiskEvidence: [entry],
+    productRiskConfidence: 'medium',
+  });
+  assert.strictEqual(result.opportunity_scoring.dimensions_total, 4);
+  assert.strictEqual(result.opportunity_scoring.status, 'success');
+  assert.ok(!('commercial_potential' in result));
+  assert.strictEqual(result.specialized_records.opportunity_analysis.commercial_potential.confidence, 'unassessed');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

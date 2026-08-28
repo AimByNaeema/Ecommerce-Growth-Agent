@@ -16,6 +16,7 @@ const EXPECTED_ORDER = [
   'business_configuration_retrieval',
   'product_data_retrieval',
   'collection_data_retrieval',
+  'market_product_opportunity_analysis',
   'product_research',
   'market_research',
   'customer_research',
@@ -43,6 +44,7 @@ const IMPLEMENTED_IDS = [
   'business_configuration_retrieval',
   'product_data_retrieval',
   'collection_data_retrieval',
+  'market_product_opportunity_analysis',
   'market_research',
   'customer_research',
   'global_market_opportunity_analysis',
@@ -78,7 +80,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 24 required tools, in the requested order', () => {
+test('the registry has exactly the 25 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER
@@ -138,7 +140,7 @@ test('every entry except the implemented set is not_implemented - do not impleme
   }
 });
 
-test('business_configuration_retrieval, product_data_retrieval, collection_data_retrieval, market_research, customer_research, global_market_opportunity_analysis, competitor_research, keyword_research, seo_analysis, listing_content_generation, marketing_analysis, social_content_planning, paid_advertising_planning, social_media_strategy_generation, platform_content_generation, content_calendar_generation, advertising_strategy_planning, advertising_performance_analysis, analytics, analytics_data_retrieval, and ai_reasoning_completion are implemented', () => {
+test('business_configuration_retrieval, product_data_retrieval, collection_data_retrieval, market_product_opportunity_analysis, market_research, customer_research, global_market_opportunity_analysis, competitor_research, keyword_research, seo_analysis, listing_content_generation, marketing_analysis, social_content_planning, paid_advertising_planning, social_media_strategy_generation, platform_content_generation, content_calendar_generation, advertising_strategy_planning, advertising_performance_analysis, analytics, analytics_data_retrieval, and ai_reasoning_completion are implemented', () => {
   for (const id of IMPLEMENTED_IDS) {
     assert.strictEqual(getToolById(id).status, 'implemented', `${id} should be implemented`);
   }

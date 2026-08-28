@@ -7,23 +7,24 @@
 // agent/core/toolPermissions.js), so tools are not called *from here*.
 // business_configuration_retrieval, ai_reasoning_completion, market_research,
 // customer_research, global_market_opportunity_analysis, competitor_research,
-// product_data_retrieval, collection_data_retrieval, keyword_research, seo_analysis,
-// listing_content_generation, marketing_analysis, social_content_planning,
-// paid_advertising_planning, social_media_strategy_generation,
+// product_data_retrieval, collection_data_retrieval, market_product_opportunity_analysis,
+// keyword_research, seo_analysis, listing_content_generation, marketing_analysis,
+// social_content_planning, paid_advertising_planning, social_media_strategy_generation,
 // platform_content_generation, content_calendar_generation,
 // advertising_strategy_planning, advertising_performance_analysis, analytics, and
-// analytics_data_retrieval are the twenty-one entries actually implemented (see
+// analytics_data_retrieval are the twenty-two entries actually implemented (see
 // tools/businessConfigurationRetrieval.js, tools/aiReasoningCompletion.js,
 // tools/marketResearchTool.js, tools/customerResearchTool.js,
 // tools/globalMarketOpportunityTool.js, tools/competitorResearchTool.js,
 // tools/productDataRetrievalTool.js, tools/collectionDataRetrievalTool.js,
-// tools/keywordResearchTool.js, tools/seoAnalysisTool.js, tools/listingContentTool.js,
-// tools/marketingAnalysisTool.js, tools/socialContentTool.js,
-// tools/paidAdvertisingTool.js, tools/socialMediaStrategyTool.js,
-// tools/platformContentTool.js, tools/contentCalendarTool.js,
-// tools/advertisingStrategyTool.js, tools/advertisingPerformanceTool.js,
-// tools/analyticsTool.js, and tools/analyticsDataTool.js) - the other 3 tools
-// (product_research, memory_retrieval, verification) remain 'not_implemented'.
+// tools/marketProductOpportunityTool.js, tools/keywordResearchTool.js,
+// tools/seoAnalysisTool.js, tools/listingContentTool.js, tools/marketingAnalysisTool.js,
+// tools/socialContentTool.js, tools/paidAdvertisingTool.js,
+// tools/socialMediaStrategyTool.js, tools/platformContentTool.js,
+// tools/contentCalendarTool.js, tools/advertisingStrategyTool.js,
+// tools/advertisingPerformanceTool.js, tools/analyticsTool.js, and
+// tools/analyticsDataTool.js) - the other 3 tools (product_research, memory_retrieval,
+// verification) remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -90,6 +91,15 @@ const TOOL_REGISTRY = [
     title: 'Collection data retrieval',
     description:
       "Retrieve read-only, store-wide collection data (title, handle, description, image, product count) from the connected Shopify store via integrations/adapters/shopifyClient.js's getCollections() - see tools/collectionDataRetrievalTool.js. No writes.",
+    category: 'products',
+    operation: 'read',
+    status: 'implemented',
+  },
+  {
+    id: 'market_product_opportunity_analysis',
+    title: 'Market-connected product opportunity analysis',
+    description:
+      "Connect one global market intelligence row (global_market_opportunity_analysis) to one product candidate: Market -> Category -> Trend -> Product -> Competition -> Economics -> Opportunity, producing a real agent/core/opportunityAnalysisModel.js record via workflows/productOpportunityAnalysisWorkflow.js's analyzeProductOpportunityFromMarket() - see tools/marketProductOpportunityTool.js. Economics is pricing/cost inputs only, never a computed margin; assessment/confidence are never invented - an estimate is never presented as a verified fact.",
     category: 'products',
     operation: 'read',
     status: 'implemented',

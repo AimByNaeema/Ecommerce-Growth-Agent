@@ -74,6 +74,21 @@ test('ALLOWED: an implemented, auto-approved tool requested by its rightful owne
   assert.strictEqual(result.classification, 'analysis_only');
 });
 
+test('ALLOWED: the Product specialist can reach market_product_opportunity_analysis (products/read, real registry entry)', () => {
+  const result = checkToolAccess({ specialistId: 'product', toolId: 'market_product_opportunity_analysis' });
+  assert.strictEqual(result.decision, 'allowed');
+  assert.strictEqual(result.available, true);
+  assert.strictEqual(result.permitted, true);
+  assert.strictEqual(result.approval_required, false);
+  assert.strictEqual(result.classification, 'analysis_only');
+});
+
+test('DENIED: a specialist outside the products category cannot reach market_product_opportunity_analysis', () => {
+  const result = checkToolAccess({ specialistId: 'research', toolId: 'market_product_opportunity_analysis' });
+  assert.strictEqual(result.decision, 'denied');
+  assert.strictEqual(result.permitted, false);
+});
+
 test('DENIED: a specialist that does not own the tool\'s category is refused, even though the tool is implemented', () => {
   const result = checkToolAccess({ specialistId: 'marketing', toolId: 'business_configuration_retrieval' });
   assert.strictEqual(result.decision, 'denied');

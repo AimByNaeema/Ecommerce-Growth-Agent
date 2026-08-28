@@ -519,3 +519,28 @@ for the first time — wired into `agent/core/orchestratorExecutionContract.js`'
 deliberately left unwired. Its `deriveStatus()` grades `success`/`partial`/`empty`
 per-row-per-facet rather than per flat record, the same three-tier honesty convention
 as every other research tool, adapted to a multi-facet-per-row result.
+
+Global market intelligence is now connected to Product Opportunity analysis:
+[`workflows/productOpportunityAnalysisWorkflow.js`](workflows/productOpportunityAnalysisWorkflow.js)
+gained real, executable composition logic — `analyzeProductOpportunityFromMarket()` —
+implementing Market → Category → Trend → Product → Competition → Economics →
+Opportunity. It reuses `agent/core/productAgent.js`'s `analyzeProductOpportunity()`
+unmodified for `demand`/`competition`/`market_relevance`/`risks`, deriving each
+dimension's evidence from one `compareGlobalMarkets()` market row's `category`/
+`trends`/`demand_signals`/`competition` facets, and reuses that module's now-exported
+`buildDimension()` to build `commercial_potential` — "Economics" — from the row's
+`pricing` facet (pricing/cost inputs only, never a computed margin). `assessment` and
+`confidence` are never synthesized by this connection: both stay whatever the caller
+explicitly supplies (honest empty/`unassessed` defaults otherwise) — structurally
+enforcing "do not present estimates as verified facts" rather than relying on
+convention alone. `customer_fit`, `differentiation`, and `evidence_quality` stay
+outside this pipeline's named scope, honestly untouched. The result shape is a new,
+small envelope model,
+[`agent/core/marketConnectedOpportunityModel.js`](agent/core/marketConnectedOpportunityModel.js),
+wrapping a real `agent/core/opportunityAnalysisModel.js` record plus market
+traceability. A twenty-third tool,
+[`tools/marketProductOpportunityTool.js`](tools/marketProductOpportunityTool.js) (the
+`market_product_opportunity_analysis` tool id, `products` category, classified
+`analysis_only`), makes it Chief-reachable, wired into
+`agent/core/orchestratorExecutionContract.js`'s `TOOL_EXECUTORS` alongside every other
+research/product tool.

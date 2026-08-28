@@ -86,6 +86,7 @@ const TOOL_CLASSIFICATIONS = {
   global_market_opportunity_analysis: 'analysis_only',
   product_data_retrieval: 'analysis_only',
   collection_data_retrieval: 'analysis_only',
+  market_product_opportunity_analysis: 'analysis_only',
   keyword_research: 'analysis_only',
   seo_analysis: 'analysis_only',
   listing_content_generation: 'analysis_only',

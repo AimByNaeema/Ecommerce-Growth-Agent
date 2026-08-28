@@ -702,6 +702,33 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.strictEqual(outcome.data.result.comparison[0].category.value, 'outdoor apparel');
   });
 
+  await testAsync('executeSelectedCapability: TOOL_EXECUTORS.market_product_opportunity_analysis is reachable via the real Chief dispatch path and executes for real', async () => {
+    const { compareGlobalMarkets } = require('../../workflows/globalEcommerceMarketResearchWorkflow');
+    const marketRow = compareGlobalMarkets({
+      markets: [
+        {
+          market: 'European Union',
+          category: 'outdoor apparel',
+          demandSignals: ['signal A'],
+          evidence: ['market-evidence-1'],
+          products: [{ productIdentity: 'Jacket', source: ['prod-source-1'] }],
+        },
+      ],
+    }).comparison[0];
+
+    const executionRequest = {
+      objective: 'evaluate a product opportunity against market intelligence',
+      category: 'products',
+      tool_id: 'market_product_opportunity_analysis',
+      specialist_id: 'product',
+      research_params: { marketRow, productIdentity: 'Jacket', demandConfidence: 'medium' },
+    };
+    const outcome = await executeSelectedCapability(executionRequest);
+    assert.strictEqual(outcome.status, 'success');
+    assert.strictEqual(outcome.data.result.product_identity, 'Jacket');
+    assert.strictEqual(outcome.data.result.market, 'European Union');
+  });
+
   // --- Operational approval flow: pending -> approved/rejected -> resumed --------
   //
   // No tool in today's real registry is both implemented and approval_required (every

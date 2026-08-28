@@ -31,9 +31,10 @@ ever executed here.
 
 [`agent/core/productAgent.js`](../agent/core/productAgent.js) is the Product Agent
 (CLAUDE.md section 2, specialist #2) - the first real, executable logic for this
-domain (`productResearchArchitecture.js` and
+domain (`productResearchArchitecture.js` remains a conceptual stage-list only;
 [`workflows/productOpportunityAnalysisWorkflow.js`](../workflows/productOpportunityAnalysisWorkflow.js)
-remain conceptual stage-lists only). It supports 8 capabilities: product discovery,
+now has real composition logic too - see "Market-connected product opportunity
+analysis" below). It supports 8 capabilities: product discovery,
 product validation, demand analysis, competition analysis, market fit, product risk,
 profitability inputs, and opportunity scoring. Deterministic only - no AI call, no
 external fetch; callers supply already-structured evidence.
@@ -69,6 +70,34 @@ which fetches read-only data via
 [`integrations/adapters/shopifyClient.js`](../integrations/adapters/shopifyClient.js)'s
 `getProducts()` and reshapes it into the plain entry shape `discoverProducts()`
 already expects - see that file and [`tools/README.md`](../tools/README.md).
+
+## Market-connected product opportunity analysis
+
+[`workflows/productOpportunityAnalysisWorkflow.js`](../workflows/productOpportunityAnalysisWorkflow.js)'s
+`analyzeProductOpportunityFromMarket()` connects global market intelligence
+([`workflows/globalEcommerceMarketResearchWorkflow.js`](../workflows/globalEcommerceMarketResearchWorkflow.js)'s
+`compareGlobalMarkets()`, wired as the `global_market_opportunity_analysis` tool) to
+Product Opportunity analysis: **Market -> Category -> Trend -> Product -> Competition
+-> Economics -> Opportunity**. It reuses `agent/core/productAgent.js`'s
+`analyzeProductOpportunity()` unmodified for `demand`/`competition`/`market_relevance`/
+`risks`, deriving those dimensions' evidence from one market-intelligence row's
+`category`, `trends`/`demand_signals`, and `competition` facets - never inventing an
+`assessment` or `confidence`, only supplying real, already caller-supplied evidence.
+
+**Economics** is the one genuinely new connection: it maps onto
+`opportunityAnalysisModel.js`'s previously-untouched `commercial_potential`
+dimension, built via `productAgent.js`'s now-exported `buildDimension()` (same
+honesty guard, no duplicated logic) from the market row's `pricing` facet (competitor
+pricing evidence). Same "inputs only" rule as `profitability_inputs` and
+`productOpportunityScoringEngine.js`'s `margin_inputs` below - no margin or
+profitability figure is ever computed. `customer_fit`, `differentiation`, and
+`evidence_quality` are outside this pipeline's named scope and stay at their honest
+empty default.
+
+Wired to `tools/toolRegistry.js` as `market_product_opportunity_analysis` (category
+`products`, same specialist ownership as `product_data_retrieval`) and into the
+orchestrator's `TOOL_EXECUTORS` - see
+[`tools/marketProductOpportunityTool.js`](../tools/marketProductOpportunityTool.js).
 
 ## Product Opportunity scoring engine
 

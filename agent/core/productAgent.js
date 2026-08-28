@@ -32,6 +32,15 @@
 // differentiation, commercial_potential, evidence_quality - untouched, since this
 // prompt doesn't ask for them).
 //
+// buildDimension (exported) is reused directly by
+// workflows/productOpportunityAnalysisWorkflow.js to build commercial_potential (its
+// "Economics" pipeline stage) from market-intelligence-derived evidence - same
+// {assessment, evidence, confidence} shape and honesty guard, no duplicated logic.
+// commercial_potential is deliberately NOT one of analyzeProductOpportunity's own 4
+// assessed dimensions (DIMENSION_RESULT_IDS, from productAgentResultModel.js, is
+// unchanged) - only DIMENSION_LABELS/DIMENSION_PARAM_KEYS gained an entry for it, so
+// analyzeProductOpportunity's existing behavior is unaffected.
+//
 // Product discovery here reuses agent/core/productModel.js exactly the way
 // agent/core/researchAgent.js reuses its own specialized schemas: build + validate,
 // never invent a candidate that wasn't supplied. Not wired to
@@ -153,6 +162,12 @@ const DIMENSION_LABELS = {
   competition: 'Competition',
   market_fit: 'Market fit',
   product_risk: 'Product risk',
+  // Not one of analyzeProductOpportunity's own 4 assessed dimensions (see
+  // DIMENSION_RESULT_IDS above) - added so buildDimension can be reused, unmodified,
+  // by workflows/productOpportunityAnalysisWorkflow.js to build
+  // agent/core/opportunityAnalysisModel.js's existing commercial_potential dimension
+  // (the "Economics" stage - inputs only, never a computed margin).
+  commercial_potential: 'Commercial potential',
 };
 
 const DIMENSION_PARAM_KEYS = {
@@ -160,6 +175,11 @@ const DIMENSION_PARAM_KEYS = {
   competition: { assessment: 'competitionAssessment', evidence: 'competitionEvidence', confidence: 'competitionConfidence' },
   market_fit: { assessment: 'marketFitAssessment', evidence: 'marketFitEvidence', confidence: 'marketFitConfidence' },
   product_risk: { assessment: 'productRiskAssessment', evidence: 'productRiskEvidence', confidence: 'productRiskConfidence' },
+  commercial_potential: {
+    assessment: 'commercialPotentialAssessment',
+    evidence: 'commercialPotentialEvidence',
+    confidence: 'commercialPotentialConfidence',
+  },
 };
 
 function buildDimension(params, resultId, fnName) {
@@ -311,6 +331,7 @@ module.exports = {
   discoverProducts,
   validateProduct,
   analyzeProductOpportunity,
+  buildDimension,
 };
 
 if (require.main === module) {

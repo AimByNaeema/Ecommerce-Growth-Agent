@@ -63,6 +63,19 @@ thin, read-only wrapper pattern around `getCollections()` — a store-wide colle
 catalog (title, handle, description, image, product count) independent of any one
 product. No downstream agent mapping exists for it yet.
 
+[`marketProductOpportunityTool.js`](marketProductOpportunityTool.js) is the same thin
+wrapper pattern around
+[`workflows/productOpportunityAnalysisWorkflow.js`](../workflows/productOpportunityAnalysisWorkflow.js)'s
+`analyzeProductOpportunityFromMarket()` — connects one global market intelligence row
+(from `global_market_opportunity_analysis`) to one product candidate: Market →
+Category → Trend → Product → Competition → Economics → Opportunity, producing a real
+`agent/core/opportunityAnalysisModel.js` record. `status` is graded on the same
+"evidence-backed" definition `agent/core/productAgent.js`'s `opportunity_scoring`
+already uses (`confidence !== 'unassessed' && evidence.length > 0`) across the 4
+in-scope dimensions (`demand`, `competition`, `market_relevance`,
+`commercial_potential`) — deliberately conservative, since confidence is never
+inferred from evidence alone.
+
 Every `toolRegistry.js` entry now also carries an `operation` field —
 `'read' | 'write' | 'execute'` — describing what kind of action the tool performs,
 independent of its `category` (which domain owns it) and independent of
