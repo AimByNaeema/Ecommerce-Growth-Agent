@@ -61,6 +61,7 @@ const {
   deriveAllToAnalyticsContext,
   gatherGrowthOpportunityDrafts,
   mergeContext,
+  dedupeArray,
 } = require('./crossAgentContext');
 const { getContextBoundaries } = require('./contextBoundaries');
 const { createEmptyState } = require('./stateModel');
@@ -73,6 +74,8 @@ const {
 } = require('./toolPermissions');
 const { createApprovalRequest } = require('../../approvals/approvalWorkflow');
 const { createAuditTracker, appendAuditEvent } = require('../../audit/auditTrail');
+const { createToolResultCache, getCachedResult, setCachedResult } = require('./toolResultCache');
+const { checkArrayFieldBounds, checkPlanStepBounds } = require('./executionBounds');
 const businessConfigurationRetrieval = require('../../tools/businessConfigurationRetrieval');
 const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
@@ -265,12 +268,28 @@ function gatherMinimumContext(executionRequest) {
   return boundaries.filter((boundary) => relevantIds.includes(boundary.id));
 }
 
+// Tools whose result is never safe to cache/reuse from an earlier identical call in
+// this same run. ai_reasoning_completion is the one non-deterministic tool in
+// TOOL_EXECUTORS (a real Claude call) - its output is not a pure function of its
+// input the way every other tool's is, even though it could technically be keyed by
+// the objective text it receives. An explicit exclusion here is more honest and
+// auditable than relying on incidental key uniqueness.
+const NEVER_CACHED_TOOL_IDS = new Set(['ai_reasoning_completion']);
+
 // Shared executor-invocation tail for both executeSelectedCapability (first attempt)
 // and resumeApprovedExecution (post-approval retry) - the only two places TOOL_EXECUTORS
 // is ever read, so a tool call always looks the same regardless of which path reached
 // it. Never fabricates a result: a missing executor or a thrown error both become an
 // explicit, honest 'error' outcome.
-async function runExecutor(toolId, executionRequest, runTokenTracker, classification, runAuditTracker = null) {
+//
+// runToolResultCache (see agent/core/toolResultCache.js), when supplied, memoizes an
+// identical (same toolId + same research_params) prior successful call within this
+// same run - "reduce repeated tool results". A cache hit appends one lightweight
+// audit event instead of the usual 4-event burst below, and returns the cached
+// outcome without re-invoking the executor. Error outcomes are never cached (a
+// failure may legitimately succeed on retry if caused by something outside the pure
+// params, e.g. missing env config fixed mid-run).
+async function runExecutor(toolId, executionRequest, runTokenTracker, classification, runAuditTracker = null, runToolResultCache = null) {
   const executor = TOOL_EXECUTORS[toolId];
   if (!executor) {
     appendAuditEvent(runAuditTracker, {
@@ -290,6 +309,24 @@ async function runExecutor(toolId, executionRequest, runTokenTracker, classifica
   }
 
   const specialistId = executionRequest ? executionRequest.specialist_id : null;
+  const researchParams = executionRequest ? executionRequest.research_params : null;
+  const cacheEligible = runToolResultCache && !NEVER_CACHED_TOOL_IDS.has(toolId);
+
+  if (cacheEligible) {
+    const cached = getCachedResult(runToolResultCache, toolId, researchParams);
+    if (cached !== undefined) {
+      appendAuditEvent(runAuditTracker, {
+        type: 'result',
+        toolId,
+        specialistId,
+        classification,
+        status: 'cache_hit',
+        summary: `Tool '${toolId}' result reused from this run's cache (identical prior call).`,
+      });
+      return cached;
+    }
+  }
+
   appendAuditEvent(runAuditTracker, {
     type: 'tools',
     toolId,
@@ -331,6 +368,9 @@ async function runExecutor(toolId, executionRequest, runTokenTracker, classifica
         summary: `Tool '${toolId}' produced a recommendation-classified result.`,
       });
     }
+    if (cacheEligible) {
+      setCachedResult(runToolResultCache, toolId, researchParams, { status: 'success', data, error: null, classification });
+    }
     return { status: 'success', data, error: null, classification };
   } catch (err) {
     appendAuditEvent(runAuditTracker, {
@@ -361,7 +401,8 @@ async function executeSelectedCapability(
   executionRequest,
   runTokenTracker = { tokensUsedThisRun: 0 },
   runApprovalTracker = { requests: [] },
-  runAuditTracker = null
+  runAuditTracker = null,
+  runToolResultCache = null
 ) {
   const access = checkToolAccess({
     specialistId: executionRequest.specialist_id,
@@ -429,7 +470,25 @@ async function executeSelectedCapability(
     };
   }
 
-  return runExecutor(access.tool_id, executionRequest, runTokenTracker, access.classification, runAuditTracker);
+  // BOUNDED RESEARCH CALLS (agent/core/executionBounds.js): checked only once
+  // checkToolAccess has already said 'allowed' - no point validating input shape for
+  // a tool that's denied/unavailable anyway. Refuses (never silently truncates) a
+  // research_params array field over the configured max, so one call can never do
+  // unbounded internal work (e.g. a keywords[] array of unbounded length).
+  const boundsCheck = checkArrayFieldBounds(executionRequest.research_params);
+  if (!boundsCheck.allowed) {
+    appendAuditEvent(runAuditTracker, {
+      type: 'error',
+      toolId: access.tool_id,
+      specialistId: executionRequest.specialist_id,
+      classification: access.classification,
+      status: 'error',
+      summary: boundsCheck.reason,
+    });
+    return { status: 'error', data: null, error: boundsCheck.reason, classification: access.classification };
+  }
+
+  return runExecutor(access.tool_id, executionRequest, runTokenTracker, access.classification, runAuditTracker, runToolResultCache);
 }
 
 // Resumes a previously gated action after a real human decision has been recorded via
@@ -443,7 +502,8 @@ async function executeSelectedCapability(
 async function resumeApprovedExecution(
   decidedApprovalRequest,
   runTokenTracker = { tokensUsedThisRun: 0 },
-  runAuditTracker = null
+  runAuditTracker = null,
+  runToolResultCache = null
 ) {
   if (!decidedApprovalRequest || typeof decidedApprovalRequest !== 'object') {
     return {
@@ -508,7 +568,8 @@ async function resumeApprovedExecution(
     decidedApprovalRequest.execution_request,
     runTokenTracker,
     access.classification,
-    runAuditTracker
+    runAuditTracker,
+    runToolResultCache
   );
 }
 
@@ -774,7 +835,8 @@ async function buildPlanStep(
   researchParams = null,
   priorSteps = [],
   runApprovalTracker = { requests: [] },
-  runAuditTracker = null
+  runAuditTracker = null,
+  runToolResultCache = null
 ) {
   const capabilityEntry = target.type === 'specialist' ? getSpecialistCapabilityById(target.id) : null;
   appendAuditEvent(runAuditTracker, {
@@ -878,7 +940,13 @@ async function buildPlanStep(
       { category: matchedCategory, tool: toolMatch },
       effectiveResearchParams
     );
-    outcome = await executeSelectedCapability(executionRequest, runTokenTracker, runApprovalTracker, runAuditTracker);
+    outcome = await executeSelectedCapability(
+      executionRequest,
+      runTokenTracker,
+      runApprovalTracker,
+      runAuditTracker,
+      runToolResultCache
+    );
   }
 
   // Only ai_reasoning_completion's structured output carries tokensUsed - every other
@@ -949,7 +1017,10 @@ function buildRoutingResponse({
     ? verificationStatus
     : 'unverified';
   if (routing.plan) {
-    const errors = routing.plan.flatMap((step) => step.errors || []);
+    // dedupeArray (reused from crossAgentContext.js, not reimplemented) prevents two
+    // steps failing for the identical reason from producing duplicate failed_work
+    // entries - "reduce duplicate context" applied to the response's own state.
+    const errors = dedupeArray(routing.plan.flatMap((step) => step.errors || []));
     if (errors.length > 0) {
       state.failed_work = errors;
     }
@@ -1039,6 +1110,31 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
     });
   }
 
+  // BOUNDED AGENT ITERATIONS (agent/core/executionBounds.js): checked before any
+  // step executes - a plan that routed to too many targets fails fast and honestly,
+  // exactly like the unmatched/ambiguous clarification cases above, rather than
+  // silently executing only the first N steps and dropping the rest.
+  const planStepBounds = checkPlanStepBounds(routingResult.targets.length);
+  if (!planStepBounds.allowed) {
+    appendAuditEvent(runAuditTracker, {
+      type: 'error',
+      status: 'error',
+      summary: planStepBounds.reason,
+    });
+    return buildRoutingResponse({
+      objective,
+      routing: {
+        status: 'clarification_required',
+        clarification_type: 'plan_too_large',
+        reason: planStepBounds.reason,
+        candidates: null,
+        unmatched_segment: null,
+        plan: null,
+      },
+      auditTrail: runAuditTracker.events,
+    });
+  }
+
   // One tracker per run, threaded through every plan step - see buildPlanStep and
   // executeSelectedCapability above. This is what lets agent/core/tokenControls.js
   // enforce a budget across the whole run, not just per call.
@@ -1048,6 +1144,12 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
   // approvals/approvalWorkflow.js's own header on why this project never holds hidden
   // state). Every approval_required outcome anywhere in this plan appends to it.
   const runApprovalTracker = { requests: [] };
+  // One tool-result cache per run, same caller-held-state pattern as the trackers
+  // above (see agent/core/toolResultCache.js) - an identical tool call anywhere later
+  // in this same plan reuses its first result instead of re-executing and
+  // re-embedding it ("reduce repeated tool results", "reduce repeated business
+  // information").
+  const runToolResultCache = createToolResultCache();
 
   const plan = [];
   for (let i = 0; i < routingResult.targets.length; i += 1) {
@@ -1063,7 +1165,8 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
         researchParams,
         plan,
         runApprovalTracker,
-        runAuditTracker
+        runAuditTracker,
+        runToolResultCache
       )
     );
   }
@@ -1102,6 +1205,7 @@ module.exports = {
   createExecutionRequest,
   selectSpecialist,
   gatherMinimumContext,
+  runExecutor,
   executeSelectedCapability,
   resumeApprovedExecution,
   validateResult,

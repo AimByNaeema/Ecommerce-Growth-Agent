@@ -27,6 +27,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { RetryableError, retryAsync } = require('../../agent/core/networkRetry');
 
 // Default Admin API version, overridable via SHOPIFY_API_VERSION in .env - no code
 // change needed to move to a newer quarterly release. Current stable version as of
@@ -76,6 +77,15 @@ function buildGraphqlUrl(domain, apiVersion) {
 // getInventoryLevels below, each of which only supplies its own query and reshapes its
 // own response). Never returns fabricated data - only the raw parsed response and the
 // resolved API version, for the caller to pull its own fields from.
+//
+// CONTROLLED RETRIES (agent/core/networkRetry.js): only a thrown fetch() failure
+// (network unreachable) or an HTTP 429/5xx response is retried, bounded and with
+// backoff - never silently forever (agent/core/toolSelectionRules.js's
+// handle_tool_failures rule). A 4xx response or a GraphQL-level error (raw.errors on
+// an otherwise-ok HTTP status) is a query/permission/config problem that will
+// deterministically fail again, so it is thrown as a plain (non-retryable) Error
+// instead - retrying it would only waste calls. The "not configured" check happens
+// before retryAsync() is ever entered, so it never triggers a retry either.
 async function runAdminGraphqlQuery(query, fnName) {
   loadEnvOnce();
 
@@ -92,32 +102,38 @@ async function runAdminGraphqlQuery(query, fnName) {
   const apiVersion = (process.env.SHOPIFY_API_VERSION && process.env.SHOPIFY_API_VERSION.trim()) || DEFAULT_API_VERSION;
   const url = buildGraphqlUrl(domain, apiVersion);
 
-  let response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'X-Shopify-Access-Token': accessToken,
-      },
-      body: JSON.stringify({ query }),
-    });
-  } catch (err) {
-    throw new Error(`Could not reach the Shopify Admin API: ${err.message}`);
-  }
+  return retryAsync(async () => {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Shopify-Access-Token': accessToken,
+        },
+        body: JSON.stringify({ query }),
+      });
+    } catch (err) {
+      throw new RetryableError(`Could not reach the Shopify Admin API: ${err.message}`);
+    }
 
-  const raw = await response.json().catch(() => null);
+    const raw = await response.json().catch(() => null);
 
-  if (!response.ok) {
-    const apiMessage = raw && raw.errors ? JSON.stringify(raw.errors) : response.statusText;
-    throw new Error(`Shopify Admin API request failed (${response.status}): ${apiMessage}`);
-  }
+    if (!response.ok) {
+      const apiMessage = raw && raw.errors ? JSON.stringify(raw.errors) : response.statusText;
+      const message = `Shopify Admin API request failed (${response.status}): ${apiMessage}`;
+      if (response.status === 429 || response.status >= 500) {
+        throw new RetryableError(message);
+      }
+      throw new Error(message);
+    }
 
-  if (raw && Array.isArray(raw.errors) && raw.errors.length > 0) {
-    throw new Error(`Shopify Admin API returned GraphQL errors: ${JSON.stringify(raw.errors)}`);
-  }
+    if (raw && Array.isArray(raw.errors) && raw.errors.length > 0) {
+      throw new Error(`Shopify Admin API returned GraphQL errors: ${JSON.stringify(raw.errors)}`);
+    }
 
-  return { raw, apiVersion };
+    return { raw, apiVersion };
+  });
 }
 
 // Runs a minimal GraphQL query against the store's Admin API and returns the shop's

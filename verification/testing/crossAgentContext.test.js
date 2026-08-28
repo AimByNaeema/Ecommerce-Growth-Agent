@@ -9,6 +9,7 @@ const {
   filterToDeclaredFields,
   dedupeArray,
 } = require('../../agent/core/crossAgentContext');
+const { getCapabilityTask } = require('../../agent/core/specialistCapabilityRegistry');
 
 let passed = 0;
 let failed = 0;
@@ -579,6 +580,21 @@ test('gatherGrowthOpportunityDrafts flags reason/requiredAction as missing when 
 test('gatherGrowthOpportunityDrafts returns [] when no step produced a growth-opportunity-shaped record', () => {
   const priorStep = step({ specialistId: 'seo', capabilityId: 'product_seo', result: { specialized_records: [{ subject_type: 'product' }] } });
   assert.deepStrictEqual(gatherGrowthOpportunityDrafts([priorStep]), []);
+});
+
+// filterToDeclaredFields against a real, newly-completed registry entry (see
+// agent/core/specialistCapabilityRegistry.js's Part A registry-completion pass) -
+// proves the existing filtering mechanism honors a task's `optional` list the
+// moment it's declared, not just that the list itself looks right in isolation.
+test('filterToDeclaredFields keeps a field declared in keyword_research\'s (now-populated) optional list and drops an undeclared one', () => {
+  const inputContract = getCapabilityTask('seo', 'keyword_research').input_contract;
+  assert.ok(inputContract.optional.includes('market'), 'keyword_research should now declare `market` as optional');
+
+  const context = { market: 'European Union', unrelatedField: 'should not survive' };
+  const filtered = filterToDeclaredFields(context, inputContract);
+
+  assert.strictEqual(filtered.market, 'European Union');
+  assert.ok(!('unrelatedField' in filtered));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

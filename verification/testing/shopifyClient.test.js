@@ -43,6 +43,19 @@ function withMockedFetch(mockImpl, fn) {
     });
 }
 
+// Zeroes retry backoff for every retry-scenario test below (agent/core/networkRetry.js)
+// so they exercise attempt COUNT/gating, not real wall-clock delay.
+function withZeroRetryDelay(fn) {
+  const saved = process.env.NETWORK_RETRY_BASE_DELAY_MS;
+  process.env.NETWORK_RETRY_BASE_DELAY_MS = '0';
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (saved === undefined) delete process.env.NETWORK_RETRY_BASE_DELAY_MS;
+      else process.env.NETWORK_RETRY_BASE_DELAY_MS = saved;
+    });
+}
+
 function jsonResponse(status, body) {
   return {
     ok: status >= 200 && status < 300,
@@ -447,6 +460,93 @@ test('exports the expected connection-layer functions and constants', () => {
         () => assert.rejects(() => getInventoryLevels(), /did not include inventory data/)
       )
     );
+  });
+
+  // --- Controlled retries (agent/core/networkRetry.js) ------------------------------
+
+  await testAsync('getProducts retries a transient 500-then-200 sequence and succeeds (fetch called twice)', async () => {
+    let calls = 0;
+    await withZeroRetryDelay(() =>
+      withEnvConfigured(() =>
+        withMockedFetch(
+          async () => {
+            calls += 1;
+            if (calls === 1) return jsonResponse(500, { errors: [{ message: 'Internal error' }] });
+            return jsonResponse(200, { data: { products: { edges: [{ node: SAMPLE_PRODUCT_GRAPHQL_NODE }] } } });
+          },
+          async () => {
+            const products = await getProducts();
+            assert.strictEqual(products.length, 1);
+          }
+        )
+      )
+    );
+    assert.strictEqual(calls, 2, 'a 500 followed by a 200 should be retried once, not more');
+  });
+
+  await testAsync('getProducts retries on HTTP 429 (rate limit)', async () => {
+    let calls = 0;
+    await withZeroRetryDelay(() =>
+      withEnvConfigured(() =>
+        withMockedFetch(
+          async () => {
+            calls += 1;
+            if (calls === 1) return jsonResponse(429, { errors: [{ message: 'Rate limited' }] });
+            return jsonResponse(200, { data: { products: { edges: [] } } });
+          },
+          () => getProducts()
+        )
+      )
+    );
+    assert.strictEqual(calls, 2);
+  });
+
+  await testAsync('getProducts never retries a 4xx response (fetch called exactly once)', async () => {
+    let calls = 0;
+    await withZeroRetryDelay(() =>
+      withEnvConfigured(() =>
+        withMockedFetch(
+          async () => {
+            calls += 1;
+            return jsonResponse(401, { errors: [{ message: 'Unauthorized' }] });
+          },
+          () => assert.rejects(() => getProducts(), /request failed \(401\)/)
+        )
+      )
+    );
+    assert.strictEqual(calls, 1, 'a 4xx response will deterministically fail again - it must never be retried');
+  });
+
+  await testAsync('getProducts never retries a GraphQL-level error on an ok HTTP status (fetch called exactly once)', async () => {
+    let calls = 0;
+    await withZeroRetryDelay(() =>
+      withEnvConfigured(() =>
+        withMockedFetch(
+          async () => {
+            calls += 1;
+            return jsonResponse(200, { errors: [{ message: 'Throttled' }] });
+          },
+          () => assert.rejects(() => getProducts(), /GraphQL errors/)
+        )
+      )
+    );
+    assert.strictEqual(calls, 1, 'a GraphQL-level error is a query/permission problem, not transient - it must never be retried');
+  });
+
+  await testAsync('getProducts exhausts retries and throws the last error when every attempt is a transient failure', async () => {
+    let calls = 0;
+    await withZeroRetryDelay(() =>
+      withEnvConfigured(() =>
+        withMockedFetch(
+          async () => {
+            calls += 1;
+            return jsonResponse(503, { errors: [{ message: 'Service unavailable' }] });
+          },
+          () => assert.rejects(() => getProducts(), /request failed \(503\)/)
+        )
+      )
+    );
+    assert.strictEqual(calls, 3, 'should attempt exactly the default max (3), never more');
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

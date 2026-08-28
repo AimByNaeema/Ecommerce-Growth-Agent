@@ -260,6 +260,38 @@ test('getSpecialistCapabilityRegistry() returns the same array getSpecialistCapa
   assert.strictEqual(getSpecialistCapabilityRegistry(), SPECIALIST_CAPABILITY_REGISTRY);
 });
 
+// Spot checks for the registry-completion pass (Part A of the token-efficient
+// context management work): a few of the 19 tasks that previously declared no
+// `optional` array at all now do, each field verified directly against its real
+// *Agent.js handler - see the registry's own KNOWN `required` GAPS comment for what
+// was deliberately left untouched.
+test('global_market_research now declares a real optional array, including a per-entry field', () => {
+  const task = getCapabilityTask('research', 'global_market_research');
+  assert.ok(task.input_contract.optional.length > 0);
+  assert.ok(task.input_contract.optional.includes('markets[].country'));
+});
+
+test('product_discovery now declares a real optional array, including a nested pricing sub-field', () => {
+  const task = getCapabilityTask('product', 'product_discovery');
+  assert.ok(task.input_contract.optional.length > 0);
+  assert.ok(task.input_contract.optional.includes('entries[].pricing.price'));
+});
+
+test('insights declares a real optional array but never lists `recommendations` - it is computed, not caller-supplied', () => {
+  const task = getCapabilityTask('analytics_optimization', 'insights');
+  assert.ok(task.input_contract.optional.length > 0);
+  assert.ok(task.input_contract.optional.includes('metrics[].possibleCause'));
+  assert.ok(
+    !task.input_contract.optional.includes('recommendations'),
+    'analyzeInsights() computes recommendations itself and never reads params.recommendations'
+  );
+});
+
+test('product_validation is honestly left with an empty optional array - validateProduct() reads only productRecord', () => {
+  const task = getCapabilityTask('product', 'product_validation');
+  assert.deepStrictEqual(task.input_contract.optional, []);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
   process.exit(1);

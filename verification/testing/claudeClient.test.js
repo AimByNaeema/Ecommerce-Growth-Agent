@@ -67,6 +67,54 @@ test('extractText returns an empty string for missing/invalid content', () => {
   assert.strictEqual(extractText('not an array'), '');
 });
 
+function withMockedFetch(mockImpl, fn) {
+  const savedFetch = global.fetch;
+  global.fetch = mockImpl;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      global.fetch = savedFetch;
+    });
+}
+
+function withZeroRetryDelay(fn) {
+  const saved = process.env.NETWORK_RETRY_BASE_DELAY_MS;
+  process.env.NETWORK_RETRY_BASE_DELAY_MS = '0';
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (saved === undefined) delete process.env.NETWORK_RETRY_BASE_DELAY_MS;
+      else process.env.NETWORK_RETRY_BASE_DELAY_MS = saved;
+    });
+}
+
+function withApiKeyConfigured(fn) {
+  const saved = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved;
+    });
+}
+
+function jsonResponse(status, body) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: 'status text',
+    json: async () => body,
+  };
+}
+
+const SAMPLE_MESSAGE_RESPONSE = {
+  content: [{ type: 'text', text: 'ok' }],
+  model: 'claude-sonnet-5',
+  stop_reason: 'end_turn',
+  usage: { input_tokens: 1, output_tokens: 1 },
+};
+
 (async () => {
   await testAsync('sendMessage rejects a missing/empty messages array', async () => {
     await assert.rejects(() => sendMessage({}), /non-empty `messages` array/);
@@ -97,6 +145,85 @@ test('extractText returns an empty string for missing/invalid content', () => {
       if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = savedKey;
     }
+  });
+
+  // --- Controlled retries (agent/core/networkRetry.js) ------------------------------
+
+  await testAsync('sendMessage retries a transient 500-then-200 sequence and succeeds (fetch called twice)', async () => {
+    let calls = 0;
+    await withZeroRetryDelay(() =>
+      withApiKeyConfigured(() =>
+        withMockedFetch(
+          async () => {
+            calls += 1;
+            if (calls === 1) return jsonResponse(500, { error: { message: 'Internal error' } });
+            return jsonResponse(200, SAMPLE_MESSAGE_RESPONSE);
+          },
+          async () => {
+            const result = await sendMessage({ messages: [{ role: 'user', content: 'hi' }] });
+            assert.strictEqual(result.text, 'ok');
+          }
+        )
+      )
+    );
+    assert.strictEqual(calls, 2, 'a 500 followed by a 200 should be retried once, not more');
+  });
+
+  await testAsync('sendMessage retries on HTTP 429 (rate limit)', async () => {
+    let calls = 0;
+    await withZeroRetryDelay(() =>
+      withApiKeyConfigured(() =>
+        withMockedFetch(
+          async () => {
+            calls += 1;
+            if (calls === 1) return jsonResponse(429, { error: { message: 'Rate limited' } });
+            return jsonResponse(200, SAMPLE_MESSAGE_RESPONSE);
+          },
+          () => sendMessage({ messages: [{ role: 'user', content: 'hi' }] })
+        )
+      )
+    );
+    assert.strictEqual(calls, 2);
+  });
+
+  await testAsync('sendMessage never retries a 4xx response (fetch called exactly once)', async () => {
+    let calls = 0;
+    await withZeroRetryDelay(() =>
+      withApiKeyConfigured(() =>
+        withMockedFetch(
+          async () => {
+            calls += 1;
+            return jsonResponse(401, { error: { message: 'Invalid API key' } });
+          },
+          () =>
+            assert.rejects(
+              () => sendMessage({ messages: [{ role: 'user', content: 'hi' }] }),
+              /request failed \(401\)/
+            )
+        )
+      )
+    );
+    assert.strictEqual(calls, 1, 'a 4xx response will deterministically fail again - it must never be retried');
+  });
+
+  await testAsync('sendMessage exhausts retries and throws the last error when every attempt is a transient failure', async () => {
+    let calls = 0;
+    await withZeroRetryDelay(() =>
+      withApiKeyConfigured(() =>
+        withMockedFetch(
+          async () => {
+            calls += 1;
+            return jsonResponse(503, { error: { message: 'Service unavailable' } });
+          },
+          () =>
+            assert.rejects(
+              () => sendMessage({ messages: [{ role: 'user', content: 'hi' }] }),
+              /request failed \(503\)/
+            )
+        )
+      )
+    );
+    assert.strictEqual(calls, 3, 'should attempt exactly the default max (3), never more');
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

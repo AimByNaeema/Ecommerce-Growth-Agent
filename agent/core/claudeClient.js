@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { RetryableError, retryAsync } = require('./networkRetry');
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2023-06-01';
@@ -94,35 +95,47 @@ async function sendMessage({ messages, system, model, maxTokens } = {}) {
   const body = { model: resolvedModel, max_tokens: resolvedMaxTokens, messages };
   if (system) body.system = system;
 
-  let response;
-  try {
-    response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': API_VERSION,
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
-    throw new Error(`Could not reach the Claude API: ${err.message}`);
-  }
+  // CONTROLLED RETRIES (agent/core/networkRetry.js): same policy as
+  // integrations/adapters/shopifyClient.js's runAdminGraphqlQuery - only a thrown
+  // fetch() failure or an HTTP 429/5xx response is retried, bounded and with
+  // backoff, never silently forever. A 4xx response (bad request, invalid API key,
+  // etc.) is a config/request problem that will deterministically fail again, so it
+  // throws a plain (non-retryable) Error instead.
+  return retryAsync(async () => {
+    let response;
+    try {
+      response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': API_VERSION,
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      throw new RetryableError(`Could not reach the Claude API: ${err.message}`);
+    }
 
-  const raw = await response.json().catch(() => null);
+    const raw = await response.json().catch(() => null);
 
-  if (!response.ok) {
-    const apiMessage = raw && raw.error && raw.error.message ? raw.error.message : response.statusText;
-    throw new Error(`Claude API request failed (${response.status}): ${apiMessage}`);
-  }
+    if (!response.ok) {
+      const apiMessage = raw && raw.error && raw.error.message ? raw.error.message : response.statusText;
+      const message = `Claude API request failed (${response.status}): ${apiMessage}`;
+      if (response.status === 429 || response.status >= 500) {
+        throw new RetryableError(message);
+      }
+      throw new Error(message);
+    }
 
-  return {
-    text: extractText(raw.content),
-    model: raw.model,
-    stopReason: raw.stop_reason,
-    usage: raw.usage,
-    raw,
-  };
+    return {
+      text: extractText(raw.content),
+      model: raw.model,
+      stopReason: raw.stop_reason,
+      usage: raw.usage,
+      raw,
+    };
+  });
 }
 
 module.exports = {

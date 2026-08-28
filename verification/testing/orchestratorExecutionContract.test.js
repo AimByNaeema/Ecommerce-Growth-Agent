@@ -14,6 +14,7 @@ const {
   splitIntoClauses,
   routeClause,
   planRouting,
+  buildRoutingResponse,
   runOrchestratorContract,
 } = require('../../agent/core/orchestratorExecutionContract');
 const claudeClient = require('../../agent/core/claudeClient');
@@ -21,6 +22,20 @@ const { getMaxTokensPerRun } = require('../../agent/core/tokenControls');
 const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
 const { getToolById } = require('../../tools/toolRegistry');
+const { getCapabilityTask } = require('../../agent/core/specialistCapabilityRegistry');
+const { createAuditTracker } = require('../../audit/auditTrail');
+const { createToolResultCache } = require('../../agent/core/toolResultCache');
+
+function withEnv(name, value, fn) {
+  const saved = process.env[name];
+  process.env[name] = value;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (saved === undefined) delete process.env[name];
+      else process.env[name] = saved;
+    });
+}
 
 // This test never makes a real network call - the one real tool it can reach
 // (business_configuration_retrieval) fails fast on its own "not configured" check
@@ -382,7 +397,14 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     const step = response.routing.plan[0];
     assert.strictEqual(step.inputs.tool_id, 'keyword_research');
     assert.strictEqual(step.inputs.capability_id, 'keyword_research');
-    assert.deepStrictEqual(step.inputs.input_contract, { required: ['keywords', 'keywords[].keyword'], optional: [] });
+    // Reuses the registry's own real input_contract rather than a hardcoded literal,
+    // so this assertion never drifts from agent/core/specialistCapabilityRegistry.js.
+    assert.deepStrictEqual(
+      step.inputs.input_contract,
+      getCapabilityTask('seo', 'keyword_research').input_contract
+    );
+    assert.ok(step.inputs.input_contract.required.includes('keywords'));
+    assert.ok(step.inputs.input_contract.optional.length > 0, 'keyword_research should now declare optional fields');
   });
 
   await testAsync('runOrchestratorContract: a matched tool with zero connected capabilities (Product) honestly reports capability_id null, never guessed', async () => {
@@ -910,6 +932,225 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     const ambiguousResponse = await runOrchestratorContract('I need content optimization help');
     assert.strictEqual(ambiguousResponse.audit_trail.length, 1);
     assert.strictEqual(ambiguousResponse.audit_trail[0].type, 'request');
+  });
+
+  // --- Per-run tool-result cache (agent/core/toolResultCache.js) wiring -----------
+  //
+  // keyword_research is used as the deterministic, no-network probe throughout: its
+  // real handler (agent/core/seoAgent.js's runKeywordResearch, via
+  // tools/keywordResearchTool.js) builds a brand-new result object literal on every
+  // real invocation, so reference-identity equality between two calls is only
+  // possible when the second call was served from the cache, never from a fresh
+  // execution that merely looks the same.
+
+  function buildKeywordResearchExecutionRequest(keyword) {
+    return {
+      objective: 'keyword research',
+      category: 'seo',
+      tool_id: 'keyword_research',
+      specialist_id: 'seo',
+      is_shared_infrastructure: false,
+      research_params: { keywords: [{ keyword, source: ['(placeholder source)'] }] },
+    };
+  }
+
+  await testAsync('tool-result cache: an identical second call is served from cache (reference-identity proof)', async () => {
+    const runToolResultCache = createToolResultCache();
+    const request = buildKeywordResearchExecutionRequest('insulated hiking jacket');
+
+    const first = await executeSelectedCapability(request, undefined, undefined, null, runToolResultCache);
+    const second = await executeSelectedCapability(request, undefined, undefined, null, runToolResultCache);
+
+    assert.strictEqual(first.status, 'success');
+    assert.strictEqual(second.data, first.data, 'a cache hit must return the exact prior result object, not a freshly-built one');
+  });
+
+  await testAsync('tool-result cache: audit trail gains exactly 4 events on a miss and exactly 1 (cache_hit) on the identical repeat', async () => {
+    const runToolResultCache = createToolResultCache();
+    const runAuditTracker = createAuditTracker('run-cache-test-1');
+    const request = buildKeywordResearchExecutionRequest('insulated hiking jacket');
+
+    await executeSelectedCapability(request, undefined, undefined, runAuditTracker, runToolResultCache);
+    assert.strictEqual(runAuditTracker.events.length, 4);
+    assert.deepStrictEqual(
+      runAuditTracker.events.map((event) => event.type),
+      ['tools', 'data_access', 'execution', 'result']
+    );
+
+    await executeSelectedCapability(request, undefined, undefined, runAuditTracker, runToolResultCache);
+    assert.strictEqual(runAuditTracker.events.length, 5);
+    const cacheHitEvent = runAuditTracker.events[4];
+    assert.strictEqual(cacheHitEvent.type, 'result');
+    assert.strictEqual(cacheHitEvent.status, 'cache_hit');
+  });
+
+  await testAsync('tool-result cache: different params correctly miss the cache (no false-positive matching)', async () => {
+    const runToolResultCache = createToolResultCache();
+    const first = await executeSelectedCapability(
+      buildKeywordResearchExecutionRequest('insulated hiking jacket'),
+      undefined,
+      undefined,
+      null,
+      runToolResultCache
+    );
+    const second = await executeSelectedCapability(
+      buildKeywordResearchExecutionRequest('lightweight rain jacket'),
+      undefined,
+      undefined,
+      null,
+      runToolResultCache
+    );
+    assert.strictEqual(runToolResultCache.entries.size, 2);
+    assert.notStrictEqual(second.data, first.data);
+  });
+
+  await testAsync('tool-result cache: ai_reasoning_completion is explicitly excluded, even for identical calls', async () => {
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+    const originalSendMessage = claudeClient.sendMessage;
+    let callCount = 0;
+    claudeClient.sendMessage = async () => {
+      callCount += 1;
+      return {
+        text: 'Mocked reasoning output.',
+        model: 'claude-sonnet-5',
+        stopReason: 'end_turn',
+        usage: { input_tokens: 5, output_tokens: 5 },
+        raw: {},
+      };
+    };
+
+    try {
+      const runToolResultCache = createToolResultCache();
+      const runAuditTracker = createAuditTracker('run-cache-test-2');
+      const request = {
+        objective: 'run a claude reasoning completion',
+        category: 'ai_reasoning',
+        tool_id: 'ai_reasoning_completion',
+        specialist_id: null,
+        is_shared_infrastructure: true,
+        research_params: null,
+      };
+
+      await executeSelectedCapability(request, undefined, undefined, runAuditTracker, runToolResultCache);
+      await executeSelectedCapability(request, undefined, undefined, runAuditTracker, runToolResultCache);
+
+      assert.strictEqual(callCount, 2, 'ai_reasoning_completion must never be served from cache');
+      const resultEvents = runAuditTracker.events.filter((event) => event.type === 'result');
+      assert.strictEqual(resultEvents.length, 2);
+      assert.ok(resultEvents.every((event) => event.status === 'success'));
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = savedKey;
+    }
+  });
+
+  await testAsync('tool-result cache: an error outcome (business_configuration_retrieval, not configured) is never cached', async () => {
+    const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
+    const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    delete process.env.SHOPIFY_STORE_DOMAIN;
+    delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    try {
+      const runToolResultCache = createToolResultCache();
+      const runAuditTracker = createAuditTracker('run-cache-test-3');
+      const capability = identifyRequiredCapability("check my shop's business configuration");
+      const request = createExecutionRequest("check my shop's business configuration", capability);
+
+      await executeSelectedCapability(request, undefined, undefined, runAuditTracker, runToolResultCache);
+      await executeSelectedCapability(request, undefined, undefined, runAuditTracker, runToolResultCache);
+
+      assert.strictEqual(runToolResultCache.entries.size, 0, 'an error outcome must never populate the cache');
+      const errorEvents = runAuditTracker.events.filter((event) => event.type === 'error');
+      const cacheHitEvents = runAuditTracker.events.filter((event) => event.status === 'cache_hit');
+      assert.strictEqual(errorEvents.length, 2, 'both calls should fail independently, not hit a cache');
+      assert.strictEqual(cacheHitEvents.length, 0);
+    } finally {
+      if (savedDomain === undefined) delete process.env.SHOPIFY_STORE_DOMAIN;
+      else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
+      if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+      else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+    }
+  });
+
+  // --- Bounded research calls / bounded agent iterations (agent/core/executionBounds.js) ---
+
+  await testAsync('executeSelectedCapability refuses a research_params array field over MAX_ARRAY_FIELD_ENTRIES, without executing', async () => {
+    await withEnv('MAX_ARRAY_FIELD_ENTRIES', '2', async () => {
+      const runAuditTracker = createAuditTracker('run-bounds-test-1');
+      const request = {
+        objective: 'keyword research',
+        category: 'seo',
+        tool_id: 'keyword_research',
+        specialist_id: 'seo',
+        is_shared_infrastructure: false,
+        research_params: {
+          keywords: [
+            { keyword: 'insulated hiking jacket' },
+            { keyword: 'lightweight rain jacket' },
+            { keyword: 'waterproof hiking boots' },
+          ],
+        },
+      };
+      const outcome = await executeSelectedCapability(request, undefined, undefined, runAuditTracker);
+      assert.strictEqual(outcome.status, 'error');
+      assert.ok(/keywords/.test(outcome.error));
+      assert.ok(/exceeding the maximum of 2/.test(outcome.error));
+      const errorEvents = runAuditTracker.events.filter((event) => event.type === 'error');
+      assert.strictEqual(errorEvents.length, 1);
+      const executionEvents = runAuditTracker.events.filter((event) => event.type === 'execution');
+      assert.strictEqual(executionEvents.length, 0, 'the tool must never actually execute once the bounds check refuses it');
+    });
+  });
+
+  await testAsync('executeSelectedCapability allows a research_params array field within MAX_ARRAY_FIELD_ENTRIES', async () => {
+    await withEnv('MAX_ARRAY_FIELD_ENTRIES', '5', async () => {
+      const request = {
+        objective: 'keyword research',
+        category: 'seo',
+        tool_id: 'keyword_research',
+        specialist_id: 'seo',
+        is_shared_infrastructure: false,
+        research_params: { keywords: [{ keyword: 'insulated hiking jacket', source: ['(placeholder)'] }] },
+      };
+      const outcome = await executeSelectedCapability(request);
+      assert.strictEqual(outcome.status, 'success');
+    });
+  });
+
+  await testAsync('runOrchestratorContract refuses a plan exceeding MAX_PLAN_STEPS_PER_RUN, without executing any step', async () => {
+    await withEnv('MAX_PLAN_STEPS_PER_RUN', '1', async () => {
+      const response = await runOrchestratorContract('market competitor research and social media advertising');
+      assert.strictEqual(response.needs_more_information, true);
+      assert.strictEqual(response.routing.status, 'clarification_required');
+      assert.strictEqual(response.routing.clarification_type, 'plan_too_large');
+      assert.strictEqual(response.routing.plan, null);
+      assert.ok(/exceeding the maximum of 1/.test(response.routing.reason));
+      // Only the request + this one error event - no 'agent'/'tools'/'execution' event
+      // anywhere, proving no step was ever attempted.
+      assert.deepStrictEqual(
+        response.audit_trail.map((event) => event.type),
+        ['request', 'error']
+      );
+    });
+  });
+
+  await testAsync('runOrchestratorContract with the default MAX_PLAN_STEPS_PER_RUN (20) is unaffected by a real multi-target plan (2 steps)', async () => {
+    const response = await runOrchestratorContract('market competitor research and social media advertising');
+    assert.strictEqual(response.routing.status, 'planned');
+    assert.strictEqual(response.routing.plan.length, 2);
+  });
+
+  test('buildRoutingResponse dedupes identical failed_work entries across plan steps', () => {
+    const fakePlan = [
+      { completion_state: 'failed', errors: ['Same error message'] },
+      { completion_state: 'failed', errors: ['Same error message'] },
+    ];
+    const response = buildRoutingResponse({
+      objective: 'test objective',
+      routing: { status: 'planned', clarification_type: null, reason: null, candidates: null, unmatched_segment: null, plan: fakePlan },
+    });
+    assert.deepStrictEqual(response.state.failed_work, ['Same error message']);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
