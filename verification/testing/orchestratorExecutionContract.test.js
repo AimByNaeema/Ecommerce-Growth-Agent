@@ -25,6 +25,7 @@ const { getToolById } = require('../../tools/toolRegistry');
 const { getCapabilityTask } = require('../../agent/core/specialistCapabilityRegistry');
 const { createAuditTracker } = require('../../audit/auditTrail');
 const { createToolResultCache } = require('../../agent/core/toolResultCache');
+const { createUsageTracker } = require('../../agent/core/usageLimits');
 
 function withEnv(name, value, fn) {
   const saved = process.env[name];
@@ -1139,6 +1140,91 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     const response = await runOrchestratorContract('market competitor research and social media advertising');
     assert.strictEqual(response.routing.status, 'planned');
     assert.strictEqual(response.routing.plan.length, 2);
+  });
+
+  // --- Configurable usage limits (agent/core/usageLimits.js) ---
+
+  await testAsync('executeSelectedCapability refuses a real dispatch once MAX_TOOL_CALLS_PER_RUN is reached, without executing', async () => {
+    await withEnv('MAX_TOOL_CALLS_PER_RUN', '1', async () => {
+      const runUsageTracker = createUsageTracker();
+      const runAuditTracker = createAuditTracker('run-usage-test-1');
+      const request = buildKeywordResearchExecutionRequest('insulated hiking jacket');
+
+      const first = await executeSelectedCapability(request, undefined, undefined, runAuditTracker, undefined, runUsageTracker);
+      assert.strictEqual(first.status, 'success');
+      assert.strictEqual(runUsageTracker.toolCalls, 1);
+
+      const second = await executeSelectedCapability(request, undefined, undefined, runAuditTracker, undefined, runUsageTracker);
+      assert.strictEqual(second.status, 'error');
+      assert.ok(/tool calls/.test(second.error));
+      assert.ok(/budget of 1/.test(second.error));
+      const executionEvents = runAuditTracker.events.filter((event) => event.type === 'execution');
+      assert.strictEqual(executionEvents.length, 1, 'the second call must never actually execute once the tool-call budget is exhausted');
+    });
+  });
+
+  await testAsync('executeSelectedCapability refuses ai_reasoning_completion once MAX_MODEL_CALLS_PER_RUN is reached, even though the generic tool-call budget remains', async () => {
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+    const originalSendMessage = claudeClient.sendMessage;
+    let callCount = 0;
+    claudeClient.sendMessage = async () => {
+      callCount += 1;
+      return {
+        text: 'Mocked reasoning output.',
+        model: 'claude-sonnet-5',
+        stopReason: 'end_turn',
+        usage: { input_tokens: 5, output_tokens: 5 },
+        raw: {},
+      };
+    };
+
+    try {
+      await withEnv('MAX_MODEL_CALLS_PER_RUN', '1', async () => {
+        const runUsageTracker = createUsageTracker();
+        const request = {
+          objective: 'run a claude reasoning completion',
+          category: 'ai_reasoning',
+          tool_id: 'ai_reasoning_completion',
+          specialist_id: null,
+          is_shared_infrastructure: true,
+          research_params: null,
+        };
+
+        const first = await executeSelectedCapability(request, undefined, undefined, null, undefined, runUsageTracker);
+        assert.strictEqual(first.status, 'success');
+
+        const second = await executeSelectedCapability(request, undefined, undefined, null, undefined, runUsageTracker);
+        assert.strictEqual(second.status, 'error');
+        assert.ok(/model calls/.test(second.error));
+        assert.strictEqual(callCount, 1, 'the second call must never reach claudeClient.sendMessage once the model-call budget is exhausted');
+      });
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = savedKey;
+    }
+  });
+
+  await testAsync('a tool-result cache hit does not consume any usage budget', async () => {
+    const runToolResultCache = createToolResultCache();
+    const runUsageTracker = createUsageTracker();
+    const request = buildKeywordResearchExecutionRequest('insulated hiking jacket');
+
+    await executeSelectedCapability(request, undefined, undefined, null, runToolResultCache, runUsageTracker);
+    assert.strictEqual(runUsageTracker.toolCalls, 1);
+    assert.strictEqual(runUsageTracker.researchCalls, 1);
+
+    await executeSelectedCapability(request, undefined, undefined, null, runToolResultCache, runUsageTracker);
+    assert.strictEqual(runUsageTracker.toolCalls, 1, 'a cache hit must not increment the usage tracker');
+    assert.strictEqual(runUsageTracker.researchCalls, 1, 'a cache hit must not increment the usage tracker');
+  });
+
+  await testAsync('runOrchestratorContract with default usage-limit settings is unaffected by a real multi-target plan (2 steps)', async () => {
+    const response = await runOrchestratorContract('market competitor research and social media advertising');
+    assert.strictEqual(response.routing.status, 'planned');
+    assert.strictEqual(response.routing.plan.length, 2);
+    assert.ok(response.routing.plan.every((step) => step.completion_state !== 'failed'));
   });
 
   test('buildRoutingResponse dedupes identical failed_work entries across plan steps', () => {

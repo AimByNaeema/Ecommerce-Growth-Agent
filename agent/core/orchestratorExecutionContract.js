@@ -76,6 +76,7 @@ const { createApprovalRequest } = require('../../approvals/approvalWorkflow');
 const { createAuditTracker, appendAuditEvent } = require('../../audit/auditTrail');
 const { createToolResultCache, getCachedResult, setCachedResult } = require('./toolResultCache');
 const { checkArrayFieldBounds, checkPlanStepBounds } = require('./executionBounds');
+const { createUsageTracker, checkUsageLimits, recordUsage } = require('./usageLimits');
 const businessConfigurationRetrieval = require('../../tools/businessConfigurationRetrieval');
 const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
@@ -289,7 +290,14 @@ const NEVER_CACHED_TOOL_IDS = new Set(['ai_reasoning_completion']);
 // outcome without re-invoking the executor. Error outcomes are never cached (a
 // failure may legitimately succeed on retry if caused by something outside the pure
 // params, e.g. missing env config fixed mid-run).
-async function runExecutor(toolId, executionRequest, runTokenTracker, classification, runAuditTracker = null, runToolResultCache = null) {
+//
+// runUsageTracker (see agent/core/usageLimits.js), when supplied, enforces this
+// run's configurable tool/model/research/external-API call ceilings - checked only
+// on the real (cache-miss) dispatch path below, right before the executor is
+// invoked, so a cache hit never consumes budget. A breach returns a controlled
+// error outcome instead of executing, exactly like the cache-miss executor-error
+// path already does.
+async function runExecutor(toolId, executionRequest, runTokenTracker, classification, runAuditTracker = null, runToolResultCache = null, runUsageTracker = null) {
   const executor = TOOL_EXECUTORS[toolId];
   if (!executor) {
     appendAuditEvent(runAuditTracker, {
@@ -325,6 +333,22 @@ async function runExecutor(toolId, executionRequest, runTokenTracker, classifica
       });
       return cached;
     }
+  }
+
+  if (runUsageTracker) {
+    const usageCheck = checkUsageLimits(toolId, runUsageTracker);
+    if (!usageCheck.allowed) {
+      appendAuditEvent(runAuditTracker, {
+        type: 'error',
+        toolId,
+        specialistId,
+        classification,
+        status: 'error',
+        summary: usageCheck.reason,
+      });
+      return { status: 'error', data: null, error: usageCheck.reason, classification };
+    }
+    recordUsage(toolId, runUsageTracker);
   }
 
   appendAuditEvent(runAuditTracker, {
@@ -402,7 +426,8 @@ async function executeSelectedCapability(
   runTokenTracker = { tokensUsedThisRun: 0 },
   runApprovalTracker = { requests: [] },
   runAuditTracker = null,
-  runToolResultCache = null
+  runToolResultCache = null,
+  runUsageTracker = null
 ) {
   const access = checkToolAccess({
     specialistId: executionRequest.specialist_id,
@@ -488,7 +513,7 @@ async function executeSelectedCapability(
     return { status: 'error', data: null, error: boundsCheck.reason, classification: access.classification };
   }
 
-  return runExecutor(access.tool_id, executionRequest, runTokenTracker, access.classification, runAuditTracker, runToolResultCache);
+  return runExecutor(access.tool_id, executionRequest, runTokenTracker, access.classification, runAuditTracker, runToolResultCache, runUsageTracker);
 }
 
 // Resumes a previously gated action after a real human decision has been recorded via
@@ -503,7 +528,8 @@ async function resumeApprovedExecution(
   decidedApprovalRequest,
   runTokenTracker = { tokensUsedThisRun: 0 },
   runAuditTracker = null,
-  runToolResultCache = null
+  runToolResultCache = null,
+  runUsageTracker = null
 ) {
   if (!decidedApprovalRequest || typeof decidedApprovalRequest !== 'object') {
     return {
@@ -569,7 +595,8 @@ async function resumeApprovedExecution(
     runTokenTracker,
     access.classification,
     runAuditTracker,
-    runToolResultCache
+    runToolResultCache,
+    runUsageTracker
   );
 }
 
@@ -836,7 +863,8 @@ async function buildPlanStep(
   priorSteps = [],
   runApprovalTracker = { requests: [] },
   runAuditTracker = null,
-  runToolResultCache = null
+  runToolResultCache = null,
+  runUsageTracker = null
 ) {
   const capabilityEntry = target.type === 'specialist' ? getSpecialistCapabilityById(target.id) : null;
   appendAuditEvent(runAuditTracker, {
@@ -945,7 +973,8 @@ async function buildPlanStep(
       runTokenTracker,
       runApprovalTracker,
       runAuditTracker,
-      runToolResultCache
+      runToolResultCache,
+      runUsageTracker
     );
   }
 
@@ -1150,6 +1179,10 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
   // re-embedding it ("reduce repeated tool results", "reduce repeated business
   // information").
   const runToolResultCache = createToolResultCache();
+  // One usage tracker per run, same caller-held-state pattern as the trackers above
+  // (see agent/core/usageLimits.js) - counts real (cache-miss) tool/model/research/
+  // external-API dispatches so this run's configurable ceilings can be enforced.
+  const runUsageTracker = createUsageTracker();
 
   const plan = [];
   for (let i = 0; i < routingResult.targets.length; i += 1) {
@@ -1166,7 +1199,8 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
         plan,
         runApprovalTracker,
         runAuditTracker,
-        runToolResultCache
+        runToolResultCache,
+        runUsageTracker
       )
     );
   }
