@@ -5,8 +5,8 @@
 // sendMessage() - reuses it directly (no new HTTP logic, no second Claude client, no
 // SDK). Structured input/output only: callers pass a compact
 // { instruction, context, maxTokens } request, never a raw Anthropic messages array;
-// callers receive a compact { text, model, stopReason, tokensUsed } result, never the
-// raw API envelope.
+// callers receive a compact { text, model, stopReason, tokensUsed, inputTokens,
+// outputTokens } result, never the raw API envelope.
 //
 // Token controls (agent/core/tokenControls.js) are enforced here, before
 // claudeClient.js is ever called: a request that would exceed the run's remaining
@@ -32,12 +32,12 @@ const { checkTokenBudget, totalTokensFromUsage } = require('../agent/core/tokenC
 //   tokensUsedThisRun  - optional number: tokens already consumed this orchestrator
 //                         run, used to enforce the run's token budget (default 0)
 //
-// Returns: { text, model, stopReason, tokensUsed }
+// Returns: { text, model, stopReason, tokensUsed, inputTokens, outputTokens }
 // Throws: if instruction is missing/empty, if the run's token budget is already
 // exhausted (before any network call is attempted), or whatever
 // claudeClient.sendMessage() itself throws (not configured / network failure / API
 // error) - never fabricates a reply.
-async function runReasoningCompletion({ instruction, context, maxTokens, tokensUsedThisRun = 0 } = {}) {
+async function runReasoningCompletion({ instruction, context, maxTokens, tokensUsedThisRun = 0, businessId = null } = {}) {
   if (typeof instruction !== 'string' || instruction.trim() === '') {
     throw new Error('runReasoningCompletion requires a non-empty `instruction` string.');
   }
@@ -52,6 +52,7 @@ async function runReasoningCompletion({ instruction, context, maxTokens, tokensU
   const result = await claudeClient.sendMessage({
     messages: [{ role: 'user', content: userContent }],
     maxTokens: budget.capped_max_tokens,
+    businessId,
   });
 
   return {
@@ -59,6 +60,13 @@ async function runReasoningCompletion({ instruction, context, maxTokens, tokensU
     model: result.model,
     stopReason: result.stopReason,
     tokensUsed: totalTokensFromUsage(result.usage),
+    // Additive - the input/output split, discarded by totalTokensFromUsage above,
+    // survives here for usage/usageTracker.js's structured model_call usage events
+    // (see agent/core/orchestratorExecutionContract.js's runExecutor). tokensUsed
+    // itself is unchanged, so every existing consumer of this return value is
+    // unaffected.
+    inputTokens: Number(result.usage && result.usage.input_tokens) || 0,
+    outputTokens: Number(result.usage && result.usage.output_tokens) || 0,
   };
 }
 

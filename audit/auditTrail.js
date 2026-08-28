@@ -128,9 +128,13 @@ function createAuditRecord({
 // Tracker - one per agent/core/orchestratorExecutionContract.js run.
 // ---------------------------------------------------------------------------------
 
-function createAuditTracker(runId) {
+// businessId is optional (additive) - which business this run's tracker belongs to,
+// for cross-business isolation (CLAUDE.md section 1's multi-business goal). null for
+// today's default single-business behavior; existing single-arg call sites are
+// unaffected.
+function createAuditTracker(runId, businessId = null) {
   requireNonEmptyString(runId, 'runId', 'createAuditTracker');
-  return { run_id: runId, events: [] };
+  return { run_id: runId, business_id: businessId, events: [] };
 }
 
 // Appends one new event to `tracker.events` (mutated in place - see header). No-ops

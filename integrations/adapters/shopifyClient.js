@@ -27,7 +27,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { RetryableError, retryAsync } = require('../../agent/core/networkRetry');
+const { RetryableError, retryAsync, withTimeout, parseRetryAfterMs } = require('../../agent/core/networkRetry');
+const businessRegistry = require('../../configuration/businessRegistry');
 
 // Default Admin API version, overridable via SHOPIFY_API_VERSION in .env - no code
 // change needed to move to a newer quarterly release. Current stable version as of
@@ -52,22 +53,57 @@ function loadEnvOnce() {
   }
 }
 
-// True once a non-empty SHOPIFY_STORE_DOMAIN and SHOPIFY_ADMIN_API_ACCESS_TOKEN are
-// both present in the environment. Lets a caller check readiness and fail fast with a
-// clear message instead of attempting a network call that can only fail.
-function isConfigured() {
-  loadEnvOnce();
-  return Boolean(
-    process.env.SHOPIFY_STORE_DOMAIN &&
-    process.env.SHOPIFY_STORE_DOMAIN.trim() &&
-    process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN &&
-    process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN.trim()
-  );
+// Resolves { domain, accessToken, apiVersion } for one call. businessId falsy (the
+// default) reproduces today's exact single-business behavior: the root .env loaded
+// once into global process.env. businessId set delegates to
+// configuration/businessRegistry.js's per-business .env instead - never touches
+// process.env, so two businesses' credentials can safely coexist in one process (see
+// that module's header for why process.loadEnvFile is unsafe for this).
+function resolveCredentials(businessId) {
+  if (!businessId) {
+    loadEnvOnce();
+    return {
+      domain: process.env.SHOPIFY_STORE_DOMAIN,
+      accessToken: process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN,
+      apiVersion: process.env.SHOPIFY_API_VERSION,
+    };
+  }
+  const credentials = businessRegistry.loadBusinessCredentials(businessId);
+  return {
+    domain: credentials.SHOPIFY_STORE_DOMAIN,
+    accessToken: credentials.SHOPIFY_ADMIN_API_ACCESS_TOKEN,
+    apiVersion: credentials.SHOPIFY_API_VERSION,
+  };
+}
+
+// True once a non-empty domain and access token are both present for businessId (or,
+// when omitted, for the root .env/process.env - today's default single business).
+// Lets a caller check readiness and fail fast with a clear message instead of
+// attempting a network call that can only fail.
+function isConfigured({ businessId = null } = {}) {
+  const { domain, accessToken } = resolveCredentials(businessId);
+  return Boolean(domain && domain.trim() && accessToken && accessToken.trim());
 }
 
 // Builds the versioned Admin GraphQL endpoint URL for the configured store.
 function buildGraphqlUrl(domain, apiVersion) {
   return `https://${domain}/admin/api/${apiVersion}/graphql.json`;
+}
+
+// Runs a getter's reshape step (the .edges.map(...) chain that turns a raw GraphQL
+// node into this layer's normalized shape) and turns any thrown error into a clear,
+// named one instead of letting a raw TypeError (e.g. "Cannot read properties of
+// undefined (reading 'edges')" when Shopify omits a nested field like `variants` on
+// one node) surface unlabeled. Each getter already checks its OWN top-level field
+// exists (raw.data.products, etc.) before calling this - this only guards the nested
+// shape one level deeper, which that check can't see. Never invents a fallback value;
+// it only makes an existing failure legible.
+function reshapeOrThrow(fnName, reshapeFn) {
+  try {
+    return reshapeFn();
+  } catch (err) {
+    throw new Error(`Shopify Admin API response for ${fnName} had an unexpected shape: ${err.message}`);
+  }
 }
 
 // Shared request/error-handling core for every Admin GraphQL call this layer makes -
@@ -86,33 +122,37 @@ function buildGraphqlUrl(domain, apiVersion) {
 // deterministically fail again, so it is thrown as a plain (non-retryable) Error
 // instead - retrying it would only waste calls. The "not configured" check happens
 // before retryAsync() is ever entered, so it never triggers a retry either.
-async function runAdminGraphqlQuery(query, fnName) {
-  loadEnvOnce();
-
-  if (!isConfigured()) {
-    throw new Error(
-      'SHOPIFY_STORE_DOMAIN and/or SHOPIFY_ADMIN_API_ACCESS_TOKEN are not set. Copy ' +
-      '.env.example to .env and add real values for the owner\'s Shopify store before ' +
-      `calling ${fnName}().`
-    );
+async function runAdminGraphqlQuery(query, fnName, businessId = null) {
+  if (!isConfigured({ businessId })) {
+    const message = businessId
+      ? `Business '${businessId}' has no configured Shopify credentials. Create ` +
+        `configuration/businesses/${businessId}/.env with real values before calling ${fnName}().`
+      : 'SHOPIFY_STORE_DOMAIN and/or SHOPIFY_ADMIN_API_ACCESS_TOKEN are not set. Copy ' +
+        '.env.example to .env and add real values for the owner\'s Shopify store before ' +
+        `calling ${fnName}().`;
+    throw new Error(message);
   }
 
-  const domain = process.env.SHOPIFY_STORE_DOMAIN.trim();
-  const accessToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN.trim();
-  const apiVersion = (process.env.SHOPIFY_API_VERSION && process.env.SHOPIFY_API_VERSION.trim()) || DEFAULT_API_VERSION;
+  const resolved = resolveCredentials(businessId);
+  const domain = resolved.domain.trim();
+  const accessToken = resolved.accessToken.trim();
+  const apiVersion = (resolved.apiVersion && resolved.apiVersion.trim()) || DEFAULT_API_VERSION;
   const url = buildGraphqlUrl(domain, apiVersion);
 
   return retryAsync(async () => {
     let response;
     try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'X-Shopify-Access-Token': accessToken,
-        },
-        body: JSON.stringify({ query }),
-      });
+      response = await withTimeout((signal) =>
+        fetch(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Shopify-Access-Token': accessToken,
+          },
+          body: JSON.stringify({ query }),
+          signal,
+        })
+      );
     } catch (err) {
       throw new RetryableError(`Could not reach the Shopify Admin API: ${err.message}`);
     }
@@ -123,7 +163,7 @@ async function runAdminGraphqlQuery(query, fnName) {
       const apiMessage = raw && raw.errors ? JSON.stringify(raw.errors) : response.statusText;
       const message = `Shopify Admin API request failed (${response.status}): ${apiMessage}`;
       if (response.status === 429 || response.status >= 500) {
-        throw new RetryableError(message);
+        throw new RetryableError(message, { retryAfterMs: parseRetryAfterMs(response) });
       }
       throw new Error(message);
     }
@@ -142,7 +182,7 @@ async function runAdminGraphqlQuery(query, fnName) {
 // Returns: { name, domain, email, apiVersion, raw }
 // Throws: if the store isn't configured, the request fails, or the API responds with
 // a non-success status or GraphQL errors. Never returns fabricated shop info.
-async function getShopInfo() {
+async function getShopInfo({ businessId = null } = {}) {
   const query = `{
     shop {
       name
@@ -151,7 +191,7 @@ async function getShopInfo() {
     }
   }`;
 
-  const { raw, apiVersion } = await runAdminGraphqlQuery(query, 'getShopInfo');
+  const { raw, apiVersion } = await runAdminGraphqlQuery(query, 'getShopInfo', businessId);
 
   if (!raw || !raw.data || !raw.data.shop) {
     throw new Error('Shopify Admin API response did not include shop data.');
@@ -178,7 +218,7 @@ async function getShopInfo() {
 // Throws: same conditions as getShopInfo() (not configured / network failure /
 // non-success status / GraphQL errors / missing data). Never returns fabricated
 // product data.
-async function getProducts({ limit = 50 } = {}) {
+async function getProducts({ limit = 50, businessId = null } = {}) {
   const query = `{
     products(first: ${Number(limit)}) {
       edges { node {
@@ -203,38 +243,40 @@ async function getProducts({ limit = 50 } = {}) {
     }
   }`;
 
-  const { raw } = await runAdminGraphqlQuery(query, 'getProducts');
+  const { raw } = await runAdminGraphqlQuery(query, 'getProducts', businessId);
 
   if (!raw || !raw.data || !raw.data.products) {
     throw new Error('Shopify Admin API response did not include product data.');
   }
 
-  return raw.data.products.edges.map(({ node }) => ({
-    id: node.id,
-    title: node.title,
-    handle: node.handle,
-    status: node.status,
-    productType: node.productType,
-    vendor: node.vendor,
-    tags: node.tags,
-    variants: node.variants.edges.map(({ node: variant }) => ({
-      id: variant.id,
-      title: variant.title,
-      sku: variant.sku,
-      price: variant.price,
-      inventoryQuantity: variant.inventoryQuantity,
-      availableForSale: variant.availableForSale,
-    })),
-    collections: node.collections.edges.map(({ node: collection }) => ({
-      id: collection.id,
-      title: collection.title,
-    })),
-    metafields: node.metafields.edges.map(({ node: metafield }) => ({
-      namespace: metafield.namespace,
-      key: metafield.key,
-      value: metafield.value,
-    })),
-  }));
+  return reshapeOrThrow('getProducts', () =>
+    raw.data.products.edges.map(({ node }) => ({
+      id: node.id,
+      title: node.title,
+      handle: node.handle,
+      status: node.status,
+      productType: node.productType,
+      vendor: node.vendor,
+      tags: node.tags,
+      variants: node.variants.edges.map(({ node: variant }) => ({
+        id: variant.id,
+        title: variant.title,
+        sku: variant.sku,
+        price: variant.price,
+        inventoryQuantity: variant.inventoryQuantity,
+        availableForSale: variant.availableForSale,
+      })),
+      collections: node.collections.edges.map(({ node: collection }) => ({
+        id: collection.id,
+        title: collection.title,
+      })),
+      metafields: node.metafields.edges.map(({ node: metafield }) => ({
+        namespace: metafield.namespace,
+        key: metafield.key,
+        value: metafield.value,
+      })),
+    }))
+  );
 }
 
 // Runs one GraphQL query covering orders (id, name/order number, created date,
@@ -247,7 +289,7 @@ async function getProducts({ limit = 50 } = {}) {
 // financialStatus, fulfillmentStatus, totalPrice, currency, lineItems: [{title,
 // quantity, sku}] }
 // Throws: same conditions as getShopInfo(). Never returns fabricated order data.
-async function getOrders({ limit = 50 } = {}) {
+async function getOrders({ limit = 50, businessId = null } = {}) {
   const query = `{
     orders(first: ${Number(limit)}, sortKey: CREATED_AT, reverse: true) {
       edges { node {
@@ -262,26 +304,28 @@ async function getOrders({ limit = 50 } = {}) {
     }
   }`;
 
-  const { raw } = await runAdminGraphqlQuery(query, 'getOrders');
+  const { raw } = await runAdminGraphqlQuery(query, 'getOrders', businessId);
 
   if (!raw || !raw.data || !raw.data.orders) {
     throw new Error('Shopify Admin API response did not include order data.');
   }
 
-  return raw.data.orders.edges.map(({ node }) => ({
-    id: node.id,
-    name: node.name,
-    createdAt: node.createdAt,
-    financialStatus: node.displayFinancialStatus,
-    fulfillmentStatus: node.displayFulfillmentStatus,
-    totalPrice: node.currentTotalPriceSet.shopMoney.amount,
-    currency: node.currentTotalPriceSet.shopMoney.currencyCode,
-    lineItems: node.lineItems.edges.map(({ node: lineItem }) => ({
-      title: lineItem.title,
-      quantity: lineItem.quantity,
-      sku: lineItem.sku,
-    })),
-  }));
+  return reshapeOrThrow('getOrders', () =>
+    raw.data.orders.edges.map(({ node }) => ({
+      id: node.id,
+      name: node.name,
+      createdAt: node.createdAt,
+      financialStatus: node.displayFinancialStatus,
+      fulfillmentStatus: node.displayFulfillmentStatus,
+      totalPrice: node.currentTotalPriceSet.shopMoney.amount,
+      currency: node.currentTotalPriceSet.shopMoney.currencyCode,
+      lineItems: node.lineItems.edges.map(({ node: lineItem }) => ({
+        title: lineItem.title,
+        quantity: lineItem.quantity,
+        sku: lineItem.sku,
+      })),
+    }))
+  );
 }
 
 // Runs one GraphQL query covering customers - deliberately only account-level
@@ -294,7 +338,7 @@ async function getOrders({ limit = 50 } = {}) {
 // Throws: same conditions as getShopInfo() - including when the access token lacks
 // the read_customers scope (a GraphQL access-denied error, surfaced as-is). Never
 // returns fabricated customer data.
-async function getCustomers({ limit = 50 } = {}) {
+async function getCustomers({ limit = 50, businessId = null } = {}) {
   const query = `{
     customers(first: ${Number(limit)}) {
       edges { node {
@@ -308,21 +352,23 @@ async function getCustomers({ limit = 50 } = {}) {
     }
   }`;
 
-  const { raw } = await runAdminGraphqlQuery(query, 'getCustomers');
+  const { raw } = await runAdminGraphqlQuery(query, 'getCustomers', businessId);
 
   if (!raw || !raw.data || !raw.data.customers) {
     throw new Error('Shopify Admin API response did not include customer data.');
   }
 
-  return raw.data.customers.edges.map(({ node }) => ({
-    id: node.id,
-    ordersCount: node.numberOfOrders,
-    amountSpent: node.amountSpent.amount,
-    currency: node.amountSpent.currencyCode,
-    state: node.state,
-    tags: node.tags,
-    createdAt: node.createdAt,
-  }));
+  return reshapeOrThrow('getCustomers', () =>
+    raw.data.customers.edges.map(({ node }) => ({
+      id: node.id,
+      ordersCount: node.numberOfOrders,
+      amountSpent: node.amountSpent.amount,
+      currency: node.amountSpent.currencyCode,
+      state: node.state,
+      tags: node.tags,
+      createdAt: node.createdAt,
+    }))
+  );
 }
 
 // Runs one GraphQL query covering inventory items and their per-location available
@@ -334,7 +380,7 @@ async function getCustomers({ limit = 50 } = {}) {
 // levels: [{locationId, locationName, available}] }
 // Throws: same conditions as getShopInfo() - including when the access token lacks
 // the read_inventory scope. Never returns fabricated inventory data.
-async function getInventoryLevels({ limit = 50 } = {}) {
+async function getInventoryLevels({ limit = 50, businessId = null } = {}) {
   const query = `{
     inventoryItems(first: ${Number(limit)}) {
       edges { node {
@@ -349,25 +395,27 @@ async function getInventoryLevels({ limit = 50 } = {}) {
     }
   }`;
 
-  const { raw } = await runAdminGraphqlQuery(query, 'getInventoryLevels');
+  const { raw } = await runAdminGraphqlQuery(query, 'getInventoryLevels', businessId);
 
   if (!raw || !raw.data || !raw.data.inventoryItems) {
     throw new Error('Shopify Admin API response did not include inventory data.');
   }
 
-  return raw.data.inventoryItems.edges.map(({ node }) => ({
-    id: node.id,
-    sku: node.sku,
-    tracked: node.tracked,
-    levels: node.inventoryLevels.edges.map(({ node: level }) => {
-      const availableQuantity = level.quantities.find((quantity) => quantity.name === 'available');
-      return {
-        locationId: level.location.id,
-        locationName: level.location.name,
-        available: availableQuantity ? availableQuantity.quantity : undefined,
-      };
-    }),
-  }));
+  return reshapeOrThrow('getInventoryLevels', () =>
+    raw.data.inventoryItems.edges.map(({ node }) => ({
+      id: node.id,
+      sku: node.sku,
+      tracked: node.tracked,
+      levels: node.inventoryLevels.edges.map(({ node: level }) => {
+        const availableQuantity = level.quantities.find((quantity) => quantity.name === 'available');
+        return {
+          locationId: level.location.id,
+          locationName: level.location.name,
+          available: availableQuantity ? availableQuantity.quantity : undefined,
+        };
+      }),
+    }))
+  );
 }
 
 // Runs one GraphQL query covering the store's collections (title, handle, description,
@@ -380,7 +428,7 @@ async function getInventoryLevels({ limit = 50 } = {}) {
 // Returns: an array of normalized collection objects: { id, title, handle, description,
 // image: { url } | null, productsCount }
 // Throws: same conditions as getShopInfo(). Never returns fabricated collection data.
-async function getCollections({ limit = 50 } = {}) {
+async function getCollections({ limit = 50, businessId = null } = {}) {
   const query = `{
     collections(first: ${Number(limit)}) {
       edges { node {
@@ -394,20 +442,22 @@ async function getCollections({ limit = 50 } = {}) {
     }
   }`;
 
-  const { raw } = await runAdminGraphqlQuery(query, 'getCollections');
+  const { raw } = await runAdminGraphqlQuery(query, 'getCollections', businessId);
 
   if (!raw || !raw.data || !raw.data.collections) {
     throw new Error('Shopify Admin API response did not include collection data.');
   }
 
-  return raw.data.collections.edges.map(({ node }) => ({
-    id: node.id,
-    title: node.title,
-    handle: node.handle,
-    description: node.description,
-    image: node.image ? { url: node.image.url } : null,
-    productsCount: node.productsCount ? node.productsCount.count : undefined,
-  }));
+  return reshapeOrThrow('getCollections', () =>
+    raw.data.collections.edges.map(({ node }) => ({
+      id: node.id,
+      title: node.title,
+      handle: node.handle,
+      description: node.description,
+      image: node.image ? { url: node.image.url } : null,
+      productsCount: node.productsCount ? node.productsCount.count : undefined,
+    }))
+  );
 }
 
 module.exports = {
@@ -419,6 +469,7 @@ module.exports = {
   getCollections,
   isConfigured,
   loadEnvOnce,
+  resolveCredentials,
   DEFAULT_API_VERSION,
 };
 

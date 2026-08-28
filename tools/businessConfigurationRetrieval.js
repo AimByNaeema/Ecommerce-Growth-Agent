@@ -16,8 +16,8 @@ const shopifyClient = require('../integrations/adapters/shopifyClient');
 // makes no writes, changes nothing. Returns exactly what getShopInfo() returns and
 // throws exactly what it throws (not configured / network failure / API error) -
 // never fabricates a result.
-async function retrieveBusinessConfiguration() {
-  return shopifyClient.getShopInfo();
+async function retrieveBusinessConfiguration({ businessId = null } = {}) {
+  return shopifyClient.getShopInfo({ businessId });
 }
 
 module.exports = { retrieveBusinessConfiguration };

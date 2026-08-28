@@ -108,7 +108,7 @@ function buildLivePullEvidence(kind, recordCount) {
 
 async function retrieveSales(params) {
   const limit = params.limit || 50;
-  const orders = await shopifyClient.getOrders({ limit });
+  const orders = await shopifyClient.getOrders({ limit, businessId: params.businessId });
   const actualMetrics = orders.map(orderToActualMetric);
   const calculatedMetrics = calculateSalesMetrics(orders);
   const estimatedMetrics = params.periodDays
@@ -137,7 +137,7 @@ async function retrieveSales(params) {
 
 async function retrieveProducts(params) {
   const limit = params.limit || 50;
-  const products = await shopifyClient.getProducts({ limit });
+  const products = await shopifyClient.getProducts({ limit, businessId: params.businessId });
   const actualMetrics = products.map(productToActualMetric);
   const calculatedMetrics = calculateProductMetrics(products);
 
@@ -162,7 +162,7 @@ async function retrieveProducts(params) {
 
 async function retrieveInventory(params) {
   const limit = params.limit || 50;
-  const inventoryItems = await shopifyClient.getInventoryLevels({ limit });
+  const inventoryItems = await shopifyClient.getInventoryLevels({ limit, businessId: params.businessId });
   const actualMetrics = inventoryItems.map(inventoryItemToActualMetric);
   const calculatedMetrics = calculateInventoryMetrics(inventoryItems);
   const estimatedMetrics = params.averageDailyUnitsSold
@@ -199,7 +199,7 @@ async function retrieveCustomers(params) {
   let customers = [];
   let customersError = null;
   try {
-    customers = await shopifyClient.getCustomers({ limit });
+    customers = await shopifyClient.getCustomers({ limit, businessId: params.businessId });
   } catch (err) {
     customersError = err.message;
   }
@@ -253,7 +253,8 @@ async function runAnalyticsDataTool(researchParams) {
     };
   }
 
-  if (!shopifyClient.isConfigured()) {
+  const businessId = researchParams.businessId || null;
+  if (!shopifyClient.isConfigured({ businessId })) {
     return {
       status: 'failed',
       result: null,

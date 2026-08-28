@@ -26,6 +26,7 @@ const { getCapabilityTask } = require('../../agent/core/specialistCapabilityRegi
 const { createAuditTracker } = require('../../audit/auditTrail');
 const { createToolResultCache } = require('../../agent/core/toolResultCache');
 const { createUsageTracker } = require('../../agent/core/usageLimits');
+const { createUsageLedger } = require('../../usage/usageTracker');
 
 function withEnv(name, value, fn) {
   const saved = process.env[name];
@@ -607,6 +608,13 @@ test('planRouting requires clarification for a fully unmatched task', () => {
       // Token controls stayed connected: usage from the mocked response was tracked
       // and surfaced on the final response, not silently dropped.
       assert.strictEqual(response.tokens_used, 30);
+      // usage/usageTracker.js's structured model_call event carries the input/output
+      // split and the model id, not just the collapsed tokens_used integer.
+      const modelCallEvent = response.usage_ledger.find((event) => event.category === 'model_call');
+      assert.ok(modelCallEvent, 'expected a model_call usage event');
+      assert.deepStrictEqual(modelCallEvent.tokens, { input: 20, output: 10, total: 30 });
+      assert.strictEqual(modelCallEvent.model, 'claude-sonnet-5');
+      assert.strictEqual(modelCallEvent.is_external_api, true);
     } finally {
       claudeClient.sendMessage = originalSendMessage;
       if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
@@ -973,16 +981,28 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.deepStrictEqual(response.pending_approvals, []);
     assert.ok('growth_opportunity_drafts' in response);
     assert.ok('tokens_used' in response);
+    // usage/usageTracker.js's structured usage ledger - additive, mirrors audit_trail.
+    assert.ok(Array.isArray(response.usage_ledger));
+    assert.ok(response.usage_ledger.some((event) => event.category === 'agent_task'));
+    assert.ok(response.usage_ledger.some((event) => event.category === 'tool_call'));
+    assert.strictEqual(response.usage_summary.total_events, response.usage_ledger.length);
+    assert.strictEqual(response.usage_summary.by_category.tool_call.count, 1);
   });
 
   await testAsync('runOrchestratorContract: audit_trail on a clarification-required response records only the request/error event that actually happened', async () => {
     const emptyTaskResponse = await runOrchestratorContract('');
     assert.strictEqual(emptyTaskResponse.audit_trail.length, 1);
     assert.strictEqual(emptyTaskResponse.audit_trail[0].type, 'error');
+    // usage_ledger/usage_summary are present (empty/zeroed) on this path too, same
+    // never-silently-dropped convention as audit_trail.
+    assert.deepStrictEqual(emptyTaskResponse.usage_ledger, []);
+    assert.strictEqual(emptyTaskResponse.usage_summary.total_events, 0);
 
     const ambiguousResponse = await runOrchestratorContract('I need content optimization help');
     assert.strictEqual(ambiguousResponse.audit_trail.length, 1);
     assert.strictEqual(ambiguousResponse.audit_trail[0].type, 'request');
+    assert.deepStrictEqual(ambiguousResponse.usage_ledger, []);
+    assert.strictEqual(ambiguousResponse.usage_summary.total_events, 0);
   });
 
   // --- Per-run tool-result cache (agent/core/toolResultCache.js) wiring -----------
@@ -1033,6 +1053,22 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     const cacheHitEvent = runAuditTracker.events[4];
     assert.strictEqual(cacheHitEvent.type, 'result');
     assert.strictEqual(cacheHitEvent.status, 'cache_hit');
+  });
+
+  await testAsync('tool-result cache: a cache-hit second call produces no additional tool_call usage event (never double-billed)', async () => {
+    const runToolResultCache = createToolResultCache();
+    const runUsageLedger = createUsageLedger('run-cache-usage-test-1');
+    const request = buildKeywordResearchExecutionRequest('insulated hiking jacket');
+
+    await executeSelectedCapability(request, undefined, undefined, null, runToolResultCache, null, runUsageLedger);
+    assert.strictEqual(runUsageLedger.events.filter((event) => event.category === 'tool_call').length, 1);
+
+    await executeSelectedCapability(request, undefined, undefined, null, runToolResultCache, null, runUsageLedger);
+    assert.strictEqual(
+      runUsageLedger.events.filter((event) => event.category === 'tool_call').length,
+      1,
+      'an identical cache-hit call must not record a second usage event'
+    );
   });
 
   await testAsync('tool-result cache: different params correctly miss the cache (no false-positive matching)', async () => {

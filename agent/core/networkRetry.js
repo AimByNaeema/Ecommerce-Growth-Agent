@@ -24,11 +24,18 @@
 // (network unreachable, HTTP 429, HTTP 5xx). Any other thrown error (4xx,
 // not-configured, GraphQL-level error) is a plain Error and is never retried - it
 // will deterministically fail again, so retrying it would only waste calls.
+//
+// retryAfterMs (optional): when a 429 response names a concrete wait time via its
+// Retry-After header (see parseRetryAfterMs below), the caller attaches it here so
+// retryAsync honors the server's own instructed wait instead of guessing via
+// exponential backoff - bounded by getMaxRetryAfterDelayMs() so one large header
+// value can never stall a run indefinitely.
 class RetryableError extends Error {
-  constructor(message) {
+  constructor(message, { retryAfterMs } = {}) {
     super(message);
     this.name = 'RetryableError';
     this.retryable = true;
+    this.retryAfterMs = typeof retryAfterMs === 'number' && retryAfterMs >= 0 ? retryAfterMs : null;
   }
 }
 
@@ -46,17 +53,59 @@ function getRetryBaseDelayMs() {
   return Number.isFinite(envOverride) && envOverride >= 0 ? envOverride : 200;
 }
 
+// How long a single connection-layer request (agent/core/claudeClient.js,
+// integrations/adapters/shopifyClient.js) is allowed to hang before it's treated as a
+// (retryable) failure instead of waiting forever - overridable via
+// NETWORK_REQUEST_TIMEOUT_MS. Without this, a stalled fetch() never resolves or
+// rejects, so retryAsync never gets a chance to run and the whole orchestrator run
+// (which never throws on its own - see agent/core/orchestratorExecutionContract.js)
+// simply hangs.
+function getRequestTimeoutMs() {
+  const envOverride = Number(process.env.NETWORK_REQUEST_TIMEOUT_MS);
+  return envOverride > 0 ? envOverride : 30000;
+}
+
+// Upper bound on how long a server-instructed Retry-After wait is ever honored for -
+// overridable via MAX_RETRY_AFTER_DELAY_MS. Respecting the header is more correct
+// than a blind guess, but an unbounded wait would break this project's "controlled,
+// bounded" execution model (see agent/core/executionBounds.js/usageLimits.js).
+function getMaxRetryAfterDelayMs() {
+  const envOverride = Number(process.env.MAX_RETRY_AFTER_DELAY_MS);
+  return envOverride > 0 ? envOverride : 30000;
+}
+
+// Reads a Retry-After response header (seconds form or HTTP-date form) and returns
+// the wait time in ms, or null when absent/unparseable/there's no headers accessor at
+// all (e.g. a hand-built mock response in tests that doesn't model headers) - never
+// guessed when the header itself is missing.
+function parseRetryAfterMs(response) {
+  const header = response && response.headers && typeof response.headers.get === 'function'
+    ? response.headers.get('retry-after')
+    : null;
+  if (!header) return null;
+
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+
+  const dateMs = Date.parse(header);
+  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
+
+  return null;
+}
+
 function sleep(ms) {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Calls asyncFn() and returns its result. On a thrown RetryableError (err.retryable
-// === true), retries with exponential backoff until getMaxRetryAttempts() is
-// reached, then rethrows the last error. Any non-retryable error propagates
-// immediately on the first attempt - never retried, matching
-// toolSelectionRules.js's "never retry silently forever" rule by construction
-// (bounded attempts) and by design (only transient failures are ever retried).
+// === true), retries until getMaxRetryAttempts() is reached, then rethrows the last
+// error. The wait before the next attempt is the server-instructed Retry-After value
+// (bounded by getMaxRetryAfterDelayMs()) when the error carries one, otherwise
+// exponential backoff. Any non-retryable error propagates immediately on the first
+// attempt - never retried, matching toolSelectionRules.js's "never retry silently
+// forever" rule by construction (bounded attempts) and by design (only transient
+// failures are ever retried).
 async function retryAsync(asyncFn) {
   const maxAttempts = getMaxRetryAttempts();
   const baseDelayMs = getRetryBaseDelayMs();
@@ -70,18 +119,53 @@ async function retryAsync(asyncFn) {
       if (!err || err.retryable !== true || attempt === maxAttempts) {
         throw err;
       }
-      await sleep(baseDelayMs * 2 ** (attempt - 1));
+      const delay = typeof err.retryAfterMs === 'number'
+        ? Math.min(err.retryAfterMs, getMaxRetryAfterDelayMs())
+        : baseDelayMs * 2 ** (attempt - 1);
+      await sleep(delay);
     }
   }
 
   throw lastError;
 }
 
+// Races fetchFn(signal) against a timer bounded by timeoutMs (default
+// getRequestTimeoutMs()). fetchFn receives an AbortController's signal so a real
+// in-flight request is actually cancelled on timeout, not just abandoned; the race
+// (rather than relying solely on AbortError) also makes this deterministically
+// testable against a mocked fetch that never inspects the signal. Throws a plain,
+// clear Error naming the timeout - the caller's own try/catch (see claudeClient.js/
+// shopifyClient.js) is what decides whether that's retryable, same as any other
+// thrown fetch() failure.
+async function withTimeout(fetchFn, timeoutMs = getRequestTimeoutMs()) {
+  const controller = new AbortController();
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    // Deliberately NOT unref'd: unref would let Node exit before this timer ever
+    // fires whenever nothing else is pinning the event loop (e.g. a hung request
+    // with no other pending I/O) - exactly the case this timeout exists to catch.
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`Request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([fetchFn(controller.signal), timeoutPromise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 module.exports = {
   RetryableError,
   getMaxRetryAttempts,
   getRetryBaseDelayMs,
+  getRequestTimeoutMs,
+  getMaxRetryAfterDelayMs,
+  parseRetryAfterMs,
   retryAsync,
+  withTimeout,
 };
 
 if (require.main === module) {

@@ -112,11 +112,18 @@ test('exports the expected function', () => {
       });
 
       // Structured output only - no `raw` field, no leaking the mocked API envelope.
-      assert.deepStrictEqual(Object.keys(result).sort(), ['model', 'stopReason', 'text', 'tokensUsed'].sort());
+      assert.deepStrictEqual(
+        Object.keys(result).sort(),
+        ['model', 'stopReason', 'text', 'tokensUsed', 'inputTokens', 'outputTokens'].sort()
+      );
       assert.strictEqual(result.text, 'Here is a mocked product description.');
       assert.strictEqual(result.model, 'claude-sonnet-5');
       assert.strictEqual(result.stopReason, 'end_turn');
       assert.strictEqual(result.tokensUsed, 20);
+      // Additive fields (usage/usageTracker.js's structured model_call events) - the
+      // input/output split survives here instead of being discarded.
+      assert.strictEqual(result.inputTokens, 12);
+      assert.strictEqual(result.outputTokens, 8);
 
       // Structured input was actually passed through to the (mocked) client - the
       // instruction/context were combined into one user message, not left as two

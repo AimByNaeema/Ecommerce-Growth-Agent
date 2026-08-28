@@ -93,7 +93,14 @@ function requireRequestArray(requests, fnName) {
 
 const DECIDABLE_STATUSES = ['approved', 'rejected'];
 
-function decideApprovalRequest(requests, requestId, { decision, decidedBy, notes = null } = {}) {
+// expectedBusinessId (optional, additive): a defense-in-depth cross-business isolation
+// guard (CLAUDE.md section 1's multi-business goal). Business identity rides inside
+// execution_request.business_id (set by agent/core/orchestratorExecutionContract.js's
+// createExecutionRequest) - not a approvalRequestModel.js schema field, so no change
+// was needed there. When supplied, a request belonging to a different business is
+// refused before any mutation happens, exactly like every other precondition check
+// below. Omitting it preserves today's exact behavior (no cross-business check).
+function decideApprovalRequest(requests, requestId, { decision, decidedBy, notes = null, expectedBusinessId = null } = {}) {
   const fnName = 'decideApprovalRequest';
 
   requireRequestArray(requests, fnName);
@@ -113,6 +120,13 @@ function decideApprovalRequest(requests, requestId, { decision, decidedBy, notes
   if (existing.status !== 'pending') {
     throw new Error(
       `${fnName} cannot decide request '${requestId}' - it is already '${existing.status}', not 'pending'.`
+    );
+  }
+
+  const actualBusinessId = existing.execution_request && existing.execution_request.business_id;
+  if (expectedBusinessId && actualBusinessId !== expectedBusinessId) {
+    throw new Error(
+      `${fnName} refused: request '${requestId}' belongs to business '${actualBusinessId || '(none)'}', not '${expectedBusinessId}'.`
     );
   }
 

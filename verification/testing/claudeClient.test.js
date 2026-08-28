@@ -226,6 +226,111 @@ const SAMPLE_MESSAGE_RESPONSE = {
     assert.strictEqual(calls, 3, 'should attempt exactly the default max (3), never more');
   });
 
+  // --- Invalid/malformed responses never become a fabricated reply -----------------
+
+  await testAsync('sendMessage throws a clear error instead of a fabricated empty reply when content is missing', async () => {
+    await withApiKeyConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { model: 'claude-sonnet-5', stop_reason: 'end_turn' }),
+        () =>
+          assert.rejects(
+            () => sendMessage({ messages: [{ role: 'user', content: 'hi' }] }),
+            /unexpected\/missing content shape/
+          )
+      )
+    );
+  });
+
+  await testAsync('sendMessage throws a clear error instead of a fabricated empty reply when content is not an array', async () => {
+    await withApiKeyConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { content: 'not an array', model: 'claude-sonnet-5' }),
+        () =>
+          assert.rejects(
+            () => sendMessage({ messages: [{ role: 'user', content: 'hi' }] }),
+            /unexpected\/missing content shape/
+          )
+      )
+    );
+  });
+
+  await testAsync('sendMessage throws a clear error instead of crashing when the response body fails to parse as JSON', async () => {
+    await withApiKeyConfigured(() =>
+      withMockedFetch(
+        async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => { throw new Error('bad json'); } }),
+        () =>
+          assert.rejects(
+            () => sendMessage({ messages: [{ role: 'user', content: 'hi' }] }),
+            /unexpected\/missing content shape/
+          )
+      )
+    );
+  });
+
+  await testAsync('sendMessage still succeeds normally when content is a valid (non-empty) array', async () => {
+    await withApiKeyConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, SAMPLE_MESSAGE_RESPONSE),
+        async () => {
+          const result = await sendMessage({ messages: [{ role: 'user', content: 'hi' }] });
+          assert.strictEqual(result.text, 'ok');
+        }
+      )
+    );
+  });
+
+  // --- Timeouts ----------------------------------------------------------------------
+
+  await testAsync('sendMessage rejects with a clear timeout error when the request never resolves', async () => {
+    const savedTimeout = process.env.NETWORK_REQUEST_TIMEOUT_MS;
+    process.env.NETWORK_REQUEST_TIMEOUT_MS = '20';
+    try {
+      await withZeroRetryDelay(() =>
+        withApiKeyConfigured(() =>
+          withMockedFetch(
+            () => new Promise(() => {}),
+            () =>
+              assert.rejects(
+                () => sendMessage({ messages: [{ role: 'user', content: 'hi' }] }),
+                /Could not reach the Claude API.*timed out after 20ms/
+              )
+          )
+        )
+      );
+    } finally {
+      if (savedTimeout === undefined) delete process.env.NETWORK_REQUEST_TIMEOUT_MS;
+      else process.env.NETWORK_REQUEST_TIMEOUT_MS = savedTimeout;
+    }
+  });
+
+  // --- Rate limits: Retry-After is honored, bounded ----------------------------------
+
+  await testAsync('sendMessage honors a Retry-After header on a 429 instead of guessing via backoff', async () => {
+    let calls = 0;
+    const timestamps = [];
+    await withApiKeyConfigured(() =>
+      withMockedFetch(
+        async () => {
+          calls += 1;
+          timestamps.push(Date.now());
+          if (calls === 1) {
+            return {
+              ok: false,
+              status: 429,
+              statusText: 'Too Many Requests',
+              headers: { get: (name) => (name === 'retry-after' ? '0.05' : null) },
+              json: async () => ({ error: { message: 'Rate limited' } }),
+            };
+          }
+          return jsonResponse(200, SAMPLE_MESSAGE_RESPONSE);
+        },
+        () => sendMessage({ messages: [{ role: 'user', content: 'hi' }] })
+      )
+    );
+    assert.strictEqual(calls, 2);
+    assert.ok(timestamps[1] - timestamps[0] >= 40, 'should wait ~50ms per the Retry-After header, not a shorter guess');
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) {
     process.exit(1);

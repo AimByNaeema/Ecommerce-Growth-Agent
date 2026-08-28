@@ -76,7 +76,8 @@ const { createApprovalRequest } = require('../../approvals/approvalWorkflow');
 const { createAuditTracker, appendAuditEvent } = require('../../audit/auditTrail');
 const { createToolResultCache, getCachedResult, setCachedResult } = require('./toolResultCache');
 const { checkArrayFieldBounds, checkPlanStepBounds } = require('./executionBounds');
-const { createUsageTracker, checkUsageLimits, recordUsage } = require('./usageLimits');
+const { createUsageTracker, checkUsageLimits, recordUsage, MODEL_CALL_TOOL_IDS, EXTERNAL_API_TOOL_IDS, RESEARCH_TOOL_IDS } = require('./usageLimits');
+const { createUsageLedger, appendUsageEvent, summarizeUsage } = require('../../usage/usageTracker');
 const businessConfigurationRetrieval = require('../../tools/businessConfigurationRetrieval');
 const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
@@ -119,12 +120,13 @@ const analyticsDataTool = require('../../tools/analyticsDataTool');
 // tools/competitorResearchTool.js, tools/customerResearchTool.js,
 // tools/keywordResearchTool.js, tools/seoAnalysisTool.js.
 const TOOL_EXECUTORS = {
-  business_configuration_retrieval: () =>
-    businessConfigurationRetrieval.retrieveBusinessConfiguration(),
+  business_configuration_retrieval: (executionRequest) =>
+    businessConfigurationRetrieval.retrieveBusinessConfiguration({ businessId: executionRequest.business_id }),
   ai_reasoning_completion: (executionRequest, runTokenTracker) =>
     aiReasoningCompletion.runReasoningCompletion({
       instruction: executionRequest.objective,
       tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
+      businessId: executionRequest.business_id,
     }),
   market_research: (executionRequest) =>
     marketResearchTool.runMarketResearchTool(executionRequest.research_params),
@@ -161,7 +163,10 @@ const TOOL_EXECUTORS = {
   analytics: (executionRequest) =>
     analyticsTool.runAnalyticsTool(executionRequest.research_params),
   analytics_data_retrieval: (executionRequest) =>
-    analyticsDataTool.runAnalyticsDataTool(executionRequest.research_params),
+    analyticsDataTool.runAnalyticsDataTool({
+      ...(executionRequest.research_params || {}),
+      businessId: executionRequest.business_id,
+    }),
 };
 
 const STOPWORDS = new Set([
@@ -234,7 +239,7 @@ function needsMoreInformation(objective, capability) {
 // below) - attached as-is (null when absent) for whichever tool executor ends up
 // selected; a tool that doesn't use it (e.g. business_configuration_retrieval) simply
 // ignores the field.
-function createExecutionRequest(objective, capability, researchParams = null) {
+function createExecutionRequest(objective, capability, researchParams = null, businessId = null) {
   const category = capability.category;
   const specialistId = CATEGORY_TO_SPECIALIST[category] || null;
   return {
@@ -244,6 +249,7 @@ function createExecutionRequest(objective, capability, researchParams = null) {
     specialist_id: specialistId,
     is_shared_infrastructure: specialistId === null,
     research_params: researchParams,
+    business_id: businessId,
   };
 }
 
@@ -303,7 +309,7 @@ const NEVER_CACHED_TOOL_IDS = new Set(['ai_reasoning_completion']);
 // invoked, so a cache hit never consumes budget. A breach returns a controlled
 // error outcome instead of executing, exactly like the cache-miss executor-error
 // path already does.
-async function runExecutor(toolId, executionRequest, runTokenTracker, classification, runAuditTracker = null, runToolResultCache = null, runUsageTracker = null) {
+async function runExecutor(toolId, executionRequest, runTokenTracker, classification, runAuditTracker = null, runToolResultCache = null, runUsageTracker = null, runUsageLedger = null) {
   const executor = TOOL_EXECUTORS[toolId];
   if (!executor) {
     appendAuditEvent(runAuditTracker, {
@@ -352,6 +358,16 @@ async function runExecutor(toolId, executionRequest, runTokenTracker, classifica
         status: 'error',
         summary: usageCheck.reason,
       });
+      appendUsageEvent(runUsageLedger, {
+        category: MODEL_CALL_TOOL_IDS.has(toolId) ? 'model_call' : 'tool_call',
+        specialistId,
+        toolId,
+        status: 'error',
+        isExternalApi: EXTERNAL_API_TOOL_IDS.has(toolId),
+        isResearch: RESEARCH_TOOL_IDS.has(toolId),
+        quantity: 0,
+        summary: usageCheck.reason,
+      });
       return { status: 'error', data: null, error: usageCheck.reason, classification };
     }
     recordUsage(toolId, runUsageTracker);
@@ -387,6 +403,23 @@ async function runExecutor(toolId, executionRequest, runTokenTracker, classifica
       specialistId,
       classification,
       status: 'success',
+      summary: `Tool '${toolId}' completed successfully.`,
+    });
+    const isModelCall = MODEL_CALL_TOOL_IDS.has(toolId);
+    const tokens =
+      isModelCall && data && typeof data.inputTokens === 'number' && typeof data.outputTokens === 'number'
+        ? { input: data.inputTokens, output: data.outputTokens, total: data.inputTokens + data.outputTokens }
+        : null;
+    appendUsageEvent(runUsageLedger, {
+      category: isModelCall ? 'model_call' : 'tool_call',
+      specialistId,
+      toolId,
+      status: 'success',
+      isExternalApi: EXTERNAL_API_TOOL_IDS.has(toolId),
+      isResearch: RESEARCH_TOOL_IDS.has(toolId),
+      tokens,
+      model: isModelCall && data ? data.model || null : null,
+      quantity: tokens ? tokens.total : 1,
       summary: `Tool '${toolId}' completed successfully.`,
     });
     if (classification === 'recommendation') {
@@ -433,7 +466,8 @@ async function executeSelectedCapability(
   runApprovalTracker = { requests: [] },
   runAuditTracker = null,
   runToolResultCache = null,
-  runUsageTracker = null
+  runUsageTracker = null,
+  runUsageLedger = null
 ) {
   const access = checkToolAccess({
     specialistId: executionRequest.specialist_id,
@@ -519,7 +553,7 @@ async function executeSelectedCapability(
     return { status: 'error', data: null, error: boundsCheck.reason, classification: access.classification };
   }
 
-  return runExecutor(access.tool_id, executionRequest, runTokenTracker, access.classification, runAuditTracker, runToolResultCache, runUsageTracker);
+  return runExecutor(access.tool_id, executionRequest, runTokenTracker, access.classification, runAuditTracker, runToolResultCache, runUsageTracker, runUsageLedger);
 }
 
 // Resumes a previously gated action after a real human decision has been recorded via
@@ -535,7 +569,8 @@ async function resumeApprovedExecution(
   runTokenTracker = { tokensUsedThisRun: 0 },
   runAuditTracker = null,
   runToolResultCache = null,
-  runUsageTracker = null
+  runUsageTracker = null,
+  runUsageLedger = null
 ) {
   if (!decidedApprovalRequest || typeof decidedApprovalRequest !== 'object') {
     return {
@@ -602,7 +637,8 @@ async function resumeApprovedExecution(
     access.classification,
     runAuditTracker,
     runToolResultCache,
-    runUsageTracker
+    runUsageTracker,
+    runUsageLedger
   );
 }
 
@@ -870,13 +906,24 @@ async function buildPlanStep(
   runApprovalTracker = { requests: [] },
   runAuditTracker = null,
   runToolResultCache = null,
-  runUsageTracker = null
+  runUsageTracker = null,
+  businessId = null,
+  runUsageLedger = null
 ) {
   const capabilityEntry = target.type === 'specialist' ? getSpecialistCapabilityById(target.id) : null;
   appendAuditEvent(runAuditTracker, {
     type: 'agent',
     specialistId: target.type === 'specialist' ? target.id : null,
     capabilityId: null,
+    summary:
+      target.type === 'specialist'
+        ? `Routed clause "${currentTask}" to specialist '${target.id}'.`
+        : `Routed clause "${currentTask}" to shared infrastructure '${target.id}'.`,
+  });
+  appendUsageEvent(runUsageLedger, {
+    category: 'agent_task',
+    specialistId: target.type === 'specialist' ? target.id : null,
+    quantity: 1,
     summary:
       target.type === 'specialist'
         ? `Routed clause "${currentTask}" to specialist '${target.id}'.`
@@ -972,7 +1019,8 @@ async function buildPlanStep(
     executionRequest = createExecutionRequest(
       objective,
       { category: matchedCategory, tool: toolMatch },
-      effectiveResearchParams
+      effectiveResearchParams,
+      businessId
     );
     outcome = await executeSelectedCapability(
       executionRequest,
@@ -980,7 +1028,8 @@ async function buildPlanStep(
       runApprovalTracker,
       runAuditTracker,
       runToolResultCache,
-      runUsageTracker
+      runUsageTracker,
+      runUsageLedger
     );
   }
 
@@ -1040,6 +1089,8 @@ function buildRoutingResponse({
   growthOpportunityDrafts = null,
   pendingApprovals = null,
   auditTrail = null,
+  usageLedger = null,
+  usageSummary = null,
 }) {
   const needsMoreInfo = routing.status === 'clarification_required';
   const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
@@ -1088,6 +1139,15 @@ function buildRoutingResponse({
     // 'request'/'error' events) on every other path, including clarification-required
     // responses, so a partial trail is never silently dropped.
     audit_trail: auditTrail,
+    // Every usage/usageTracker.js event recorded anywhere in this run (model_call,
+    // tool_call, api_call, research_op, agent_task) - null only when
+    // understandObjective() itself threw before a ledger could even be created; an
+    // array (possibly just the initial agent_task events) on every other path,
+    // including clarification-required responses, mirroring audit_trail's own
+    // never-silently-dropped convention. Shaped for a future SaaS pricing/metering
+    // engine to consume - this module does no pricing itself.
+    usage_ledger: usageLedger,
+    usage_summary: usageSummary,
   };
 }
 
@@ -1100,13 +1160,18 @@ function buildRoutingResponse({
 // still decided purely by the existing free-text word-overlap logic; researchParams
 // only affects what a matched research tool is actually called with. Omitted by every
 // existing caller, so default behavior (and every existing test) is unchanged.
-async function runOrchestratorContract(rawTask, { researchParams = null } = {}) {
+async function runOrchestratorContract(rawTask, { researchParams = null, businessId = null } = {}) {
   // One audit tracker per run - see audit/auditTrail.js. Created before anything else
   // so even a validation failure on the very first line is itself a recorded event;
   // never module-level state, same caller-held-per-run pattern as runTokenTracker/
   // runApprovalTracker below.
   const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const runAuditTracker = createAuditTracker(runId);
+  const runAuditTracker = createAuditTracker(runId, businessId);
+  // One usage ledger per run - see usage/usageTracker.js. Created at the same point
+  // as runAuditTracker (not the later-created runUsageTracker limiter below) so it
+  // appears on every response path, including the early clarification-required
+  // returns, exactly like audit_trail already does.
+  const runUsageLedger = createUsageLedger(runId, businessId);
 
   let objective;
   try {
@@ -1132,6 +1197,8 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
         plan: null,
       },
       auditTrail: runAuditTracker.events,
+      usageLedger: runUsageLedger.events,
+      usageSummary: summarizeUsage(runUsageLedger),
     });
   }
 
@@ -1142,6 +1209,8 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
       objective,
       routing: { ...routingResult, plan: null },
       auditTrail: runAuditTracker.events,
+      usageLedger: runUsageLedger.events,
+      usageSummary: summarizeUsage(runUsageLedger),
     });
   }
 
@@ -1167,6 +1236,8 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
         plan: null,
       },
       auditTrail: runAuditTracker.events,
+      usageLedger: runUsageLedger.events,
+      usageSummary: summarizeUsage(runUsageLedger),
     });
   }
 
@@ -1206,7 +1277,9 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
         runApprovalTracker,
         runAuditTracker,
         runToolResultCache,
-        runUsageTracker
+        runUsageTracker,
+        businessId,
+        runUsageLedger
       )
     );
   }
@@ -1231,6 +1304,8 @@ async function runOrchestratorContract(rawTask, { researchParams = null } = {}) 
     growthOpportunityDrafts,
     pendingApprovals: runApprovalTracker.requests,
     auditTrail: runAuditTracker.events,
+    usageLedger: runUsageLedger.events,
+    usageSummary: summarizeUsage(runUsageLedger),
   });
 }
 

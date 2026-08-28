@@ -15,7 +15,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { RetryableError, retryAsync } = require('./networkRetry');
+const { RetryableError, retryAsync, withTimeout, parseRetryAfterMs } = require('./networkRetry');
+const businessRegistry = require('../../configuration/businessRegistry');
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2023-06-01';
@@ -45,12 +46,36 @@ function loadEnvOnce() {
   }
 }
 
-// True once a non-empty ANTHROPIC_API_KEY is present in the environment. Lets a
-// caller check readiness and fail fast with a clear message instead of attempting
-// a network call that can only fail.
-function isConfigured() {
-  loadEnvOnce();
-  return Boolean(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim());
+// Resolves { apiKey, model, maxTokens } for one call. businessId falsy (the default)
+// reproduces today's exact single-business behavior: the root .env loaded once into
+// global process.env. businessId set delegates to configuration/businessRegistry.js's
+// per-business .env instead - never touches process.env (see that module's header for
+// why process.loadEnvFile is unsafe once two businesses' credentials must coexist in
+// one process).
+function resolveCredentials(businessId) {
+  if (!businessId) {
+    loadEnvOnce();
+    return {
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      model: process.env.ANTHROPIC_MODEL,
+      maxTokens: process.env.ANTHROPIC_MAX_TOKENS,
+    };
+  }
+  const credentials = businessRegistry.loadBusinessCredentials(businessId);
+  return {
+    apiKey: credentials.ANTHROPIC_API_KEY,
+    model: credentials.ANTHROPIC_MODEL,
+    maxTokens: credentials.ANTHROPIC_MAX_TOKENS,
+  };
+}
+
+// True once a non-empty ANTHROPIC_API_KEY is present for businessId (or, when
+// omitted, for the root .env/process.env - today's default single business). Lets a
+// caller check readiness and fail fast with a clear message instead of attempting a
+// network call that can only fail.
+function isConfigured({ businessId = null } = {}) {
+  const { apiKey } = resolveCredentials(businessId);
+  return Boolean(apiKey && apiKey.trim());
 }
 
 // Extracts plain reply text from a Messages API response body's `content` blocks.
@@ -73,24 +98,24 @@ function extractText(content) {
 // Returns: { text, model, stopReason, usage, raw }
 // Throws: if messages is invalid, the API key is missing, the request fails, or the
 // API responds with a non-success status. Never returns a fabricated reply.
-async function sendMessage({ messages, system, model, maxTokens } = {}) {
-  loadEnvOnce();
-
+async function sendMessage({ messages, system, model, maxTokens, businessId = null } = {}) {
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new Error('sendMessage requires a non-empty `messages` array.');
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const resolved = resolveCredentials(businessId);
+  const apiKey = resolved.apiKey;
   if (!apiKey || !apiKey.trim()) {
-    throw new Error(
-      'ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add a real key from ' +
-      'https://platform.claude.com/settings/keys before calling sendMessage().'
-    );
+    const message = businessId
+      ? `Business '${businessId}' has no configured ANTHROPIC_API_KEY. Create ` +
+        `configuration/businesses/${businessId}/.env with a real key before calling sendMessage().`
+      : 'ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add a real key from ' +
+        'https://platform.claude.com/settings/keys before calling sendMessage().';
+    throw new Error(message);
   }
 
-  const resolvedModel = model || process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
-  const resolvedMaxTokens =
-    maxTokens || Number(process.env.ANTHROPIC_MAX_TOKENS) || DEFAULT_MAX_TOKENS;
+  const resolvedModel = model || resolved.model || DEFAULT_MODEL;
+  const resolvedMaxTokens = maxTokens || Number(resolved.maxTokens) || DEFAULT_MAX_TOKENS;
 
   const body = { model: resolvedModel, max_tokens: resolvedMaxTokens, messages };
   if (system) body.system = system;
@@ -104,15 +129,18 @@ async function sendMessage({ messages, system, model, maxTokens } = {}) {
   return retryAsync(async () => {
     let response;
     try {
-      response = await fetch(API_URL, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': API_VERSION,
-        },
-        body: JSON.stringify(body),
-      });
+      response = await withTimeout((signal) =>
+        fetch(API_URL, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': API_VERSION,
+          },
+          body: JSON.stringify(body),
+          signal,
+        })
+      );
     } catch (err) {
       throw new RetryableError(`Could not reach the Claude API: ${err.message}`);
     }
@@ -123,9 +151,19 @@ async function sendMessage({ messages, system, model, maxTokens } = {}) {
       const apiMessage = raw && raw.error && raw.error.message ? raw.error.message : response.statusText;
       const message = `Claude API request failed (${response.status}): ${apiMessage}`;
       if (response.status === 429 || response.status >= 500) {
-        throw new RetryableError(message);
+        throw new RetryableError(message, { retryAfterMs: parseRetryAfterMs(response) });
       }
       throw new Error(message);
+    }
+
+    // A 200 OK with a missing/non-array `content` field is not a valid Messages API
+    // response shape (bad JSON on the wire, an unexpected API change, etc.) - this is
+    // an honest failure, not a reply Claude actually gave, so it throws here rather
+    // than letting extractText() quietly turn it into a fabricated-looking empty
+    // string reply. extractText() itself is unchanged - it stays a pure, defensive
+    // text-joiner for already-validated content.
+    if (!raw || !Array.isArray(raw.content)) {
+      throw new Error('Claude API returned a success response with an unexpected/missing content shape.');
     }
 
     return {
@@ -142,6 +180,7 @@ module.exports = {
   sendMessage,
   isConfigured,
   loadEnvOnce,
+  resolveCredentials,
   extractText,
   DEFAULT_MODEL,
   DEFAULT_MAX_TOKENS,

@@ -639,6 +639,113 @@ test('exports the expected connection-layer functions and constants', () => {
     assert.strictEqual(calls, 3, 'should attempt exactly the default max (3), never more');
   });
 
+  // --- Timeouts ------------------------------------------------------------------
+
+  await testAsync('getProducts rejects with a clear timeout error when the request never resolves', async () => {
+    const savedTimeout = process.env.NETWORK_REQUEST_TIMEOUT_MS;
+    process.env.NETWORK_REQUEST_TIMEOUT_MS = '20';
+    try {
+      await withZeroRetryDelay(() =>
+        withEnvConfigured(() =>
+          withMockedFetch(
+            () => new Promise(() => {}),
+            () =>
+              assert.rejects(
+                () => getProducts(),
+                /Could not reach the Shopify Admin API.*timed out after 20ms/
+              )
+          )
+        )
+      );
+    } finally {
+      if (savedTimeout === undefined) delete process.env.NETWORK_REQUEST_TIMEOUT_MS;
+      else process.env.NETWORK_REQUEST_TIMEOUT_MS = savedTimeout;
+    }
+  });
+
+  // --- Rate limits: Retry-After is honored, bounded -------------------------------
+
+  await testAsync('getProducts honors a Retry-After header on a 429 instead of guessing via backoff', async () => {
+    let calls = 0;
+    const timestamps = [];
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => {
+          calls += 1;
+          timestamps.push(Date.now());
+          if (calls === 1) {
+            return {
+              ok: false,
+              status: 429,
+              statusText: 'Too Many Requests',
+              headers: { get: (name) => (name === 'retry-after' ? '0.05' : null) },
+              json: async () => ({ errors: [{ message: 'Rate limited' }] }),
+            };
+          }
+          return jsonResponse(200, { data: { products: { edges: [] } } });
+        },
+        () => getProducts()
+      )
+    );
+    assert.strictEqual(calls, 2);
+    assert.ok(timestamps[1] - timestamps[0] >= 40, 'should wait ~50ms per the Retry-After header, not a shorter guess');
+  });
+
+  // --- Invalid responses: an unexpected nested shape never becomes fabricated data --
+
+  await testAsync('getProducts throws a clear "unexpected shape" error when a node is missing its variants field', async () => {
+    const nodeWithoutVariants = { ...SAMPLE_PRODUCT_GRAPHQL_NODE };
+    delete nodeWithoutVariants.variants;
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { products: { edges: [{ node: nodeWithoutVariants }] } } }),
+        () => assert.rejects(() => getProducts(), /getProducts had an unexpected shape/)
+      )
+    );
+  });
+
+  await testAsync('getOrders throws a clear "unexpected shape" error when a node is missing its lineItems field', async () => {
+    const nodeWithoutLineItems = { ...SAMPLE_ORDER_GRAPHQL_NODE };
+    delete nodeWithoutLineItems.lineItems;
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { orders: { edges: [{ node: nodeWithoutLineItems }] } } }),
+        () => assert.rejects(() => getOrders(), /getOrders had an unexpected shape/)
+      )
+    );
+  });
+
+  await testAsync('getCustomers throws a clear "unexpected shape" error when a node is missing its amountSpent field', async () => {
+    const nodeWithoutAmountSpent = { ...SAMPLE_CUSTOMER_GRAPHQL_NODE };
+    delete nodeWithoutAmountSpent.amountSpent;
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { customers: { edges: [{ node: nodeWithoutAmountSpent }] } } }),
+        () => assert.rejects(() => getCustomers(), /getCustomers had an unexpected shape/)
+      )
+    );
+  });
+
+  await testAsync('getInventoryLevels throws a clear "unexpected shape" error when a node is missing its inventoryLevels field', async () => {
+    const nodeWithoutInventoryLevels = { ...SAMPLE_INVENTORY_ITEM_GRAPHQL_NODE };
+    delete nodeWithoutInventoryLevels.inventoryLevels;
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { inventoryItems: { edges: [{ node: nodeWithoutInventoryLevels }] } } }),
+        () => assert.rejects(() => getInventoryLevels(), /getInventoryLevels had an unexpected shape/)
+      )
+    );
+  });
+
+  await testAsync('getCollections throws a clear "unexpected shape" error when an edge is missing its node entirely', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () => jsonResponse(200, { data: { collections: { edges: [{}] } } }),
+        () => assert.rejects(() => getCollections(), /getCollections had an unexpected shape/)
+      )
+    );
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) {
     process.exit(1);
