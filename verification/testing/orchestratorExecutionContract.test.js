@@ -226,6 +226,73 @@ test('routeClause reports unmatched when nothing scores', () => {
   assert.strictEqual(result.status, 'unmatched');
 });
 
+// Regression: "Analyze my ecommerce business" used to silently win the "configuration"
+// shared-infrastructure target (a tool that only fetches the shop's name/domain/email)
+// purely because the word "business" happens to appear in that tool's own title -
+// every real specialist scored 0, so nothing was even ambiguous, it just silently
+// misrouted. ROUTING_SYNONYMS teaches analytics_optimization's routing text this
+// common phrasing (its own description already covers "analyzing the business" -
+// "Store performance, growth metrics, and optimization recommendations") without
+// touching agent/core/specialistRegistry.js's real title/description anywhere.
+test('routeClause routes a generic "analyze my business" phrasing to Analytics & Optimization, not the configuration shared-infrastructure tool', () => {
+  const result = routeClause('Analyze my ecommerce business');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.type, 'specialist');
+  assert.strictEqual(result.target.id, 'analytics_optimization');
+});
+
+test('routeClause still matches Analytics & Optimization on its own real, undisturbed vocabulary', () => {
+  const result = routeClause('store performance and growth metrics');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.id, 'analytics_optimization');
+});
+
+// Regression: generic/incidental word overlap must not let a shared-infrastructure
+// tool win or tie against a real specialist for a goal-oriented request. Before the
+// GOAL/GENERIC word weighting + specialist-preferred tie-break, this exact request
+// tied "product" (word "opportunity") against the "configuration" shared-infrastructure
+// target (word "shopify", which only appears there because
+// tools/businessConfigurationRetrieval.js's description mentions "the connected
+// Shopify store") and was reported ambiguous instead of routing to Product.
+test('routeClause routes "biggest opportunity to increase Shopify sales" to Product, not the configuration shared-infrastructure tool', () => {
+  const result = routeClause('Identify the single biggest opportunity to increase my Shopify sales.');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.type, 'specialist');
+  assert.strictEqual(result.target.id, 'product');
+});
+
+test('routeClause routes "biggest SEO opportunity" to SEO, not Product', () => {
+  const result = routeClause('What is my biggest SEO opportunity?');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.id, 'seo');
+});
+
+test('routeClause routes "strongest growth opportunity" for a product to Product', () => {
+  const result = routeClause('Which product has the strongest growth opportunity?');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.id, 'product');
+});
+
+test('routeClause routes "best low-cost marketing opportunity" to Marketing', () => {
+  const result = routeClause('What is the best low-cost marketing opportunity?');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.id, 'marketing');
+});
+
+// Regression: the full multi-clause example from the bug report. "Analyze my ecommerce
+// business" (-> analytics_optimization) and "identify the single biggest opportunity to
+// increase sales" (-> product) are two clauses split on "and" - neither may resolve to
+// the "configuration" shared-infrastructure target.
+test('planRouting plans "analyze my business and identify the biggest sales opportunity" to Product + Analytics & Optimization, never configuration', () => {
+  const result = planRouting(
+    'Analyze my ecommerce business and identify the single biggest opportunity to increase sales.'
+  );
+  assert.strictEqual(result.status, 'planned');
+  const ids = result.targets.map((target) => target.id).sort();
+  assert.deepStrictEqual(ids, ['analytics_optimization', 'product']);
+  assert.ok(!result.targets.some((target) => target.type === 'shared_infrastructure'));
+});
+
 // --- Structured routing: planRouting -----------------------------------------------
 
 test('planRouting produces a single-target plan for a single-capability task', () => {

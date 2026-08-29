@@ -674,12 +674,65 @@ function validateResult(outcome) {
 // agent/core/specialistRegistry.js verbatim (see that registry's own tests) - so this
 // is byte-identical to routing directly against specialistRegistry.js, not a new
 // source of truth.
+// Small, additive vocabulary layered onto specific specialists' ROUTING text only
+// (never their real registry title/description, which stays exactly as
+// agent/core/specialistRegistry.js defines it - this never touches that file, so it
+// cannot duplicate or diverge from it per CLAUDE.md rule 4). This exists because a
+// generic word a business owner naturally uses (e.g. "analyze my business") can
+// otherwise only match a shared-infrastructure tool purely by naming coincidence -
+// e.g. tools/businessConfigurationRetrieval.js's own title is literally "Business
+// configuration retrieval", so the standalone word "business" scores a point there
+// even though that tool only fetches the shop's name/domain/email, not a real
+// analysis. "Analyze my ecommerce business" therefore scored 0 for every specialist
+// and 1 for the "configuration" shared-infrastructure target, so it silently won -
+// not ambiguous, not unmatched, just wrong. Every specialist's own description
+// already covers this: analytics_optimization's is literally "Store performance,
+// growth metrics, and optimization recommendations" - i.e. analyzing the business -
+// so this only adds words, never removes any, meaning every routing decision that
+// worked before this change keeps working unchanged (see
+// verification/testing/orchestratorExecutionContract.test.js's pinned routeClause/
+// planRouting cases, plus the new "analyze my business" regression cases added
+// alongside this change).
+const ROUTING_SYNONYMS = {
+  analytics_optimization: ['analyze', 'analysis', 'business', 'ecommerce', 'commerce'],
+};
+
+// Generic words a user naturally types that, on their own, do not indicate which
+// specialist or shared-infrastructure tool is actually meant (e.g. "business" also
+// appears in tools/businessConfigurationRetrieval.js's own title, "analyze" says
+// nothing about which domain to analyze). Scored at a reduced weight below instead of
+// being ignored outright, so they can still help resolve a genuine tie without being
+// able to single-handedly decide a route the way a real intent signal can.
+const GENERIC_ROUTING_WORDS = new Set(['business', 'analyze', 'information', 'help', 'check', 'data']);
+const GENERIC_ROUTING_WORD_WEIGHT = 0.5;
+
+// Concrete goal/action vocabulary that reliably signals which specialist a request
+// belongs to. Weighted above the default so a real intent signal (e.g. "sales", "seo")
+// outweighs an incidental word overlap elsewhere (e.g. a shared-infrastructure tool's
+// own file-path/description text happening to contain "shopify" or "retrieval").
+const GOAL_ROUTING_WORDS = new Set([
+  'sales', 'revenue', 'growth', 'performance', 'conversion', 'product', 'seo',
+  'marketing', 'advertising', 'social', 'media', 'research',
+]);
+const GOAL_ROUTING_WORD_WEIGHT = 2;
+
+function routingWordWeight(word) {
+  if (GENERIC_ROUTING_WORDS.has(word)) return GENERIC_ROUTING_WORD_WEIGHT;
+  if (GOAL_ROUTING_WORDS.has(word)) return GOAL_ROUTING_WORD_WEIGHT;
+  return 1;
+}
+
 function buildRoutingTargets() {
   const specialistTargets = getSpecialistCapabilityRegistry().map((specialist) => ({
     type: 'specialist',
     id: specialist.id,
     title: specialist.title,
-    text: `${specialist.id} ${specialist.title} ${specialist.description}`,
+    text: [
+      specialist.id,
+      specialist.title,
+      specialist.description,
+      ...(ROUTING_SYNONYMS[specialist.id] || []),
+    ].join(' '),
   }));
 
   const sharedInfrastructureTargets = SHARED_INFRASTRUCTURE_CATEGORIES.map((category) => {
@@ -707,7 +760,7 @@ function scoreRoutingTargets(text) {
     const targetWords = tokenize(target.text);
     let score = 0;
     for (const word of targetWords) {
-      if (words.has(word)) score += 1;
+      if (words.has(word)) score += routingWordWeight(word);
     }
     return { target, score };
   })
@@ -737,7 +790,17 @@ function routeClause(clauseText) {
   }
 
   const topScore = scored[0].score;
-  const tied = scored.filter((entry) => entry.score === topScore);
+  let tied = scored.filter((entry) => entry.score === topScore);
+
+  // Shared infrastructure (e.g. configuration retrieval) is a context provider, not a
+  // final-task specialist (CLAUDE.md section 3) - if a real specialist ties with one
+  // for the top score, the specialist wins the tie instead of forcing an unnecessary
+  // clarification prompt or letting the infrastructure tool win on incidental wording.
+  const tiedSpecialists = tied.filter((entry) => entry.target.type === 'specialist');
+  if (tiedSpecialists.length > 0) {
+    tied = tiedSpecialists;
+  }
+
   if (tied.length > 1) {
     return {
       status: 'ambiguous',
