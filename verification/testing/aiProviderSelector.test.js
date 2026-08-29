@@ -7,6 +7,7 @@ const {
   getActiveProvider,
   DEFAULT_PROVIDER,
 } = require('../../agent/core/aiProviderSelector');
+const { loadEnvOnce: loadGeminiEnvOnce } = require('../../agent/core/geminiClient');
 
 // This test never makes a real network call - the sendMessage-delegation tests mock
 // global.fetch the same way claudeClient.test.js/geminiClient.test.js already do. It
@@ -171,6 +172,11 @@ test('getActiveProvider throws a clear error for an unrecognized AI_PROVIDER val
   });
 
   await testAsync('isConfigured delegates to Gemini when AI_PROVIDER=gemini', async () => {
+    // Force geminiClient.js's one-time .env load to happen before GEMINI_API_KEY is
+    // deleted below - otherwise, if this is the first call into geminiClient.js in
+    // this process, isConfigured()'s own internal loadEnvOnce() would reload a real
+    // GEMINI_API_KEY from the local .env file right after the delete.
+    loadGeminiEnvOnce();
     await withEnv({ AI_PROVIDER: 'gemini', GEMINI_API_KEY: undefined }, async () => {
       assert.strictEqual(isConfigured(), false);
       await withEnv({ GEMINI_API_KEY: 'AIzaSyTestKeyNotReal00000000000000000' }, async () => {
