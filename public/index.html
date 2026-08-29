@@ -10,77 +10,101 @@
 <style>
   /* ============ Design tokens ============ */
   :root {
-    --ground: #F4F6FA;
+    --ground: #020617;
+    --surface: #0B1220;
+    --surface-raised: #141F38;
+    --ink: #F8FAFC;
+    --ink-soft: #94A3B8;
+    --ink-faint: #64748B;
+    --border: #1E293B;
+    --accent: #F97316;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #3A2311;
+    --growth: #4ADE80;
+    --growth-soft: #123320;
+    --warn: #FBBF24;
+    --warn-soft: #3A2E0C;
+    --danger: #F87171;
+    --danger-soft: #3B1414;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --focus-ring: rgba(249, 115, 22, 0.45);
+    --code-key: #FDBA74;
+    --code-string: #93C5FD;
+    --code-punct: #64748B;
+  }
+
+  :root[data-theme="light"] {
+    --ground: #F6F7FA;
     --surface: #FFFFFF;
     --surface-raised: #FFFFFF;
-    --ink: #14213D;
-    --ink-soft: #45557C;
-    --ink-faint: #8B96AF;
-    --border: #DCE2ED;
-    --accent: #E37318;
+    --ink: #0B1220;
+    --ink-soft: #47536B;
+    --ink-faint: #8993A8;
+    --border: #E2E6ED;
+    --accent: #EA580C;
     --accent-ink: #FFFFFF;
-    --accent-soft: #FBE0C4;
-    --growth: #2A5CC7;
-    --growth-soft: #DEE7FA;
-    --warn: #B5760F;
-    --warn-soft: #F5E6C8;
-    --danger: #B13A3A;
-    --danger-soft: #F5DADA;
-    --shadow: rgba(20, 33, 61, 0.08);
-    --focus-ring: rgba(227, 115, 24, 0.35);
-    --code-key: #C1590D;
-    --code-string: #2A5CC7;
-    --code-punct: #8B96AF;
+    --accent-soft: #FDE6D3;
+    --growth: #16A34A;
+    --growth-soft: #DCF5E3;
+    --warn: #B45309;
+    --warn-soft: #FCEACB;
+    --danger: #B91C1C;
+    --danger-soft: #FBDADA;
+    --shadow: rgba(11, 18, 32, 0.08);
+    --focus-ring: rgba(234, 88, 12, 0.35);
+    --code-key: #C2410C;
+    --code-string: #1E3A8A;
+    --code-punct: #8993A8;
   }
 
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --ground: #0D1526;
-      --surface: #14213D;
-      --surface-raised: #192A4C;
-      --ink: #F4F6FA;
-      --ink-soft: #B7C2DC;
-      --ink-faint: #75839F;
-      --border: #263B63;
-      --accent: #F2913D;
-      --accent-ink: #14213D;
-      --accent-soft: #3D2C18;
-      --growth: #6FA0FF;
-      --growth-soft: #1B2E52;
-      --warn: #DDAE55;
-      --warn-soft: #3A2F16;
-      --danger: #E38080;
-      --danger-soft: #3A1E1E;
-      --shadow: rgba(0, 0, 0, 0.4);
-      --focus-ring: rgba(242, 145, 61, 0.4);
-      --code-key: #F2A25E;
-      --code-string: #8FB2FF;
-      --code-punct: #75839F;
+      --ground: #020617;
+      --surface: #0B1220;
+      --surface-raised: #141F38;
+      --ink: #F8FAFC;
+      --ink-soft: #94A3B8;
+      --ink-faint: #64748B;
+      --border: #1E293B;
+      --accent: #F97316;
+      --accent-ink: #FFFFFF;
+      --accent-soft: #3A2311;
+      --growth: #4ADE80;
+      --growth-soft: #123320;
+      --warn: #FBBF24;
+      --warn-soft: #3A2E0C;
+      --danger: #F87171;
+      --danger-soft: #3B1414;
+      --shadow: rgba(0, 0, 0, 0.5);
+      --focus-ring: rgba(249, 115, 22, 0.45);
+      --code-key: #FDBA74;
+      --code-string: #93C5FD;
+      --code-punct: #64748B;
     }
   }
 
   :root[data-theme="dark"] {
-    --ground: #0D1526;
-    --surface: #14213D;
-    --surface-raised: #192A4C;
-    --ink: #F4F6FA;
-    --ink-soft: #B7C2DC;
-    --ink-faint: #75839F;
-    --border: #263B63;
-    --accent: #F2913D;
-    --accent-ink: #14213D;
-    --accent-soft: #3D2C18;
-    --growth: #6FA0FF;
-    --growth-soft: #1B2E52;
-    --warn: #DDAE55;
-    --warn-soft: #3A2F16;
-    --danger: #E38080;
-    --danger-soft: #3A1E1E;
-    --shadow: rgba(0, 0, 0, 0.4);
-    --focus-ring: rgba(242, 145, 61, 0.4);
-    --code-key: #F2A25E;
-    --code-string: #8FB2FF;
-    --code-punct: #75839F;
+    --ground: #020617;
+    --surface: #0B1220;
+    --surface-raised: #141F38;
+    --ink: #F8FAFC;
+    --ink-soft: #94A3B8;
+    --ink-faint: #64748B;
+    --border: #1E293B;
+    --accent: #F97316;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #3A2311;
+    --growth: #4ADE80;
+    --growth-soft: #123320;
+    --warn: #FBBF24;
+    --warn-soft: #3A2E0C;
+    --danger: #F87171;
+    --danger-soft: #3B1414;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --focus-ring: rgba(249, 115, 22, 0.45);
+    --code-key: #FDBA74;
+    --code-string: #93C5FD;
+    --code-punct: #64748B;
   }
 
   * { box-sizing: border-box; }
