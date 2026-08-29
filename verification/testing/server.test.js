@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const http = require('node:http');
 
 const aiProviderSelector = require('../../agent/core/aiProviderSelector');
+const orchestratorExecutionContract = require('../../agent/core/orchestratorExecutionContract');
 const { createApp } = require('../../server');
 
 // This test never makes a real network/API call. Instead of mocking global.fetch
@@ -13,6 +14,9 @@ const { createApp } = require('../../server');
 // same object, meaning the patch is what the running server actually calls. That
 // avoids a collision that mocking global.fetch would cause here, since the test's own
 // HTTP requests to the locally started server would go through the same global.
+//
+// /run tests mock orchestratorExecutionContract.buildPlanStep the same way - never
+// invoking the real tool/Shopify pipeline underneath it.
 
 let passed = 0;
 let failed = 0;
@@ -38,6 +42,26 @@ function withMockedSendMessage(mockImpl, fn) {
       aiProviderSelector.sendMessage = saved;
     });
 }
+
+function withMockedBuildPlanStep(mockImpl, fn) {
+  const saved = orchestratorExecutionContract.buildPlanStep;
+  orchestratorExecutionContract.buildPlanStep = mockImpl;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      orchestratorExecutionContract.buildPlanStep = saved;
+    });
+}
+
+const DASHBOARD_SPECIALIST_IDS = [
+  'research',
+  'product',
+  'seo',
+  'listing',
+  'marketing',
+  'social_advertising',
+  'analytics',
+];
 
 function request(port, { method, path: reqPath, body }) {
   return new Promise((resolve, reject) => {
@@ -147,6 +171,118 @@ async function main() {
       }
     );
     assert.strictEqual(called, false);
+  });
+
+  for (const specialistId of DASHBOARD_SPECIALIST_IDS) {
+    await testAsync(`POST /run returns a success result for specialist "${specialistId}"`, async () => {
+      await withMockedBuildPlanStep(
+        async () => ({
+          request: 'test objective',
+          current_task: 'test objective',
+          selected_specialist: { type: 'specialist', id: specialistId, title: specialistId },
+          inputs: { category: 'test', tool_id: 'test_tool', capability_id: null, input_contract: null },
+          required_context: [],
+          outputs: { summary: 'mocked specialist output' },
+          evidence: [{ tool_id: 'test_tool', status: 'success' }],
+          confidence: 'high',
+          tool_calls: ['test_tool'],
+          approvals: [],
+          errors: [],
+          completion_state: 'complete',
+        }),
+        async () => {
+          await withServer(async (port) => {
+            const res = await request(port, {
+              method: 'POST',
+              path: '/run',
+              body: { specialist: specialistId, objective: 'Do something real.' },
+            });
+            assert.strictEqual(res.status, 200);
+            const parsed = JSON.parse(res.raw);
+            assert.strictEqual(parsed.status, 'success');
+            assert.strictEqual(parsed.completion_state, 'complete');
+            assert.deepStrictEqual(parsed.outputs, { summary: 'mocked specialist output' });
+          });
+        }
+      );
+    });
+  }
+
+  await testAsync('POST /run returns status "partial" when the step did not complete', async () => {
+    await withMockedBuildPlanStep(
+      async () => ({
+        request: 'test objective',
+        current_task: 'test objective',
+        selected_specialist: { type: 'specialist', id: 'research', title: 'research' },
+        inputs: null,
+        required_context: [],
+        outputs: null,
+        evidence: [],
+        confidence: 'unassessed',
+        tool_calls: [],
+        approvals: [],
+        errors: ['No tool is registered yet for this capability.'],
+        completion_state: 'blocked',
+      }),
+      async () => {
+        await withServer(async (port) => {
+          const res = await request(port, {
+            method: 'POST',
+            path: '/run',
+            body: { specialist: 'research', objective: 'Do something.' },
+          });
+          assert.strictEqual(res.status, 200);
+          const parsed = JSON.parse(res.raw);
+          assert.strictEqual(parsed.status, 'partial');
+        });
+      }
+    );
+  });
+
+  await testAsync('POST /run returns a clear error for an unrecognized specialist id', async () => {
+    let called = false;
+    await withMockedBuildPlanStep(
+      async () => {
+        called = true;
+        return { completion_state: 'complete' };
+      },
+      async () => {
+        await withServer(async (port) => {
+          const res = await request(port, {
+            method: 'POST',
+            path: '/run',
+            body: { specialist: 'not_a_real_specialist', objective: 'Do something.' },
+          });
+          assert.strictEqual(res.status, 400);
+          const parsed = JSON.parse(res.raw);
+          assert.strictEqual(typeof parsed.error, 'string');
+          assert.ok(parsed.error.length > 0);
+        });
+      }
+    );
+    assert.strictEqual(called, false);
+  });
+
+  await testAsync('POST /run returns a clear error when the orchestrator call throws', async () => {
+    await withMockedBuildPlanStep(
+      async () => {
+        throw new Error('internal orchestrator failure with sensitive detail');
+      },
+      async () => {
+        await withServer(async (port) => {
+          const res = await request(port, {
+            method: 'POST',
+            path: '/run',
+            body: { specialist: 'research', objective: 'Do something.' },
+          });
+          assert.ok(res.status >= 400 && res.status < 600);
+          const parsed = JSON.parse(res.raw);
+          assert.strictEqual(typeof parsed.error, 'string');
+          assert.ok(parsed.error.length > 0);
+          assert.ok(!parsed.error.includes('sensitive detail'));
+        });
+      }
+    );
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

@@ -549,3 +549,9 @@ research/product tool.
 dashboard at `public/index.html` and backs its `/ask` endpoint with
 `agent/core/aiProviderSelector.js` and the real `configuration/business.yaml`, run
 locally with `npm start`.
+
+The dashboard's "Run a Specialist" tab is now backed by a real `/run` endpoint in
+`server.js`, dispatching to the actual Chief Orchestrator
+(`agent/core/orchestratorExecutionContract.js`'s `buildSpecialistTarget()` +
+`buildPlanStep()`) so all 7 specialists can be run for real, against real connected
+evidence, from the dashboard.
