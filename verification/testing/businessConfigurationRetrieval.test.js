@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const { retrieveBusinessConfiguration } = require('../../tools/businessConfigurationRetrieval');
+const { loadEnvOnce } = require('../../integrations/adapters/shopifyClient');
 
 // This test never makes a real network call - it only checks that the tool wrapper
 // exports the expected function and correctly propagates shopifyClient.getShopInfo()'s
@@ -44,6 +45,13 @@ test('exports the expected function', () => {
 
 (async () => {
   await testAsync('retrieveBusinessConfiguration rejects clearly when Shopify is not configured', async () => {
+    // Force the one-time .env load to happen before the delete below - loadEnvOnce()
+    // is a no-op on every later call (see integrations/adapters/shopifyClient.js's
+    // envLoadAttempted guard), so without this, real Shopify credentials in the local
+    // .env file would get (re-)populated by getShopInfo()'s own internal
+    // loadEnvOnce() call right after the delete - making this test both flake against
+    // real local configuration AND attempt a real network call instead of rejecting.
+    loadEnvOnce();
     const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
     const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
     delete process.env.SHOPIFY_STORE_DOMAIN;

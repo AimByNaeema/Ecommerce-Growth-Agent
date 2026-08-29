@@ -140,6 +140,13 @@ test('exports the expected connection-layer functions and constants', () => {
 
 (async () => {
   await testAsync('isConfigured is false when SHOPIFY_STORE_DOMAIN is missing', async () => {
+    // Force the one-time .env load to happen before the delete below - loadEnvOnce()
+    // is a no-op on every later call (see integrations/adapters/shopifyClient.js's
+    // envLoadAttempted guard), so without this, a real SHOPIFY_STORE_DOMAIN in the
+    // local .env file would get (re-)populated by isConfigured()'s own internal
+    // loadEnvOnce() call, right after the delete, making this test flake against real
+    // local configuration.
+    loadEnvOnce();
     const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
     const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
     delete process.env.SHOPIFY_STORE_DOMAIN;

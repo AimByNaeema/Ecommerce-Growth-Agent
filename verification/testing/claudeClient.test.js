@@ -5,6 +5,7 @@ const {
   sendMessage,
   isConfigured,
   extractText,
+  loadEnvOnce,
   DEFAULT_MODEL,
   DEFAULT_MAX_TOKENS,
 } = require('../../agent/core/claudeClient');
@@ -122,6 +123,14 @@ const SAMPLE_MESSAGE_RESPONSE = {
   });
 
   await testAsync('sendMessage throws a clear error when no API key is configured', async () => {
+    // Force the one-time .env load to happen before the delete below - loadEnvOnce()
+    // is a no-op on every later call (see agent/core/claudeClient.js's
+    // envLoadAttempted guard), so without this, a real ANTHROPIC_API_KEY in the local
+    // .env file would get (re-)populated by isConfigured()'s own internal
+    // loadEnvOnce() call, right after the delete, making this test flake against real
+    // local configuration (matches the identical fix already applied to
+    // geminiClient.test.js).
+    loadEnvOnce();
     const savedKey = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     try {

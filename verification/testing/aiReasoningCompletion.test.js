@@ -57,6 +57,11 @@ test('exports the expected function', () => {
   });
 
   await testAsync('throws the clear not-configured error when ANTHROPIC_API_KEY is unset (real claudeClient, no mock)', async () => {
+    // Force the one-time .env load to happen before the delete below - see
+    // verification/testing/claudeClient.test.js's identical fix for why this matters
+    // (a real ANTHROPIC_API_KEY in the local .env file would otherwise reload right
+    // after the delete via claudeClient.js's own internal loadEnvOnce() call).
+    claudeClient.loadEnvOnce();
     const savedKey = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     try {

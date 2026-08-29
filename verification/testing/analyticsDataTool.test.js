@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const { runAnalyticsDataTool } = require('../../tools/analyticsDataTool');
+const { loadEnvOnce } = require('../../integrations/adapters/shopifyClient');
 
 // runAnalyticsDataTool() tests mock global.fetch, same pattern as
 // verification/testing/shopifyClient.test.js and
@@ -188,6 +189,11 @@ const SAMPLE_INVENTORY_RESPONSE = {
   });
 
   await testAsync('runAnalyticsDataTool returns failed status when Shopify is not configured, without calling fetch', async () => {
+    // Force the one-time .env load to happen before the delete below - see
+    // verification/testing/businessConfigurationRetrieval.test.js's identical fix for
+    // why this matters (real credentials would otherwise reload right after the
+    // delete and trigger a live network call instead of rejecting).
+    loadEnvOnce();
     const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
     const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
     delete process.env.SHOPIFY_STORE_DOMAIN;

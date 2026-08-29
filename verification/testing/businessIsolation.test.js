@@ -17,7 +17,7 @@
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { getShopInfo, getProducts, getCustomers } = require('../../integrations/adapters/shopifyClient');
+const { getShopInfo, getProducts, getCustomers, loadEnvOnce } = require('../../integrations/adapters/shopifyClient');
 const { runOrchestratorContract } = require('../../agent/core/orchestratorExecutionContract');
 const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
@@ -202,6 +202,11 @@ const ANALYTICS_OBJECTIVE = 'analyze store performance growth metrics and sales 
 
   await testAsync('CREDENTIALS: omitting businessId never falls back to a configured business\'s credentials', async () => {
     await withTempBusiness(BUSINESS_A.id, BUSINESS_A.envFileContent, async () => {
+      // Force shopifyClient.js's one-time root .env load to happen before the delete
+      // below - businessId-scoped calls elsewhere in this file go through
+      // businessRegistry.loadBusinessCredentials() instead, which never touches
+      // process.env/loadEnvOnce, so this can still be the first trigger of it.
+      loadEnvOnce();
       const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
       const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
       delete process.env.SHOPIFY_STORE_DOMAIN;

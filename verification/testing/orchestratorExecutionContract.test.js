@@ -18,6 +18,7 @@ const {
   runOrchestratorContract,
 } = require('../../agent/core/orchestratorExecutionContract');
 const claudeClient = require('../../agent/core/claudeClient');
+const { loadEnvOnce: loadShopifyEnvOnce } = require('../../integrations/adapters/shopifyClient');
 const { getMaxTokensPerRun } = require('../../agent/core/tokenControls');
 const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
@@ -279,6 +280,13 @@ test('planRouting requires clarification for a fully unmatched task', () => {
   });
 
   await testAsync('executeSelectedCapability surfaces the clear not-configured error for business_configuration_retrieval, without crashing', async () => {
+    // Force shopifyClient.js's one-time .env load to happen before the delete below -
+    // otherwise, if this is the first call into shopifyClient.js in this process, the
+    // not-configured check would reload real Shopify credentials from the local .env
+    // file right after the delete and attempt a live network call instead of
+    // rejecting (see verification/testing/businessConfigurationRetrieval.test.js's
+    // identical fix).
+    loadShopifyEnvOnce();
     const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
     const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
     delete process.env.SHOPIFY_STORE_DOMAIN;

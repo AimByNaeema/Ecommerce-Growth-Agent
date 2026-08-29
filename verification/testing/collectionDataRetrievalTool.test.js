@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const { retrieveCollectionData } = require('../../tools/collectionDataRetrievalTool');
+const { loadEnvOnce } = require('../../integrations/adapters/shopifyClient');
 
 // This test never makes a real network call - it only checks that the tool wrapper
 // exports the expected function and correctly propagates shopifyClient.getCollections()'s
@@ -44,6 +45,11 @@ test('exports the expected function', () => {
 
 (async () => {
   await testAsync('retrieveCollectionData rejects clearly when Shopify is not configured', async () => {
+    // Force the one-time .env load to happen before the delete below - see
+    // verification/testing/businessConfigurationRetrieval.test.js's identical fix for
+    // why this matters (real credentials would otherwise reload right after the
+    // delete and trigger a live network call instead of rejecting).
+    loadEnvOnce();
     const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
     const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
     delete process.env.SHOPIFY_STORE_DOMAIN;
