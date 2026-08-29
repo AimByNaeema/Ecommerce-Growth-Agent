@@ -31,3 +31,15 @@ this read-only Shopify data to the Product Agent.
 [`tools/collectionDataRetrievalTool.js`](../../tools/collectionDataRetrievalTool.js) is
 the equivalent thin wrapper around `getCollections()` — same pass-through convention,
 no downstream mapping yet.
+
+[`platformAdapterContract.js`](platformAdapterContract.js) is the Platform Adapter
+Contract — the required capability surface (`isConfigured`, `getShopInfo`,
+`getProducts`, `getOrders`, `getCustomers`, `getInventoryLevels`, `getCollections`)
+and normalized, platform-independent return shape every adapter under this folder must
+expose, plus 4 cross-cutting rules (read-only only, never fabricate a result,
+credentials isolated per business, no SDK required). Specification and a structural
+checker only (`validateAdapterShape()`) — it confirms an adapter module exposes the
+required functions, not that a live call returns the documented shape, and it does not
+add or change any adapter. `shopifyClient.js` already satisfies it today. Run
+`node integrations/adapters/platformAdapterContract.js` to print the contract and check
+`shopifyClient.js` against it.

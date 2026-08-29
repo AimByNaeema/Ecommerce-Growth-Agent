@@ -114,6 +114,17 @@ marketing performance, SEO performance, retention, growth opportunities) — reu
 analytics provider is assumed, and no integration exists yet. Run
 `node agent/core/analyticsModel.js` to print it.
 
+[`orderModel.js`](orderModel.js) defines the shape of one order record (order
+reference, placed at, financial status, fulfillment status, pricing, line items,
+customer reference, source, verification status) — reusing
+`researchRecordModel.js`'s `RESEARCH_VERIFICATION_STATUSES` enum. Schema only — no
+fetch/pull/sync logic. Platform-independent by design (generic field names, no
+Shopify-specific vocabulary), closing the one schema gap the multi-platform
+architecture review found: unlike product/listing/analytics/research, order data
+previously had no first-class model. Not wired into
+`analyticsMetricsCalculator.js` or any of the 8 agents — that reuse is later,
+explicitly-scoped work. Run `node agent/core/orderModel.js` to print it.
+
 [`claudeClient.js`](claudeClient.js) is the ONE agent's connection to the Claude API
 (Anthropic Messages API) — a connection layer only: it can send a message to Claude and
 return the reply (`sendMessage`), and report whether `ANTHROPIC_API_KEY` is configured
