@@ -544,3 +544,8 @@ traceability. A twenty-third tool,
 `analysis_only`), makes it Chief-reachable, wired into
 `agent/core/orchestratorExecutionContract.js`'s `TOOL_EXECUTORS` alongside every other
 research/product tool.
+
+[`server.js`](server.js) is now the project's entry point: it serves the finished
+dashboard at `public/index.html` and backs its `/ask` endpoint with
+`agent/core/aiProviderSelector.js` and the real `configuration/business.yaml`, run
+locally with `npm start`.

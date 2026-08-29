@@ -23,7 +23,7 @@ const businessRegistry = require('../../configuration/businessRegistry');
 // either, since the API version ("v1beta") lives in the URL path, not a header.
 const API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-3.6-flash';
 const DEFAULT_MAX_TOKENS = 1024;
 
 let envLoadAttempted = false;
