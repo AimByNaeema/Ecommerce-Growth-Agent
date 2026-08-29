@@ -40,6 +40,9 @@ const CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_MODEL',
   'ANTHROPIC_MAX_TOKENS',
+  'GEMINI_API_KEY',
+  'GEMINI_MODEL',
+  'GEMINI_MAX_TOKENS',
 ];
 
 function isValidBusinessId(id) {

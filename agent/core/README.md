@@ -137,6 +137,18 @@ API response all throw a clear error — no reply is ever invented. Run
 `node agent/core/claudeClient.js` to check configuration and, if a real
 `ANTHROPIC_API_KEY` is set, send one live test message.
 
+[`geminiClient.js`](geminiClient.js) is the ONE agent's connection to the Gemini API
+(Google Generative Language API) — a connection layer only: it can send a message to
+Gemini and return the reply (`sendMessage`), and report whether `GEMINI_API_KEY` is
+configured (`isConfigured`). It does not decide when to call Gemini, does not
+call/dispatch tools (`tools/toolRegistry.js`), and is not wired into `agentContract.js`'s
+stages yet — that orchestration is later, explicitly-scoped work. No SDK dependency was
+added (Node's built-in `fetch` is enough); `.env` (git-ignored) is loaded automatically
+via Node's built-in `process.loadEnvFile`. A missing API key, a network failure, or a
+non-success API response all throw a clear error — no reply is ever invented. Run
+`node agent/core/geminiClient.js` to check configuration and, if a real
+`GEMINI_API_KEY` is set, send one live test message.
+
 [`orchestratorExecutionContract.js`](orchestratorExecutionContract.js)'s
 `runOrchestratorContract()` now creates one `../../audit/auditTrail.js` tracker per run
 (`createAuditTracker`) and threads it through routing, specialist selection, and every
