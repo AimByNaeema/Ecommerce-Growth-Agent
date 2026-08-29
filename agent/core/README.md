@@ -149,6 +149,17 @@ non-success API response all throw a clear error — no reply is ever invented. 
 `node agent/core/geminiClient.js` to check configuration and, if a real
 `GEMINI_API_KEY` is set, send one live test message.
 
+[`aiProviderSelector.js`](aiProviderSelector.js) is a selector only — it has no AI logic
+of its own. It reads `AI_PROVIDER` from `.env` (`"claude"` or `"gemini"`, defaulting to
+`"gemini"` when unset) and delegates `sendMessage`/`isConfigured` to whichever of
+`claudeClient.js`/`geminiClient.js` matches, returning that client's result unchanged;
+`getActiveProvider()` reports which one is currently selected. An unrecognized
+`AI_PROVIDER` value throws a clear error rather than silently falling back. Like the two
+clients it selects between, it is not wired into `agentContract.js`, the orchestrator, or
+any tool yet — that remains later, explicitly-scoped work. Run
+`node agent/core/aiProviderSelector.js` to print the active provider and whether it's
+configured.
+
 [`orchestratorExecutionContract.js`](orchestratorExecutionContract.js)'s
 `runOrchestratorContract()` now creates one `../../audit/auditTrail.js` tracker per run
 (`createAuditTracker`) and threads it through routing, specialist selection, and every
