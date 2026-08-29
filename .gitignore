@@ -6,6 +6,9 @@ node_modules/
 .env.local
 .env.*.local
 
+# Real business configuration (not a template) — never commit
+configuration/business.yaml
+
 # Logs
 *.log
 npm-debug.log*
