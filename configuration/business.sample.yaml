@@ -23,6 +23,9 @@ business_model: "marketplace"
 # hardcoded to any one platform.
 platform: "WooCommerce (example placeholder)"
 
+# Live website/storefront URL. Optional.
+store_url: "https://meridiangoods.example (placeholder)"
+
 # How products are sourced/fulfilled (e.g. in-house, dropshipping, print-on-demand, subscription).
 product_model: "print-on-demand"
 
@@ -50,6 +53,10 @@ product_categories:
 customer_segments:
   - "gift shoppers"
   - "small home-office buyers"
+
+# Primary language the business operates/communicates in (e.g. IETF/BCP-47 tag such
+# as "en"). Optional.
+primary_language: "en"
 
 # Brand identity information.
 brand:

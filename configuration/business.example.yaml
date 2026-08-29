@@ -11,6 +11,9 @@ business_model: ""
 # E-commerce platform the business runs on (e.g. Shopify).
 platform: ""
 
+# Live website/storefront URL. Optional.
+store_url: ""
+
 # How products are sourced/fulfilled (e.g. in-house, dropshipping, print-on-demand, subscription).
 product_model: ""
 
@@ -28,6 +31,10 @@ product_categories: []
 
 # Distinct customer segments the business targets.
 customer_segments: []
+
+# Primary language the business operates/communicates in (e.g. IETF/BCP-47 tag such
+# as "en"). Optional.
+primary_language: ""
 
 # Brand identity information.
 brand:

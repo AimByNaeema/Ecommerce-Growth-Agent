@@ -5,9 +5,10 @@ e-commerce business without code changes.
 
 [`business.example.yaml`](business.example.yaml) is the structure template. Copy it to
 `business.yaml` (git-ignored, not committed) and fill in the real business's values.
-12 of its 13 fields are required (validated by
-[`tools/configValidator.js`](../tools/configValidator.js)); `integrations` is optional
-— a business is valid with zero integrations connected.
+12 of its 15 fields are required (validated by
+[`tools/configValidator.js`](../tools/configValidator.js)); `integrations`, `store_url`,
+and `primary_language` are optional — a business is valid with zero integrations
+connected and without a store URL or primary language recorded.
 
 [`business.sample.yaml`](business.sample.yaml) is a different, complementary file: a
 filled-in, illustrative reference showing what a *completed* configuration looks like,
