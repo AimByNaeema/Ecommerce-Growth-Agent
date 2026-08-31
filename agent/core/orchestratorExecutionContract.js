@@ -53,7 +53,9 @@
 // in-memory and returned to the caller; it is never written to memory/state/ (no
 // storage mechanism has been chosen yet).
 
+const path = require('path');
 const { TOOL_REGISTRY, getToolsByCategory, getToolById } = require('../../tools/toolRegistry');
+const { loadBusinessConfig } = require('../../tools/configValidator');
 const { getSpecialistById } = require('./specialistRegistry');
 const { getSpecialistCapabilityRegistry, getSpecialistCapabilityById } = require('./specialistCapabilityRegistry');
 const {
@@ -954,6 +956,51 @@ function deriveCapabilitySelectorContext(toolId, capabilityId) {
   return value ? { [selector.field]: value } : {};
 }
 
+// DERIVE MARKETS FROM APPROVED BUSINESS CONFIGURATION: global_market_opportunity_analysis
+// (agent/core/specialistCapabilityRegistry.js) requires a caller-supplied `markets` array,
+// but a free-text objective alone can never supply one, and no live Shopify data source
+// exists for "markets" the way tools/productDataRetrievalTool.js exists for products (see
+// this file's own "Genuinely unobtainable capabilities" comment above). configuration/
+// business.yaml's owner-confirmed `countries` field already answers exactly this
+// question - previously loaded only by server.js's /ask chat-context string, never
+// connected to this dispatch pipeline. Reuses tools/configValidator.js's
+// loadBusinessConfig() unchanged (no new YAML-parsing logic). Pure pass-through of
+// approved text (only the trailing "(primary)"/"(secondary)" qualifier is stripped) -
+// never invents a market, never computes anything. Scoped narrowly to this one
+// capability id: no other specialist's required field maps to any business.yaml field
+// the same way (see the Phase 1 real-world-testing investigation this fix came from).
+// Returns {} - never throws - when business.yaml is missing, incomplete, unparsable, or
+// has no countries, so the existing requiredEvidenceMissing clarification stop is
+// completely unchanged in that case (ask the user only when no real business context
+// exists).
+const BUSINESS_CONFIG_PATH = path.join(__dirname, '..', '..', 'configuration', 'business.yaml');
+
+function stripMarketQualifier(value) {
+  return value.replace(/\s*\((?:primary|secondary)\)\s*$/i, '').trim();
+}
+
+function deriveBusinessConfigContext({ toCapabilityId, configPath = BUSINESS_CONFIG_PATH }) {
+  if (toCapabilityId !== 'global_market_opportunity_analysis') return {};
+
+  let businessConfig;
+  try {
+    businessConfig = loadBusinessConfig(configPath);
+  } catch (err) {
+    return {};
+  }
+
+  const countries = Array.isArray(businessConfig.countries) ? businessConfig.countries : [];
+  const markets = countries
+    .filter((entry) => typeof entry === 'string' && entry.trim() !== '')
+    .map((entry) => {
+      const market = stripMarketQualifier(entry);
+      return { market, country: market };
+    })
+    .filter((entry) => entry.market !== '');
+
+  return markets.length > 0 ? { markets } : {};
+}
+
 // True when every TOP-LEVEL name in inputContract.required is present and non-empty in
 // params - e.g. 'entries[].productIdentity' is checked only as its base key 'entries'
 // (whether that array's entries each carry productIdentity is the tool's own,
@@ -1223,10 +1270,12 @@ async function buildPlanStep(
       toCapabilityId: matchedCapability.id,
       existingResearchParams: researchParams,
     });
+    const businessConfigContext = deriveBusinessConfigContext({ toCapabilityId: matchedCapability.id });
     let derivedContext = mergeContext({}, selectorContext);
     derivedContext = mergeContext(derivedContext, pairContext);
     derivedContext = mergeContext(derivedContext, analyticsContext);
     derivedContext = mergeContext(derivedContext, liveEvidenceContext);
+    derivedContext = mergeContext(derivedContext, businessConfigContext);
 
     if (Object.keys(derivedContext).length > 0) {
       effectiveResearchParams = { ...derivedContext, ...(researchParams || {}) };
@@ -1666,6 +1715,8 @@ module.exports = {
   aggregatePlanState,
   buildRoutingResponse,
   runOrchestratorContract,
+  deriveBusinessConfigContext,
+  BUSINESS_CONFIG_PATH,
 };
 
 if (require.main === module) {

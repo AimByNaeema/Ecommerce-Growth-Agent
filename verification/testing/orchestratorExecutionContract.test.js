@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
+const path = require('path');
 const {
   understandObjective,
   identifyRequiredCapability,
@@ -16,6 +17,7 @@ const {
   planRouting,
   buildRoutingResponse,
   runOrchestratorContract,
+  deriveBusinessConfigContext,
 } = require('../../agent/core/orchestratorExecutionContract');
 const claudeClient = require('../../agent/core/claudeClient');
 const { loadEnvOnce: loadShopifyEnvOnce } = require('../../integrations/adapters/shopifyClient');
@@ -1752,6 +1754,90 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.strictEqual(step.completion_state, 'blocked');
     assert.strictEqual(step.outputs, null);
     assert.ok(step.errors[0].includes('keywords'));
+  });
+
+  // --- Phase 1 real-world-testing fix: markets derived from approved business config --
+
+  await testAsync('deriveBusinessConfigContext: derives markets from the real configuration/business.yaml countries field, stripping only the (primary)/(secondary) qualifier', () => {
+    const context = deriveBusinessConfigContext({ toCapabilityId: 'global_market_opportunity_analysis' });
+    assert.ok(Array.isArray(context.markets));
+    assert.deepStrictEqual(context.markets, [
+      { market: 'United States', country: 'United States' },
+      { market: 'United Kingdom', country: 'United Kingdom' },
+      { market: 'Canada', country: 'Canada' },
+      { market: 'Australia', country: 'Australia' },
+      {
+        market: 'Worldwide customers who use English-language digital marketplaces',
+        country: 'Worldwide customers who use English-language digital marketplaces',
+      },
+    ]);
+  });
+
+  await testAsync('deriveBusinessConfigContext: never fires for any capability other than global_market_opportunity_analysis, even with real config present', () => {
+    assert.deepStrictEqual(deriveBusinessConfigContext({ toCapabilityId: 'market_research' }), {});
+    assert.deepStrictEqual(deriveBusinessConfigContext({ toCapabilityId: 'keyword_research' }), {});
+    assert.deepStrictEqual(deriveBusinessConfigContext({ toCapabilityId: null }), {});
+  });
+
+  await testAsync('deriveBusinessConfigContext: returns {} (never guesses) when business.yaml does not exist at the given path', () => {
+    const missingPath = path.join(__dirname, 'does-not-exist-business.yaml');
+    assert.deepStrictEqual(
+      deriveBusinessConfigContext({ toCapabilityId: 'global_market_opportunity_analysis', configPath: missingPath }),
+      {}
+    );
+  });
+
+  await testAsync('deriveBusinessConfigContext: returns {} (never fabricates a placeholder) when the config exists but countries is empty', () => {
+    const blankTemplatePath = path.join(__dirname, '..', '..', 'configuration', 'business.example.yaml');
+    assert.deepStrictEqual(
+      deriveBusinessConfigContext({ toCapabilityId: 'global_market_opportunity_analysis', configPath: blankTemplatePath }),
+      {}
+    );
+  });
+
+  await testAsync('runOrchestratorContract: the exact real-world objective ("Research the best market opportunity for my ecommerce products.") now dispatches instead of stopping for clarification, using only real business-config markets and no fabricated evidence', async () => {
+    const response = await runOrchestratorContract('Research the best market opportunity for my ecommerce products.');
+    const step = response.routing.plan[0];
+    assert.strictEqual(step.selected_specialist.id, 'research');
+    assert.strictEqual(step.inputs.tool_id, 'global_market_opportunity_analysis');
+    assert.strictEqual(step.errors.length, 0);
+    assert.ok(step.outputs, 'expected a dispatched outcome, not a clarification_required stop');
+    const result = step.outputs.result;
+    assert.deepStrictEqual(
+      result.markets_compared,
+      [
+        'United States',
+        'United Kingdom',
+        'Canada',
+        'Australia',
+        'Worldwide customers who use English-language digital marketplaces',
+      ]
+    );
+    // Every facet must be honestly empty (has_evidence: false) - business.yaml supplies
+    // real market names only, never invented demand/competition/pricing evidence.
+    for (const row of result.comparison) {
+      assert.strictEqual(row.category.has_evidence, false);
+      assert.strictEqual(row.demand_signals.has_evidence, false);
+      assert.strictEqual(row.competition.status, 'empty');
+      assert.strictEqual(row.products.status, 'empty');
+    }
+  });
+
+  await testAsync('runOrchestratorContract: an explicit caller-supplied markets list always wins over the business-config-derived one', async () => {
+    const response = await runOrchestratorContract(
+      'Research the best market opportunity for my ecommerce products.',
+      { researchParams: { markets: [{ market: 'Caller-Supplied Market', evidence: ['caller-evidence-1'] }] } }
+    );
+    const step = response.routing.plan[0];
+    assert.deepStrictEqual(step.outputs.result.markets_compared, ['Caller-Supplied Market']);
+  });
+
+  await testAsync('PHASE 1 REGRESSION: without researchParams, market_research (a sibling capability with no business.yaml mapping) still correctly returns clarification_required, unaffected by the new business-config derivation', async () => {
+    const response = await runOrchestratorContract('run market research');
+    const step = response.routing.plan[0];
+    assert.strictEqual(step.completion_state, 'blocked');
+    assert.strictEqual(step.outputs, null);
+    assert.ok(step.errors[0].includes('market'));
   });
 
   test('TEST C: validateResult never marks a tool-level failure as passed just because the executor call itself did not throw', () => {
