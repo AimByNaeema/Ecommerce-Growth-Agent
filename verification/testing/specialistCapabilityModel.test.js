@@ -25,10 +25,10 @@ function test(name, fn) {
   }
 }
 
-test('the capability task record has exactly the 6 required fields, in the requested order', () => {
+test('the capability task record has exactly the 7 required fields, in the requested order', () => {
   assert.deepStrictEqual(
     CAPABILITY_TASK_FIELDS.map((f) => f.id),
-    ['id', 'title', 'description', 'tool_ids', 'input_contract', 'output_contract']
+    ['id', 'title', 'description', 'tool_ids', 'input_contract', 'output_contract', 'live_data_tool_id']
   );
 });
 

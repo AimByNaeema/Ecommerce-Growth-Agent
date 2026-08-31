@@ -172,13 +172,17 @@ test('the known Research tool_ids gaps (global_market_research, trend_research, 
   }
 });
 
-test('all 5 productAgent.js-backed Product supported_tasks have tool_ids: [] - no tool wraps productAgent.js\'s own functions today (market_product_opportunity_analysis is the one exception - a separate workflow, wired to a real tool)', () => {
+test('4 of Product\'s 5 productAgent.js-backed supported_tasks have tool_ids: [] - no tool wraps productAgent.js\'s own functions today (market_product_opportunity_analysis and product_discovery are the two exceptions: a separate workflow wired to a real tool, and a live Shopify pull wired to a real tool, respectively)', () => {
   const productEntry = getSpecialistCapabilityById('product');
   for (const task of productEntry.supported_tasks) {
     if (task.id === 'market_product_opportunity_analysis') {
       assert.deepStrictEqual(task.tool_ids, ['market_product_opportunity_analysis']);
+    } else if (task.id === 'product_discovery') {
+      assert.deepStrictEqual(task.tool_ids, ['product_data_retrieval']);
+      assert.strictEqual(task.live_data_tool_id, 'product_data_retrieval');
     } else {
       assert.deepStrictEqual(task.tool_ids, []);
+      assert.strictEqual(task.live_data_tool_id, null);
     }
   }
 });

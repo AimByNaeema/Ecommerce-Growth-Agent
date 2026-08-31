@@ -24,12 +24,15 @@
 const MODEL_CALL_TOOL_IDS = new Set(['ai_reasoning_completion']);
 
 // The tool ids that ultimately reach integrations/adapters/shopifyClient.js
-// (business_configuration_retrieval, analytics_data_retrieval) or
-// agent/core/claudeClient.js (ai_reasoning_completion) - every other TOOL_EXECUTORS
-// entry is pure, deterministic, in-memory logic with no external network call.
+// (business_configuration_retrieval, analytics_data_retrieval, product_data_retrieval,
+// collection_data_retrieval) or agent/core/claudeClient.js (ai_reasoning_completion) -
+// every other TOOL_EXECUTORS entry is pure, deterministic, in-memory logic with no
+// external network call.
 const EXTERNAL_API_TOOL_IDS = new Set([
   'business_configuration_retrieval',
   'analytics_data_retrieval',
+  'product_data_retrieval',
+  'collection_data_retrieval',
   'ai_reasoning_completion',
 ]);
 

@@ -80,6 +80,12 @@ const CAPABILITY_TASK_FIELDS = [
     type: 'object',
     description: '{ model, fields } - which *Model.js file defines the returned shape (or null for an ad hoc shape) and its real field id list, reused rather than re-typed.',
   },
+  {
+    id: 'live_data_tool_id',
+    title: 'Live data tool id',
+    type: 'string | null',
+    description: 'A tools/toolRegistry.js tool id (must also appear in tool_ids) that can satisfy this capability entirely from an existing approved read-only live source, needing no caller-supplied structured evidence - null (the default) when no such source exists. Declarative only: this field never fabricates a live source, it only names one that already exists and was verified against the tool\'s own real behavior (e.g. analytics_data_retrieval, product_data_retrieval).',
+  },
 ];
 
 const SPECIALIST_CAPABILITY_ENTRY_FIELDS = [
@@ -147,6 +153,7 @@ function createEmptyCapabilityTask(id = '') {
     tool_ids: [],
     input_contract: { required: [], optional: [] },
     output_contract: { model: null, fields: [] },
+    live_data_tool_id: null,
   };
 }
 
@@ -206,6 +213,21 @@ function validateCapabilityTaskShape(record) {
     if ('optional' in record.input_contract && !Array.isArray(record.input_contract.optional)) {
       errors.push('input_contract.optional must be an array');
     }
+  }
+
+  if (
+    'live_data_tool_id' in record &&
+    record.live_data_tool_id !== null &&
+    typeof record.live_data_tool_id !== 'string'
+  ) {
+    errors.push('live_data_tool_id must be a string or null');
+  }
+  if (
+    typeof record.live_data_tool_id === 'string' &&
+    Array.isArray(record.tool_ids) &&
+    !record.tool_ids.includes(record.live_data_tool_id)
+  ) {
+    errors.push(`live_data_tool_id '${record.live_data_tool_id}' must also be present in tool_ids`);
   }
 
   if ('output_contract' in record && typeof record.output_contract === 'object' && record.output_contract !== null) {

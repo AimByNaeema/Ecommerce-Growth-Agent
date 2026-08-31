@@ -59,6 +59,7 @@ const { getSpecialistCapabilityRegistry, getSpecialistCapabilityById } = require
 const {
   deriveCrossAgentContext,
   deriveAllToAnalyticsContext,
+  deriveLiveEvidenceContext,
   gatherGrowthOpportunityDrafts,
   mergeContext,
   dedupeArray,
@@ -98,6 +99,8 @@ const advertisingStrategyTool = require('../../tools/advertisingStrategyTool');
 const advertisingPerformanceTool = require('../../tools/advertisingPerformanceTool');
 const analyticsTool = require('../../tools/analyticsTool');
 const analyticsDataTool = require('../../tools/analyticsDataTool');
+const productDataRetrievalTool = require('../../tools/productDataRetrievalTool');
+const collectionDataRetrievalTool = require('../../tools/collectionDataRetrievalTool');
 
 // Tool ids this orchestrator knows how to actually call. Each entry maps a
 // TOOL_REGISTRY id to the real function that performs the work - the only sanctioned
@@ -164,6 +167,16 @@ const TOOL_EXECUTORS = {
     analyticsTool.runAnalyticsTool(executionRequest.research_params),
   analytics_data_retrieval: (executionRequest) =>
     analyticsDataTool.runAnalyticsDataTool({
+      ...(executionRequest.research_params || {}),
+      businessId: executionRequest.business_id,
+    }),
+  product_data_retrieval: (executionRequest) =>
+    productDataRetrievalTool.runProductDataRetrievalTool({
+      ...(executionRequest.research_params || {}),
+      businessId: executionRequest.business_id,
+    }),
+  collection_data_retrieval: (executionRequest) =>
+    collectionDataRetrievalTool.retrieveCollectionData({
       ...(executionRequest.research_params || {}),
       businessId: executionRequest.business_id,
     }),
@@ -708,8 +721,21 @@ function validateResult(outcome) {
 // verification/testing/orchestratorExecutionContract.test.js's pinned routeClause/
 // planRouting cases, plus the new "analyze my business" regression cases added
 // alongside this change).
+// product: 'shopify' and 'products' (plural) - the same bare-word-coincidence problem
+// analytics_optimization already had above, but for Product: tools/toolRegistry.js's
+// business_configuration_retrieval entry literally contains "Shopify" in its own
+// description (it fetches the connected Shopify store's shop identity), and
+// tokenize() does exact matching with no stemming, so the plural "products" never
+// matched agent/core/specialistRegistry.js's Product description ("product" singular,
+// 3x). A clause like "Analyze my Shopify products" therefore scored 0 for Product and
+// 1 for the "configuration" shared-infrastructure target on "shopify" alone, so
+// configuration silently won a clause about products, not configuration - not
+// ambiguous, not unmatched, just wrong (see
+// verification/testing/orchestratorExecutionContract.test.js's regression cases added
+// alongside this change).
 const ROUTING_SYNONYMS = {
   analytics_optimization: ['analyze', 'analysis', 'business', 'ecommerce', 'commerce'],
+  product: ['shopify', 'products'],
 };
 
 // Generic words a user naturally types that, on their own, do not indicate which
@@ -928,6 +954,27 @@ function deriveCapabilitySelectorContext(toolId, capabilityId) {
   return value ? { [selector.field]: value } : {};
 }
 
+// True when every TOP-LEVEL name in inputContract.required is present and non-empty in
+// params - e.g. 'entries[].productIdentity' is checked only as its base key 'entries'
+// (whether that array's entries each carry productIdentity is the tool's own,
+// authoritative validation to make, not a second, less precise copy of it here). An
+// empty `required` array (nothing is required) always passes. Deliberately a coarser,
+// deterministic pre-check, not a replacement for the tool's own validation - it exists
+// only to decide whether dispatching is even worth attempting, never to approve/deny a
+// value's actual correctness.
+function topLevelRequiredFieldsSatisfied(inputContract, params) {
+  const required = inputContract && Array.isArray(inputContract.required) ? inputContract.required : [];
+  if (required.length === 0) return true;
+  if (!params || typeof params !== 'object') return false;
+  const topLevelFields = new Set(required.map((field) => field.split(/[.[]/)[0]));
+  for (const field of topLevelFields) {
+    const value = params[field];
+    const present = Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== '';
+    if (!present) return false;
+  }
+  return true;
+}
+
 // Scores a piece of candidate text against an already-tokenized objective word set -
 // the same word-overlap approach used throughout this file (identifyRequiredCapability,
 // scoreRoutingTargets), factored into one place so buildPlanStep's tool and capability
@@ -1064,32 +1111,90 @@ async function buildPlanStep(
   }
 
   // PREFER REAL DATA OVER NO DATA: plain word-overlap scoring has no notion of "which
-  // candidate tool can actually produce evidence" - it can settle on 'analytics'
-  // (composes a record from CALLER-SUPPLIED evidence only - see tools/analyticsTool.js)
-  // over 'analytics_data_retrieval' (a real, read-only Shopify pull - see
-  // tools/analyticsDataTool.js) purely because their wording ties, even when this call
-  // has no caller-supplied evidence to hand the former at all. Deterministic and
-  // narrow: only swaps when the matched capability itself already declares
-  // analytics_data_retrieval as one of its own tool_ids (true only for the 4 snapshot
-  // tasks that have a live counterpart: sales/products/customers/inventory - see
-  // agent/core/specialistCapabilityRegistry.js's ANALYTICS_DATA_RETRIEVAL_CAPABILITIES),
-  // so this never redirects a capability - like conversion/traffic/marketing/
-  // advertising/growth_opportunities/insights - that has no live counterpart at all.
-  // A caller who DID supply real research input is never overridden. Never fabricates
-  // data either way: analytics_data_retrieval reports its own honest 'failed' status
-  // (with a clear reason) when Shopify isn't configured, exactly like every other tool
-  // in TOOL_EXECUTORS.
+  // candidate tool can actually produce evidence" - it can settle on a caller-evidence-
+  // only tool (e.g. 'analytics', composing a record from CALLER-SUPPLIED evidence only
+  // - see tools/analyticsTool.js) purely because its wording ties with a live,
+  // self-sufficient alternative, even when this call has no caller-supplied evidence to
+  // hand the former at all. Deterministic and declarative (generalized from an earlier
+  // analytics-only special case - see agent/core/specialistCapabilityRegistry.js's
+  // live_data_tool_id field, this file's own git history, and
+  // verification/testing/orchestratorExecutionContract.test.js's "TEST B"): only swaps
+  // when the matched capability itself declares a live_data_tool_id that is (a) also
+  // present in that capability's own tool_ids (never a tool this capability doesn't
+  // actually support) and (b) a real candidate for this target
+  // (candidateToolIds.includes(...) - never a tool outside this specialist's own
+  // required_tools). For today's registry this covers exactly the same 4 analytics
+  // snapshot tasks (sales/products/customers/inventory) the old hardcoded check did -
+  // analytics behavior is unchanged - plus it now automatically applies to any future
+  // capability declaring the same shape (e.g. product_discovery, whose only tool_ids
+  // entry already IS its live source, so this block is simply a no-op for it - no
+  // separate tool competes for that capability to be overridden away from). A caller
+  // who DID supply real research input is never overridden. Never fabricates data
+  // either way: every live_data_tool_id tool reports its own honest 'failed'/'empty'
+  // status (with a clear reason) when it can't actually retrieve something, exactly
+  // like every other tool in TOOL_EXECUTORS.
   const hasCallerResearchParams =
     researchParams && typeof researchParams === 'object' && Object.keys(researchParams).length > 0;
   if (
     toolMatch &&
-    toolMatch.id === 'analytics' &&
     matchedCapability &&
-    matchedCapability.tool_ids.includes('analytics_data_retrieval') &&
+    matchedCapability.live_data_tool_id &&
+    matchedCapability.tool_ids.includes(matchedCapability.live_data_tool_id) &&
+    candidateToolIds.includes(matchedCapability.live_data_tool_id) &&
+    toolMatch.id !== matchedCapability.live_data_tool_id &&
     !hasCallerResearchParams &&
     !(forcedSelection && forcedSelection.toolId)
   ) {
-    toolMatch = getToolById('analytics_data_retrieval') || toolMatch;
+    toolMatch = getToolById(matchedCapability.live_data_tool_id) || toolMatch;
+  }
+
+  // CROSS-CAPABILITY LIVE-DATA FALLBACK: the override above only ever swaps between
+  // two tools serving the SAME capability (the analytics case). It cannot help a
+  // capability like market_product_opportunity_analysis, whose own live_data_tool_id
+  // is null because no live source produces its required marketRow, even when this
+  // specialist's OTHER candidate tools include a live source for a DIFFERENT
+  // capability (e.g. product_discovery, live_data_tool_id: 'product_data_retrieval')
+  // and plain word-overlap happened to prefer the unobtainable one purely because its
+  // description repeats matching words more (verified empirically:
+  // market_product_opportunity_analysis scores 8 against "identify the single best
+  // product opportunity..." vs product_data_retrieval's 3, from description
+  // length/repetition, not real relevance - see this file's own git history).
+  //
+  // Deterministic and narrow: only fires when the override above did NOT already
+  // redirect (the matched capability has no live counterpart of its own), no caller
+  // evidence was supplied, and some OTHER task this same specialist could also run
+  // declares a live_data_tool_id that is a real candidate for this target
+  // (candidateToolIds.includes(...) - never a tool outside this specialist's own
+  // required_tools). Driven purely by the declarative live_data_tool_id metadata
+  // already on the registry - no specialist/capability id is hardcoded, so this
+  // generalizes to any future capability with the same shape. Ties broken by declared
+  // order (first wins), the same convention used throughout this file. A capability
+  // with NO capability match at all (matchedCapability null - e.g. product_research,
+  // which has zero connected supported_tasks) is unaffected, preserving its existing
+  // honest capability_id: null behavior. Genuinely unobtainable capabilities (no
+  // sibling has a live source at all - Research/SEO/Marketing/Social) are unaffected
+  // too: this simply finds nothing and falls through to buildPlanStep's
+  // requiredEvidenceMissing clarification stop exactly as before. Never fabricates
+  // data: the sibling's own live tool still reports its own honest 'failed'/'empty'
+  // status when it can't actually retrieve something.
+  if (
+    toolMatch &&
+    matchedCapability &&
+    !matchedCapability.live_data_tool_id &&
+    capabilityEntry &&
+    !hasCallerResearchParams &&
+    !(forcedSelection && forcedSelection.toolId)
+  ) {
+    const liveSiblingTask = capabilityEntry.supported_tasks.find(
+      (task) =>
+        task.live_data_tool_id &&
+        task.live_data_tool_id !== toolMatch.id &&
+        candidateToolIds.includes(task.live_data_tool_id)
+    );
+    if (liveSiblingTask) {
+      toolMatch = getToolById(liveSiblingTask.live_data_tool_id) || toolMatch;
+      matchedCapability = liveSiblingTask;
+    }
   }
 
   // STRUCTURED CROSS-AGENT CONTEXT PASSING (see agent/core/crossAgentContext.js): now
@@ -1112,14 +1217,46 @@ async function buildPlanStep(
     });
     const analyticsContext =
       target.id === 'analytics_optimization' ? deriveAllToAnalyticsContext(priorSteps, matchedCapability.id) : {};
+    const liveEvidenceContext = deriveLiveEvidenceContext({
+      completedSteps: priorSteps,
+      toSpecialistId: target.id,
+      toCapabilityId: matchedCapability.id,
+      existingResearchParams: researchParams,
+    });
     let derivedContext = mergeContext({}, selectorContext);
     derivedContext = mergeContext(derivedContext, pairContext);
     derivedContext = mergeContext(derivedContext, analyticsContext);
+    derivedContext = mergeContext(derivedContext, liveEvidenceContext);
 
     if (Object.keys(derivedContext).length > 0) {
       effectiveResearchParams = { ...derivedContext, ...(researchParams || {}) };
     }
   }
+
+  // SELF-SUFFICIENT LIVE DISPATCH: true when the matched capability's own declared
+  // live_data_tool_id (see agent/core/specialistCapabilityRegistry.js) is the tool
+  // about to be dispatched - that tool retrieves everything it needs itself (see
+  // tools/analyticsDataTool.js, tools/productDataRetrievalTool.js's
+  // runProductDataRetrievalTool), so the capability's own input_contract.required list
+  // (written for the CALLER-SUPPLIED-evidence path) does not apply here.
+  const isSelfSufficientLiveDispatch =
+    Boolean(matchedCapability && matchedCapability.live_data_tool_id && toolMatch && toolMatch.id === matchedCapability.live_data_tool_id);
+
+  // STOP AND ASK INSTEAD OF DISPATCHING WITH MISSING EVIDENCE: once effectiveResearchParams
+  // reflects everything real that could be gathered (caller input, cross-agent relay from
+  // an earlier step, and now live-retrieved evidence), a matched capability whose
+  // declared required fields are STILL missing - and which has no self-sufficient live
+  // source to fall back on - can only ever produce the tool's own honest 'failed' status
+  // if dispatched (see e.g. tools/marketResearchTool.js's "No structured research input
+  // was supplied" convention). Stopping here instead is strictly more honest and more
+  // useful to the caller: no wasted tool/audit/cache entry, and a response that clearly
+  // states what evidence is missing rather than a generic failure - see
+  // agent/core/resultSummary.js. Never fabricates a value to get past this check; never
+  // dispatches a specialist with a fabricated required field.
+  const requiredEvidenceMissing =
+    Boolean(matchedCapability) &&
+    !isSelfSufficientLiveDispatch &&
+    !topLevelRequiredFieldsSatisfied(matchedCapability.input_contract, effectiveResearchParams);
 
   let executionRequest;
   let outcome;
@@ -1137,6 +1274,31 @@ async function buildPlanStep(
       status: 'not_available',
       data: null,
       error: `No tool is registered yet for the '${target.id}' ${target.type === 'specialist' ? 'specialist' : 'capability'}.`,
+      classification: null,
+    };
+  } else if (requiredEvidenceMissing) {
+    executionRequest = {
+      objective,
+      category: matchedCategory,
+      tool_id: toolMatch.id,
+      specialist_id: target.type === 'specialist' ? target.id : null,
+      is_shared_infrastructure: target.type === 'shared_infrastructure',
+      research_params: effectiveResearchParams,
+    };
+    const missingFields = matchedCapability.input_contract.required
+      .map((field) => field.split(/[.[]/)[0])
+      .filter((field, index, all) => all.indexOf(field) === index)
+      .filter((field) => {
+        const value = effectiveResearchParams && effectiveResearchParams[field];
+        return Array.isArray(value) ? value.length === 0 : value === undefined || value === null || value === '';
+      });
+    outcome = {
+      status: 'clarification_required',
+      data: null,
+      error:
+        `'${matchedCapability.title}' needs real, structured input this request did not supply and no ` +
+        `approved read-only source can currently retrieve: ${missingFields.join(', ')}. Provide ${missingFields.join(', ')} ` +
+        'directly, or ask a specialist step that can produce it first.',
       classification: null,
     };
   } else {

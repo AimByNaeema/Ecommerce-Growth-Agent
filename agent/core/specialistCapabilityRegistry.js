@@ -41,9 +41,23 @@
 // HONEST tool_ids GAPS - deliberately left as an empty array, never fabricated to
 // look complete: agent/core/researchAgent.js's global_market_research,
 // trend_research, and opportunity_discovery (no tool in tools/toolRegistry.js wraps
-// any of them yet); all 5 Product capabilities (tools/productDataRetrievalTool.js
-// wraps a raw Shopify fetch unrelated to any of them - the would-be wrapper,
-// tools/toolRegistry.js's 'product_research' entry, is still 'not_implemented').
+// any of them yet); 4 of 5 Product capabilities - product_validation,
+// product_opportunity_analysis, product_opportunity_scoring, product_recommendation -
+// still have no wrapper (tools/toolRegistry.js's 'product_research' entry, the
+// would-be wrapper, is still 'not_implemented'). product_discovery is the one
+// exception: tools/productDataRetrievalTool.js's runProductDataRetrievalTool() wraps
+// it via a live, read-only Shopify product pull (product_data_retrieval) - see
+// live_data_tool_id below.
+//
+// live_data_tool_id (agent/core/specialistCapabilityModel.js) - a NEW, additive,
+// backward-compatible field (default null): names a tool_ids entry that can satisfy
+// this capability entirely from an already-approved read-only live source, needing no
+// caller-supplied structured evidence at all. Only set where independently verified
+// against the real tool's own behavior - product_discovery (product_data_retrieval)
+// and the 4 analytics snapshot tasks with a live counterpart (analytics_data_retrieval
+// - see ANALYTICS_DATA_RETRIEVAL_CAPABILITIES below, now also expressed via this
+// field). Every other capability leaves it null - an honest gap, not a promise no live
+// source exists to build later, just that none exists YET.
 //
 // EXCLUDED entirely from supported_tasks, matching this project's existing
 // standalone-engine precedent (the same treatment agent/core/growthOpportunityEngine.js
@@ -122,13 +136,24 @@ function fieldIds(fieldsList) {
   return fieldsList.map((field) => field.id);
 }
 
-function buildTask({ id, title, description, toolIds = [], required = [], optional = [], model = null, fields = [] }) {
+function buildTask({
+  id,
+  title,
+  description,
+  toolIds = [],
+  required = [],
+  optional = [],
+  model = null,
+  fields = [],
+  liveDataToolId = null,
+}) {
   const task = createEmptyCapabilityTask(id);
   task.title = title;
   task.description = description;
   task.tool_ids = toolIds;
   task.input_contract = { required, optional };
   task.output_contract = { model, fields };
+  task.live_data_tool_id = liveDataToolId;
   return task;
 }
 
@@ -406,8 +431,9 @@ const PRODUCT_TASKS = [
     id: 'product_discovery',
     title: 'Product discovery',
     description:
-      "Build and validate one agent/core/productModel.js record per caller-supplied candidate entry via productAgent.js's discoverProducts(). Returns an array of records. Not yet wired to any tool - tools/productDataRetrievalTool.js only wraps a raw Shopify fetch and reshapes it into this function's entry shape; tools/toolRegistry.js's 'product_research' entry (the would-be wrapper) is still not_implemented.",
-    toolIds: [],
+      "Build and validate one agent/core/productModel.js record per candidate entry via productAgent.js's discoverProducts(). Returns an array of records. Wired to tools/productDataRetrievalTool.js's runProductDataRetrievalTool(), which pulls the connected Shopify store's real product catalog and reshapes it into this function's entry shape via mapShopifyProductToCandidate() - self-sufficient from that live source alone, no caller-supplied entries required (see live_data_tool_id below).",
+    toolIds: ['product_data_retrieval'],
+    liveDataToolId: 'product_data_retrieval',
     required: ['entries', 'entries[].productIdentity'],
     optional: [
       'entries[].category',
@@ -1102,6 +1128,7 @@ const ANALYTICS_TASKS = [
       toolIds: ANALYTICS_DATA_RETRIEVAL_CAPABILITIES.includes(id)
         ? ['analytics', 'analytics_data_retrieval']
         : ['analytics'],
+      liveDataToolId: ANALYTICS_DATA_RETRIEVAL_CAPABILITIES.includes(id) ? 'analytics_data_retrieval' : null,
       required: [],
       optional: ['summary', 'actualMetrics', 'calculatedMetrics', 'estimatedMetrics', 'verificationStatus'],
       model: 'agent/core/analyticsAgentResultModel.js',

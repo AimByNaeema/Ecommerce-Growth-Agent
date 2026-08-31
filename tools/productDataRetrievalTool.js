@@ -16,6 +16,7 @@
 // Shopify-agnostic and only ever accepts caller-supplied entries.
 
 const shopifyClient = require('../integrations/adapters/shopifyClient');
+const { discoverProducts } = require('../agent/core/productAgent');
 
 // Retrieves product data by calling shopifyClient.getProducts(). Read-only: makes no
 // writes, changes nothing. Returns exactly what getProducts() returns and throws
@@ -52,7 +53,33 @@ function mapShopifyProductToCandidate(shopifyProduct) {
   };
 }
 
-module.exports = { retrieveProductData, mapShopifyProductToCandidate };
+// The product_discovery capability's live-data path (see
+// agent/core/specialistCapabilityRegistry.js's PRODUCT_TASKS - product_discovery
+// declares product_data_retrieval as its live_data_tool_id): pulls real Shopify
+// products, maps each into productAgent.discoverProducts()'s entry shape via
+// mapShopifyProductToCandidate(), then runs them through discoverProducts() unmodified
+// so the result is a real, validated agent/core/productModel.js record per product -
+// never a raw, unvalidated Shopify passthrough. Follows the same honest
+// {status, result, error}-envelope, never-throws convention as every other
+// TOOL_EXECUTORS entry (see tools/analyticsDataTool.js) rather than the throw-through
+// convention retrieveProductData() above uses, since this is the function
+// agent/core/orchestratorExecutionContract.js's TOOL_EXECUTORS dispatches to.
+async function runProductDataRetrievalTool(researchParams) {
+  const params = researchParams && typeof researchParams === 'object' ? researchParams : {};
+  try {
+    const products = await retrieveProductData(params);
+    if (!Array.isArray(products) || products.length === 0) {
+      return { status: 'empty', result: null, error: null };
+    }
+    const candidates = products.map(mapShopifyProductToCandidate);
+    const result = discoverProducts(candidates);
+    return { status: 'success', result, error: null };
+  } catch (err) {
+    return { status: 'failed', result: null, error: err.message };
+  }
+}
+
+module.exports = { retrieveProductData, mapShopifyProductToCandidate, runProductDataRetrievalTool };
 
 if (require.main === module) {
   shopifyClient.loadEnvOnce();

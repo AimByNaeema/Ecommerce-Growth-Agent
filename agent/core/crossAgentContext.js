@@ -465,10 +465,86 @@ function gatherGrowthOpportunityDrafts(completedSteps) {
   });
 }
 
+// ---------------------------------------------------------------------------------
+// 7. Product's freshly-retrieved LIVE evidence -> Listing / Marketing
+//
+// ADDITIVE, NOT A REPLACEMENT: deriveCrossAgentContext() above only ever reads a prior
+// step's output through PRODUCT_OPPORTUNITY_CAPABILITY_IDS's single-record envelope
+// shape (specialized_records.product_record / top-level product_identity/source) -
+// product_discovery's own real output (agent/core/productAgent.js's discoverProducts(),
+// wired to a live Shopify pull by tools/productDataRetrievalTool.js's
+// runProductDataRetrievalTool() - see agent/core/specialistCapabilityRegistry.js's
+// live_data_tool_id) is a DIFFERENT shape entirely: a plain array of
+// agent/core/productModel.js records, one per real product, with no single "the
+// product" the way product_opportunity_analysis's one-product-per-call contract has.
+//
+// Relaying it automatically is only honest when there is EXACTLY ONE real product to
+// point to - with zero, there is nothing to relay (not an error, just nothing yet);
+// with two or more, picking one over the others would be guessing which product the
+// caller meant, which this module (and this whole project) never does. Only that
+// single-product case is adapted into the exact shape extractProductToListing/
+// extractProductToMarketing already know how to read, and reused UNCHANGED - no new
+// mapping logic is duplicated here.
+// ---------------------------------------------------------------------------------
+
+function adaptSingleLiveProductForRelay(fromOutput) {
+  if (!Array.isArray(fromOutput) || fromOutput.length !== 1) return null;
+  const [record] = fromOutput;
+  if (!record || !isNonEmptyString(record.productIdentity)) return null;
+  return {
+    product_identity: record.productIdentity,
+    market: '',
+    source: Array.isArray(record.source) ? [...record.source] : [],
+    specialized_records: { product_record: { description: record.description || '' } },
+  };
+}
+
+// Mirrors deriveCrossAgentContext()'s own shape (same completedSteps/toSpecialistId/
+// toCapabilityId/existingResearchParams inputs, same filterToDeclaredFields safety net,
+// same caller-supplied-always-wins precedence) so a caller can merge its result in
+// exactly the same way - see agent/core/orchestratorExecutionContract.js's
+// buildPlanStep. Only recognizes product_discovery steps feeding 'listing' or
+// 'marketing' (the two flows extractProductToListing/extractProductToMarketing already
+// support); every other pair returns {} - never a guessed flow.
+function deriveLiveEvidenceContext({ completedSteps = [], toSpecialistId, toCapabilityId, existingResearchParams = null }) {
+  if (toSpecialistId !== 'listing' && toSpecialistId !== 'marketing') return {};
+  const toTask = getCapabilityTask(toSpecialistId, toCapabilityId);
+  if (!toTask) return {};
+
+  const extractor = toSpecialistId === 'listing' ? extractProductToListing : extractProductToMarketing;
+
+  let context = {};
+  for (const step of completedSteps) {
+    const fromSpecialistId =
+      step.selected_specialist && step.selected_specialist.type === 'specialist' ? step.selected_specialist.id : null;
+    const fromCapabilityId = step.inputs && step.inputs.capability_id;
+    if (fromSpecialistId !== 'product' || fromCapabilityId !== 'product_discovery') continue;
+
+    const adapted = adaptSingleLiveProductForRelay(realOutput(step));
+    if (!adapted) continue;
+
+    const extracted = extractor('product_opportunity_analysis', toCapabilityId, adapted);
+    if (extracted && Object.keys(extracted).length > 0) {
+      context = mergeContext(context, extracted);
+    }
+  }
+
+  context = filterToDeclaredFields(context, toTask.input_contract);
+
+  if (existingResearchParams && typeof existingResearchParams === 'object') {
+    for (const key of Object.keys(existingResearchParams)) {
+      delete context[key];
+    }
+  }
+
+  return context;
+}
+
 module.exports = {
   deriveCrossAgentContext,
   deriveAllToAnalyticsContext,
   gatherGrowthOpportunityDrafts,
+  deriveLiveEvidenceContext,
   mergeContext,
   filterToDeclaredFields,
   dedupeArray,
