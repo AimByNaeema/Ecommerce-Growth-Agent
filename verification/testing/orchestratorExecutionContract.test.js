@@ -418,6 +418,65 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.ok(step.errors[0].includes('productReference'));
   });
 
+  await testAsync(
+    'runOrchestratorContract: a Listing request that ties between listing_content and marketplace_format ' +
+      'stops for clarification instead of silently picking the first-declared capability',
+    async () => {
+      // "identify my top listing opportunity" routes to the Listing specialist (stage 1)
+      // but scores an exact tie between listing_content and marketplace_format (stage 2:
+      // bestMatchingTask) - neither task's own id/title/description text is a real,
+      // distinguishing match for this wording. Before the ambiguousCapabilityTasks fix,
+      // this silently picked listing_content (first declared in LISTING_TASKS) and
+      // reported a misleading "needs productReference" error, as if that specific
+      // capability had genuinely been the intended one.
+      const response = await runOrchestratorContract('identify my top listing opportunity');
+      assert.strictEqual(response.needs_more_information, false);
+      assert.strictEqual(response.routing.status, 'planned');
+      assert.strictEqual(response.routing.plan.length, 1);
+      const step = response.routing.plan[0];
+      assert.strictEqual(step.selected_specialist.id, 'listing');
+      assert.strictEqual(step.completion_state, 'blocked');
+      assert.strictEqual(step.outputs, null);
+      assert.ok(step.errors[0].includes('Listing content generation'));
+      assert.ok(step.errors[0].includes('Marketplace format'));
+      assert.ok(!step.errors[0].includes('productReference'));
+    }
+  );
+
+  await testAsync(
+    'runOrchestratorContract: the Listing capability-tie clarification fires even when the caller already ' +
+      'supplied every required field, proving it is a real ambiguity stop, not a disguised missing-evidence stop',
+    async () => {
+      const response = await runOrchestratorContract('identify my top listing opportunity', {
+        researchParams: { productReference: 'Example insulated jacket', marketplace: 'Etsy' },
+      });
+      assert.strictEqual(response.routing.status, 'planned');
+      const step = response.routing.plan[0];
+      assert.strictEqual(step.selected_specialist.id, 'listing');
+      assert.strictEqual(step.completion_state, 'blocked');
+      assert.ok(/Could not confidently tell which/.test(step.errors[0]));
+    }
+  );
+
+  await testAsync(
+    'runOrchestratorContract: a Listing request that clearly favors marketplace_format still selects it ' +
+      'correctly - the tie/ambiguity fix does not break a real, single-winner capability match',
+    async () => {
+      const response = await runOrchestratorContract('reformat my listing content for the Etsy marketplace');
+      assert.strictEqual(response.routing.status, 'planned');
+      assert.strictEqual(response.routing.plan.length, 1);
+      const step = response.routing.plan[0];
+      assert.strictEqual(step.selected_specialist.id, 'listing');
+      assert.deepStrictEqual(step.tool_calls, ['listing_content_generation']);
+      assert.strictEqual(step.completion_state, 'blocked');
+      // Correctly resolved to marketplace_format (not an ambiguity stop) - its own
+      // required fields (marketplace, productReference) are simply unmet here.
+      assert.ok(step.errors[0].includes('Marketplace format'));
+      assert.ok(step.errors[0].includes('marketplace'));
+      assert.ok(step.errors[0].includes('productReference'));
+    }
+  );
+
   await testAsync('runOrchestratorContract: a clean single-specialist task (Marketing) produces a one-step plan of shared execution state', async () => {
     const response = await runOrchestratorContract('marketing campaign strategy');
     assert.strictEqual(response.needs_more_information, false);
@@ -523,7 +582,13 @@ test('planRouting requires clarification for a fully unmatched task', () => {
   // specialistCapabilityRegistry's own honest tool_ids: [] for every Product task).
 
   await testAsync('SEO -> Listing: a real product_seo result feeds listing_content\'s seoRecommendations for real, in one plan', async () => {
-    const response = await runOrchestratorContract('seo analysis and refresh my listing', {
+    // "refresh my listing benefits" (not just "refresh my listing") - since the
+    // Listing-only ambiguity guard added in buildPlanStep (isAmbiguousCapabilityMatch)
+    // now correctly refuses to declared-order-guess between listing_content and
+    // marketplace_format on a bare tie, this clause needs one real, distinguishing
+    // word only listing_content's own task text contains ("benefits") to resolve
+    // deterministically to listing_content, exactly as this test still intends.
+    const response = await runOrchestratorContract('seo analysis and refresh my listing benefits', {
       researchParams: {
         productReference: 'Insulated Hiking Jacket',
         productTitle: 'Insulated Hiking Jacket',

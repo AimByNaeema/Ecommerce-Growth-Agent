@@ -1037,7 +1037,11 @@ function scoreWordOverlap(text, objectiveWords) {
 // Finds, among a list of capability tasks, the one whose own id/title/description
 // best matches the objective's wording - ties broken by declared order (first wins).
 // Returns null when the list is empty; never guesses among equally-scored candidates
-// beyond that deterministic, documented tie-break.
+// beyond that deterministic, documented tie-break. This declared-order tie-break is
+// intentional and relied on elsewhere (e.g. Social & Advertising's 5 platform
+// capabilities, which legitimately tie whenever no platform name appears in the
+// objective - see this file's own tests) - it is left unchanged here. See
+// isAmbiguousCapabilityMatch below for the narrower, Listing-only confidence check.
 function bestMatchingTask(tasks, objectiveWords) {
   let best = null;
   let bestScore = -1;
@@ -1049,6 +1053,36 @@ function bestMatchingTask(tasks, objectiveWords) {
     }
   }
   return best;
+}
+
+// LISTING-ONLY SAFETY CHECK: true when none of the given capability tasks was a
+// confident, distinguishing match for the objective - a tie for the top score, or a
+// top score of 0 (no real word overlap at all). Scoped to Listing specifically (see
+// buildPlanStep's call site) rather than changing bestMatchingTask's general
+// declared-order tie-break for every specialist, because that broader change was
+// verified to regress other specialists' own legitimate, already-correct tie-break
+// cases (e.g. Social & Advertising's 5 platform capabilities - see this file's own
+// tests). Listing's two capabilities (listing_content, marketplace_format) both
+// require a specific product and neither is a safe default to silently run when the
+// objective's wording gave no real signal for either one - see the bug this guards
+// against: "identify the single most important improvement opportunity for my
+// Shopify product listings" tied 1-1 on the incidental word "product" and was
+// silently dispatched as listing_content, failing on a misleading "missing
+// productReference" error instead of asking which action was actually intended.
+function isAmbiguousCapabilityMatch(tasks, objectiveWords) {
+  if (!Array.isArray(tasks) || tasks.length === 0) return false;
+  let bestScore = -1;
+  let tiedCount = 0;
+  for (const task of tasks) {
+    const score = scoreWordOverlap(`${task.id} ${task.title} ${task.description}`, objectiveWords);
+    if (score > bestScore) {
+      bestScore = score;
+      tiedCount = 1;
+    } else if (score === bestScore) {
+      tiedCount += 1;
+    }
+  }
+  return bestScore <= 0 || tiedCount > 1;
 }
 
 // Builds and executes one plan step for a routed target, reusing the existing
@@ -1149,12 +1183,23 @@ async function buildPlanStep(
   // guessed) when the tool serves zero capabilities in the registry, or when this
   // target has no capability entry at all (shared infrastructure).
   let matchedCapability = null;
+  // Set only when there WAS at least one real candidate task for this tool but
+  // bestMatchingTask couldn't confidently pick one (a tie, or zero real word-overlap
+  // signal) - see buildPlanStep's dispatch branches below, which stop for
+  // clarification in this case instead of silently running whichever task happens to
+  // be declared first. Left null (and existing behavior unchanged) for the separate,
+  // pre-existing case of a tool with zero connected supported_tasks at all (e.g.
+  // product_research) - that is "genuinely nothing to pick from", not "ambiguous".
+  let ambiguousCapabilityTasks = null;
   if (capabilityEntry && toolMatch) {
     const candidateTasks = capabilityEntry.supported_tasks.filter((task) => task.tool_ids.includes(toolMatch.id));
-    matchedCapability =
-      forcedSelection && forcedSelection.capabilityId
-        ? candidateTasks.find((task) => task.id === forcedSelection.capabilityId) || null
-        : bestMatchingTask(candidateTasks, objectiveWords);
+    if (forcedSelection && forcedSelection.capabilityId) {
+      matchedCapability = candidateTasks.find((task) => task.id === forcedSelection.capabilityId) || null;
+    } else if (target.id === 'listing' && isAmbiguousCapabilityMatch(candidateTasks, objectiveWords)) {
+      ambiguousCapabilityTasks = candidateTasks;
+    } else {
+      matchedCapability = bestMatchingTask(candidateTasks, objectiveWords);
+    }
   }
 
   // PREFER REAL DATA OVER NO DATA: plain word-overlap scoring has no notion of "which
@@ -1348,6 +1393,30 @@ async function buildPlanStep(
         `'${matchedCapability.title}' needs real, structured input this request did not supply and no ` +
         `approved read-only source can currently retrieve: ${missingFields.join(', ')}. Provide ${missingFields.join(', ')} ` +
         'directly, or ask a specialist step that can produce it first.',
+      classification: null,
+    };
+  } else if (ambiguousCapabilityTasks) {
+    // No confident capability match (see bestMatchingTask): a tie, or zero real word
+    // overlap, among this target's real candidate tasks. Stop and ask which specific
+    // action is intended rather than silently dispatching whichever task happens to be
+    // declared first - the same "stop before dispatch" principle as the
+    // requiredEvidenceMissing branch above, just for an ambiguous capability instead
+    // of a missing field.
+    executionRequest = {
+      objective,
+      category: matchedCategory,
+      tool_id: toolMatch.id,
+      specialist_id: target.type === 'specialist' ? target.id : null,
+      is_shared_infrastructure: target.type === 'shared_infrastructure',
+      research_params: effectiveResearchParams,
+    };
+    const candidateTitles = ambiguousCapabilityTasks.map((task) => task.title).join("', '");
+    outcome = {
+      status: 'clarification_required',
+      data: null,
+      error:
+        `Could not confidently tell which '${target.id}' action was intended - '${candidateTitles}' matched this ` +
+        'request equally (or not at all). Clarify which specific action is intended.',
       classification: null,
     };
   } else {
