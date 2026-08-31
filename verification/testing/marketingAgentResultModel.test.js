@@ -23,7 +23,7 @@ function test(name, fn) {
   }
 }
 
-test('MARKETING_CAPABILITIES lists exactly the 8 requested capabilities, in the requested order', () => {
+test('MARKETING_CAPABILITIES lists exactly the 9 requested capabilities, in the requested order', () => {
   assert.deepStrictEqual(MARKETING_CAPABILITIES, [
     'marketing_strategy',
     'audience_segmentation',
@@ -33,6 +33,7 @@ test('MARKETING_CAPABILITIES lists exactly the 8 requested capabilities, in the 
     'campaign_planning',
     'email_strategy',
     'conversion_opportunities',
+    'marketing_opportunity_ranking',
   ]);
 });
 

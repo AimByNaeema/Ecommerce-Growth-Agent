@@ -11,16 +11,20 @@
 // agent/core/offerRecommendationEngine.js and
 // agent/core/productOpportunityScoringEngine.js.
 //
-// Standalone deliverable, not wired into tools/toolRegistry.js or
-// agent/core/orchestratorExecutionContract.js - the same deliberate scope choice
-// agent/core/offerRecommendationEngine.js, agent/core/productOpportunityScoringEngine.js,
-// agent/core/productRecommendationEngine.js, agent/core/seoQualityChecker.js, and
-// agent/core/listingQualityChecker.js already made (a ranking engine that composes
-// existing structured input, directly callable, not part of a 7-capability
-// dispatcher). It does not call into any specialist agent itself - whoever calls this
-// engine (a workflow, the orchestrator, or a human) is responsible for gathering
-// candidates from the relevant specialists first. A future, explicitly-scoped prompt
-// can wire it in and/or automate candidate gathering if wanted.
+// Reachable through the dispatcher via exactly one path: Marketing's
+// marketing_opportunity_ranking capability (agent/core/marketingAgent.js's
+// analyzeMarketingOpportunities(), dispatched by tools/marketingAnalysisTool.js under
+// the existing marketing_analysis tool id) pins every candidate's category to
+// 'marketing' and calls rankGrowthOpportunities() directly with caller-supplied
+// candidates - no new tool id, no change to routing/dispatch elsewhere. This module
+// still does not call into any specialist agent itself, still does not gather
+// candidates on its own, and still requires expectedImpactCategory,
+// expectedImpactMagnitude, and actionClassification on every candidate (see this
+// file's own HONESTY GUARDS below) - a bare free-text objective with no
+// caller-supplied candidates cannot succeed through this path either; something
+// upstream (a human, or a future explicitly-scoped automation) must still supply real
+// candidates first. Every other growth surface named above remains unreached by any
+// capability.
 //
 // RANKING FORMULA (ICE-style: Impact x Confidence): rank_score =
 // expected_impact_magnitude (caller-supplied, 1-5) x CONFIDENCE_MULTIPLIERS[confidence]
@@ -204,9 +208,147 @@ function rankGrowthOpportunities(candidates = []) {
   };
 }
 
+// ---------------------------------------------------------------------------------
+// Partial ranking: rankAvailableGrowthOpportunities / applyGrowthOpportunityOverrides
+//
+// rankGrowthOpportunities() above is intentionally all-or-nothing: one structurally
+// incomplete candidate throws and discards the whole batch - verified behavior, and
+// not one line of the function above was changed for this addition. A caller working
+// from real, partially-complete drafts (see agent/core/crossAgentContext.js's
+// gatherGrowthOpportunityDrafts, which deliberately leaves expectedImpactCategory/
+// expectedImpactMagnitude/actionClassification named as missing rather than inventing
+// them) needs a way to rank what CAN be ranked and honestly report what can't - that
+// is what this section adds, as a pure wrapper around the functions above, never a
+// replacement for them.
+// ---------------------------------------------------------------------------------
+
+// Lists every REQUIRED field a candidate is missing or has invalid - mirrors
+// normalizeCandidate's own checks above field for field, but never just the first one,
+// so a caller can see the complete gap. Deliberately a separate, read-only check next
+// to normalizeCandidate rather than a modification of it: normalizeCandidate's job is
+// still to throw on the first bad field for rankGrowthOpportunities' existing
+// all-or-nothing contract, completely unchanged; this one's job is to enumerate every
+// gap without throwing, for the partial-ranking path below only.
+function findMissingRequiredFields(candidate) {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return ['(not an object)'];
+  }
+
+  const missing = [];
+  if (!OPPORTUNITY_CATEGORIES.includes(candidate.category)) missing.push('category');
+  if (typeof candidate.opportunity !== 'string' || candidate.opportunity.trim() === '') missing.push('opportunity');
+  if (typeof candidate.reason !== 'string' || candidate.reason.trim() === '') missing.push('reason');
+  if (typeof candidate.requiredAction !== 'string' || candidate.requiredAction.trim() === '') {
+    missing.push('requiredAction');
+  }
+  if (!IMPACT_CATEGORIES.includes(candidate.expectedImpactCategory)) missing.push('expectedImpactCategory');
+
+  const magnitude = candidate.expectedImpactMagnitude;
+  if (typeof magnitude !== 'number' || !Number.isFinite(magnitude) || magnitude < 1 || magnitude > 5) {
+    missing.push('expectedImpactMagnitude');
+  }
+
+  if (!getClassificationById(candidate.actionClassification)) missing.push('actionClassification');
+
+  return missing;
+}
+
+// Partitions candidates into structurally-complete (ranked normally, via
+// rankGrowthOpportunities above - completely unchanged) and incomplete (returned under
+// `unranked` with their exact missing_fields, never ranked, never invented). An honest
+// partial result by construction: ranking never silently drops an incomplete
+// candidate, and never silently promotes one by guessing its missing fields.
+function rankAvailableGrowthOpportunities(candidates = []) {
+  const fnName = 'rankAvailableGrowthOpportunities';
+  if (!Array.isArray(candidates)) {
+    throw new Error(`${fnName} requires \`candidates\` to be an array.`);
+  }
+
+  const ready = [];
+  const unranked = [];
+
+  candidates.forEach((candidate, index) => {
+    const missingFields = findMissingRequiredFields(candidate);
+    if (missingFields.length === 0) {
+      ready.push(candidate);
+    } else {
+      unranked.push({ index, candidate, missing_fields: missingFields });
+    }
+  });
+
+  const rankedResult = rankGrowthOpportunities(ready);
+
+  const limitations = [];
+  if (candidates.length === 0) {
+    limitations.push('No candidates were supplied - nothing to rank.');
+  } else if (unranked.length > 0) {
+    limitations.push(
+      `${unranked.length} of ${candidates.length} candidate(s) could not be ranked - required fields are ` +
+        'missing (see unranked[].missing_fields for each). Nothing was invented or defaulted to rank them.'
+    );
+  }
+
+  return {
+    generated_date: rankedResult.generated_date,
+    methodology: rankedResult.methodology,
+    total_candidates: candidates.length,
+    ranked: rankedResult.opportunities,
+    unranked,
+    limitations,
+  };
+}
+
+// Fields a caller may explicitly override on a real draft (see
+// agent/core/crossAgentContext.js's gatherGrowthOpportunityDrafts) before ranking -
+// exactly the subjective judgment fields no draft ever carries (this file's own
+// HONESTY GUARDS above explain why). `category` is included because a draft whose
+// opportunity_type had no honest engine-category mapping is left as category: null
+// (see gatherGrowthOpportunityDrafts) - the same kind of caller-must-supply gap.
+const OVERRIDABLE_JUDGMENT_FIELDS = [
+  'category',
+  'expectedImpactCategory',
+  'expectedImpactMagnitude',
+  'actionClassification',
+];
+
+// Merges caller-supplied judgment-field overrides onto real drafts, keyed by each
+// draft's own `opportunity` text (the only caller-facing identifier a draft carries).
+// Only OVERRIDABLE_JUDGMENT_FIELDS above are ever taken from an override - every other
+// field (opportunity, reason, evidence, requiredAction, verificationStatus - all real,
+// upstream-supplied values) is relayed from the draft completely unchanged, even if an
+// override object happens to also carry a same-named key. Never invents a value for a
+// draft with no matching override, or for an override that omits a field - that
+// draft/field is simply left exactly as the real draft (or gatherGrowthOpportunityDrafts's
+// own engine-side null/missing) left it, to be reported as still-missing by
+// rankAvailableGrowthOpportunities above.
+function applyGrowthOpportunityOverrides(drafts, overrides = {}) {
+  if (!Array.isArray(drafts)) {
+    throw new Error('applyGrowthOpportunityOverrides requires `drafts` to be an array.');
+  }
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    throw new Error('applyGrowthOpportunityOverrides requires `overrides` to be a plain object.');
+  }
+
+  return drafts.map((draft) => {
+    const override = overrides[draft.opportunity];
+    const merged = { ...draft };
+    delete merged.missing_for_ranking; // recomputed independently by rankAvailableGrowthOpportunities
+
+    if (override && typeof override === 'object' && !Array.isArray(override)) {
+      for (const field of OVERRIDABLE_JUDGMENT_FIELDS) {
+        if (field in override) merged[field] = override[field];
+      }
+    }
+
+    return merged;
+  });
+}
+
 module.exports = {
   rankGrowthOpportunities,
   buildApprovalRequirement,
+  rankAvailableGrowthOpportunities,
+  applyGrowthOpportunityOverrides,
 };
 
 if (require.main === module) {

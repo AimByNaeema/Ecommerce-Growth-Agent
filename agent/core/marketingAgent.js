@@ -82,6 +82,7 @@ const {
   validateMarketingAgentResultShape,
 } = require('./marketingAgentResultModel');
 const { retrieveResearchData, analyzeResearchData, deriveRecommendations } = require('./researchAgent');
+const { rankGrowthOpportunities } = require('./growthOpportunityEngine');
 
 function requireNonEmptyString(value, fieldName, fnName) {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -243,10 +244,23 @@ function extractCampaignPlanRecord(record) {
   };
 }
 
+// growthOpportunityEngine.js's rankGrowthOpportunities() output records are a
+// different shape than growthOpportunityModel.js's (see marketing_opportunity_ranking
+// below) - a dedicated extractor, not a reuse of extractGrowthOpportunityRecord above.
+function extractRankedGrowthOpportunityRecord(record) {
+  return {
+    findings: [record.opportunity, record.reason, record.required_action].filter(Boolean),
+    evidence: [...record.evidence],
+    source: [],
+    label: record.opportunity || '(unspecified opportunity)',
+  };
+}
+
 const RECORD_KIND_EXTRACTORS = {
   marketing_analysis: extractMarketingAnalysisRecord,
   growth_opportunity: extractGrowthOpportunityRecord,
   campaign_plan: extractCampaignPlanRecord,
+  ranked_growth_opportunity: extractRankedGrowthOpportunityRecord,
 };
 
 function analyzeMarketingRecords(records, kind, limitationHeader) {
@@ -326,6 +340,8 @@ const GROWTH_OPPORTUNITY_LIMITATION_HEADER =
   'No live sales/customer data platform is configured; this result reflects only caller-supplied evidence.';
 const CAMPAIGN_PLAN_LIMITATION_HEADER =
   'This plan is not launched automatically - no live marketing platform is configured, and this result reflects only caller-supplied evidence.';
+const RANKED_GROWTH_OPPORTUNITY_LIMITATION_HEADER =
+  'No live sales/performance data platform is configured; this ranking reflects only caller-supplied opportunity candidates and their evidence - it never ranks an opportunity nobody supplied.';
 
 // Shared by marketing strategy, offers, promotions, campaign planning, and email
 // strategy - all 5 build one agent/core/marketingAnalysisModel.js record and honest
@@ -508,6 +524,50 @@ function analyzeConversionOpportunities(params = {}) {
   });
 }
 
+// Ranks caller-supplied marketing opportunity candidates via
+// agent/core/growthOpportunityEngine.js's rankGrowthOpportunities() - never gathers,
+// infers, or invents a candidate itself (see that module's own header). Every
+// candidate's category is pinned to 'marketing' - always, not just a default - the
+// same pinning pattern analyzeRetention uses for opportunityType, so this Marketing
+// capability can never accidentally rank a candidate from another growth surface.
+// Answers "what is my best marketing opportunity" only when real candidates (with
+// real reason/evidence/impact/action-classification) are supplied - a bare free-text
+// objective with no candidates is honestly insufficient input, not a guess.
+function analyzeMarketingOpportunities(params = {}) {
+  const fnName = 'analyzeMarketingOpportunities';
+  const { candidates, topic, market = '' } = params;
+  requireNonEmptyArray(candidates, 'candidates', fnName);
+
+  const pinnedCandidates = candidates.map((entry) => {
+    requireObjectEntry(entry, 'candidates', fnName);
+    return { ...entry, category: 'marketing' };
+  });
+
+  const ranked = rankGrowthOpportunities(pinnedCandidates);
+  const records = ranked.opportunities;
+
+  const analysis = analyzeMarketingRecords(
+    records,
+    'ranked_growth_opportunity',
+    RANKED_GROWTH_OPPORTUNITY_LIMITATION_HEADER
+  );
+  const opportunityList = records.map((record) => record.opportunity).join(', ');
+  return composeResult({
+    capability: 'marketing_opportunity_ranking',
+    topic: topic || `Marketing opportunity ranking: ${opportunityList || '(no candidates)'}`,
+    market,
+    findings: analysis.findings,
+    evidence: analysis.evidence,
+    source: analysis.source,
+    confidence: params.confidence,
+    limitations: analysis.limitations,
+    recommendations: params.recommendations,
+    verificationStatus: params.verificationStatus,
+    researchDate: params.researchDate || todayIsoDate(),
+    specializedRecords: records,
+  });
+}
+
 const MARKETING_CAPABILITY_HANDLERS = {
   marketing_strategy: analyzeMarketingStrategy,
   audience_segmentation: analyzeAudienceSegmentation,
@@ -517,6 +577,7 @@ const MARKETING_CAPABILITY_HANDLERS = {
   campaign_planning: analyzeCampaignPlanning,
   email_strategy: analyzeEmailStrategy,
   conversion_opportunities: analyzeConversionOpportunities,
+  marketing_opportunity_ranking: analyzeMarketingOpportunities,
 };
 
 // The single entry point: dispatches by capability to the matching function above.
@@ -538,6 +599,7 @@ module.exports = {
   analyzeCampaignPlanning,
   analyzeEmailStrategy,
   analyzeConversionOpportunities,
+  analyzeMarketingOpportunities,
   runMarketingAgent,
   retrieveMarketingData,
 };

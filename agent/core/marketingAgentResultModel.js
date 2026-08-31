@@ -26,6 +26,7 @@ const MARKETING_CAPABILITIES = [
   'campaign_planning',
   'email_strategy',
   'conversion_opportunities',
+  'marketing_opportunity_ranking',
 ];
 
 const MARKETING_AGENT_RESULT_FIELDS = [

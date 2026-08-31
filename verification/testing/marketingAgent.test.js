@@ -10,6 +10,7 @@ const {
   analyzeCampaignPlanning,
   analyzeEmailStrategy,
   analyzeConversionOpportunities,
+  analyzeMarketingOpportunities,
   runMarketingAgent,
   retrieveMarketingData,
 } = require('../../agent/core/marketingAgent');
@@ -222,6 +223,80 @@ test('analyzeConversionOpportunities is not mutually exclusive with retention - 
     opportunities: [{ opportunityType: 'retention', productReference: '(Example jacket)' }],
   });
   assert.strictEqual(result.specialized_records[0].opportunity_type, 'retention');
+});
+
+// --- marketing_opportunity_ranking --------------------------------------------------------
+
+const VALID_CANDIDATE = {
+  opportunity: 'Launch Pinterest Ads for the insulated jacket line',
+  reason: 'Pinterest organic pins already drive traffic.',
+  evidence: ['(placeholder pinterest analytics report)'],
+  expectedImpactCategory: 'revenue',
+  expectedImpactMagnitude: 4,
+  confidence: 'high',
+  requiredAction: 'Set up a Pinterest Ads campaign.',
+  actionClassification: 'externally_executable',
+};
+
+test('analyzeMarketingOpportunities requires a non-empty candidates array', () => {
+  assert.throws(() => analyzeMarketingOpportunities({}), /requires a non-empty `candidates` array/);
+});
+
+test('analyzeMarketingOpportunities never invents a missing candidate field - throws instead', () => {
+  assert.throws(
+    () => analyzeMarketingOpportunities({ candidates: [{ opportunity: 'x' }] }),
+    /requires a non-empty `candidates\[0\]\.reason`/
+  );
+});
+
+test('analyzeMarketingOpportunities pins every candidate\'s category to marketing regardless of caller input', () => {
+  const result = analyzeMarketingOpportunities({
+    candidates: [{ ...VALID_CANDIDATE, category: 'seo' }],
+  });
+  assert.strictEqual(result.capability, 'marketing_opportunity_ranking');
+  assertValidResult(result);
+  assert.strictEqual(result.specialized_records[0].category, 'marketing');
+});
+
+test('analyzeMarketingOpportunities ranks real caller-supplied candidates by impact x confidence, never invents a ranking', () => {
+  const result = analyzeMarketingOpportunities({
+    candidates: [
+      VALID_CANDIDATE,
+      {
+        opportunity: 'Send a TikTok influencer package',
+        reason: 'TikTok shows craft/design use cases.',
+        expectedImpactCategory: 'traffic_visibility',
+        expectedImpactMagnitude: 2,
+        requiredAction: 'Reach out to 3 relevant creators.',
+        actionClassification: 'recommendation',
+      },
+    ],
+  });
+  assert.strictEqual(result.specialized_records.length, 2);
+  assert.strictEqual(result.specialized_records[0].opportunity, VALID_CANDIDATE.opportunity);
+  assert.strictEqual(result.specialized_records[0].rank, 1);
+  assert.strictEqual(result.specialized_records[1].rank, 2);
+  // second candidate had no evidence - confidence honestly downgraded to unassessed,
+  // not left at whatever the caller might have asserted.
+  assert.strictEqual(result.specialized_records[1].confidence, 'unassessed');
+});
+
+test('analyzeMarketingOpportunities reports honest partial evidence coverage - never fabricates evidence for a candidate that supplied none', () => {
+  const result = analyzeMarketingOpportunities({
+    candidates: [
+      VALID_CANDIDATE,
+      {
+        opportunity: 'Send a TikTok influencer package',
+        reason: 'TikTok shows craft/design use cases.',
+        expectedImpactCategory: 'traffic_visibility',
+        expectedImpactMagnitude: 2,
+        requiredAction: 'Reach out to 3 relevant creators.',
+        actionClassification: 'recommendation',
+      },
+    ],
+  });
+  assert.ok(result.limitations.some((l) => l.includes('Send a TikTok influencer package')));
+  assert.ok(!result.limitations.some((l) => l.includes(VALID_CANDIDATE.opportunity)));
 });
 
 // --- dispatcher / reuse helper ------------------------------------------------------------

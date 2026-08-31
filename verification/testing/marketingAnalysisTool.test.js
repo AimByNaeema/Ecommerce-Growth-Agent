@@ -84,6 +84,32 @@ test('runMarketingAnalysisTool dispatches conversion_opportunities capability wi
   assert.strictEqual(outcome.status, 'partial');
 });
 
+test('runMarketingAnalysisTool dispatches marketing_opportunity_ranking capability with success status when every candidate has evidence', () => {
+  const outcome = runMarketingAnalysisTool({
+    marketingCapability: 'marketing_opportunity_ranking',
+    candidates: [
+      {
+        opportunity: 'Launch Pinterest Ads for the insulated jacket line',
+        reason: 'Pinterest organic pins already drive traffic.',
+        evidence: ['(placeholder pinterest analytics report)'],
+        expectedImpactCategory: 'revenue',
+        expectedImpactMagnitude: 4,
+        requiredAction: 'Set up a Pinterest Ads campaign.',
+        actionClassification: 'externally_executable',
+      },
+    ],
+  });
+  assert.strictEqual(outcome.status, 'success');
+  assert.strictEqual(outcome.result.capability, 'marketing_opportunity_ranking');
+  assert.strictEqual(outcome.result.specialized_records[0].category, 'marketing');
+});
+
+test('runMarketingAnalysisTool returns failed status for marketing_opportunity_ranking when candidates is missing', () => {
+  const outcome = runMarketingAnalysisTool({ marketingCapability: 'marketing_opportunity_ranking' });
+  assert.strictEqual(outcome.status, 'failed');
+  assert.ok(outcome.error.includes('requires a non-empty `candidates` array'));
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
   process.exit(1);

@@ -14,9 +14,10 @@
 //
 // researchParams.marketingCapability selects which capability to run - one of
 // 'marketing_strategy' (default when omitted), 'audience_segmentation', 'offers',
-// 'promotions', 'retention', 'campaign_planning', 'email_strategy', or
-// 'conversion_opportunities'. One tool id covering all 8 capabilities keeps
-// tools/toolRegistry.js's existing, already-reserved shape intact.
+// 'promotions', 'retention', 'campaign_planning', 'email_strategy',
+// 'conversion_opportunities', or 'marketing_opportunity_ranking'. One tool id
+// covering all 9 capabilities keeps tools/toolRegistry.js's existing,
+// already-reserved shape intact.
 //
 // Returns { status, result, error } - never throws:
 //   status 'failed'  - no researchParams supplied, an unknown marketingCapability, or
@@ -34,6 +35,7 @@ const {
   analyzeCampaignPlanning,
   analyzeEmailStrategy,
   analyzeConversionOpportunities,
+  analyzeMarketingOpportunities,
 } = require('../agent/core/marketingAgent');
 
 const CAPABILITY_HANDLERS = {
@@ -45,6 +47,7 @@ const CAPABILITY_HANDLERS = {
   campaign_planning: analyzeCampaignPlanning,
   email_strategy: analyzeEmailStrategy,
   conversion_opportunities: analyzeConversionOpportunities,
+  marketing_opportunity_ranking: analyzeMarketingOpportunities,
 };
 
 function deriveStatus(result) {

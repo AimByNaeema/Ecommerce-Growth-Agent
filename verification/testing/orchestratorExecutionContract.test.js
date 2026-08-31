@@ -492,6 +492,72 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.ok(step.errors[0].includes('marketingChannel'));
   });
 
+  await testAsync('runOrchestratorContract: a general "best marketing opportunity" objective routes to marketing_opportunity_ranking, not marketing_strategy', async () => {
+    // Regression coverage for the routing bug this capability fixes: this exact
+    // objective used to select marketing_strategy and block on the misleading
+    // marketingChannel error (see the failing-request investigation this capability
+    // was built from).
+    const response = await runOrchestratorContract(
+      'Identify the single best marketing opportunity to increase sales for my ecommerce business.'
+    );
+    assert.strictEqual(response.routing.plan.length, 1);
+    const step = response.routing.plan[0];
+    assert.strictEqual(step.selected_specialist.id, 'marketing');
+    assert.strictEqual(step.inputs.capability_id, 'marketing_opportunity_ranking');
+    // Insufficient-evidence behavior: a bare free-text objective with no candidates
+    // honestly stops before dispatch - it never guesses a "best" opportunity.
+    assert.strictEqual(step.completion_state, 'blocked');
+    assert.strictEqual(step.outputs, null);
+    assert.ok(step.errors[0].includes('candidates'));
+    assert.ok(!step.errors[0].includes('marketingChannel'));
+  });
+
+  await testAsync('runOrchestratorContract: the same objective with real candidates supplied ranks them for real, never inventing a winner', async () => {
+    const response = await runOrchestratorContract(
+      'Identify the single best marketing opportunity to increase sales for my ecommerce business.',
+      {
+        researchParams: {
+          candidates: [
+            {
+              opportunity: 'Launch Pinterest Ads for the insulated jacket line',
+              reason: 'Pinterest organic pins already drive traffic.',
+              evidence: ['(placeholder pinterest analytics report)'],
+              expectedImpactCategory: 'revenue',
+              expectedImpactMagnitude: 4,
+              requiredAction: 'Set up a Pinterest Ads campaign.',
+              actionClassification: 'externally_executable',
+            },
+            {
+              opportunity: 'Send a TikTok influencer package',
+              reason: 'TikTok shows craft/design use cases.',
+              expectedImpactCategory: 'traffic_visibility',
+              expectedImpactMagnitude: 2,
+              requiredAction: 'Reach out to 3 relevant creators.',
+              actionClassification: 'recommendation',
+            },
+          ],
+        },
+      }
+    );
+    const step = response.routing.plan[0];
+    assert.strictEqual(step.inputs.capability_id, 'marketing_opportunity_ranking');
+    assert.strictEqual(step.outputs.status, 'partial');
+    const records = step.outputs.result.specialized_records;
+    assert.strictEqual(records[0].opportunity, 'Launch Pinterest Ads for the insulated jacket line');
+    assert.strictEqual(records[0].rank, 1);
+    assert.strictEqual(records[1].rank, 2);
+  });
+
+  await testAsync('runOrchestratorContract: existing channel-specific Marketing capabilities are unaffected by marketing_opportunity_ranking', async () => {
+    // Same objective as the original single-specialist Marketing test above - proves
+    // adding marketing_opportunity_ranking did not shift routing for a genuinely
+    // channel-oriented request.
+    const response = await runOrchestratorContract('marketing campaign strategy');
+    const step = response.routing.plan[0];
+    assert.strictEqual(step.inputs.capability_id, 'marketing_strategy');
+    assert.ok(step.errors[0].includes('marketingChannel'));
+  });
+
   await testAsync('runOrchestratorContract: a multi-capability task produces a controlled 2-step plan, each step self-contained', async () => {
     const response = await runOrchestratorContract('market competitor research and social media advertising');
     assert.strictEqual(response.routing.status, 'planned');

@@ -1,7 +1,11 @@
 'use strict';
 
 const assert = require('node:assert');
-const { rankGrowthOpportunities } = require('../../agent/core/growthOpportunityEngine');
+const {
+  rankGrowthOpportunities,
+  rankAvailableGrowthOpportunities,
+  applyGrowthOpportunityOverrides,
+} = require('../../agent/core/growthOpportunityEngine');
 
 let passed = 0;
 let failed = 0;
@@ -221,6 +225,178 @@ test('methodology field documents the exact ranking formula', () => {
   const result = rankGrowthOpportunities([baseCandidate()]);
   assert.ok(result.methodology.includes('expected_impact_magnitude'));
   assert.ok(result.methodology.includes('confidence_multiplier'));
+});
+
+// --- rankAvailableGrowthOpportunities ------------------------------------------------
+
+test('rankAvailableGrowthOpportunities: mixed complete + incomplete candidates ranks the complete one and honestly reports the rest', () => {
+  const complete = baseCandidate({ opportunity: 'complete-one' });
+  const incomplete = { category: 'seo', opportunity: 'incomplete-one', reason: '(example reason)' };
+
+  const result = rankAvailableGrowthOpportunities([complete, incomplete]);
+
+  assert.strictEqual(result.total_candidates, 2);
+  assert.strictEqual(result.ranked.length, 1);
+  assert.strictEqual(result.ranked[0].opportunity, 'complete-one');
+  assert.strictEqual(result.ranked[0].rank, 1);
+
+  assert.strictEqual(result.unranked.length, 1);
+  assert.strictEqual(result.unranked[0].index, 1);
+  assert.strictEqual(result.unranked[0].candidate.opportunity, 'incomplete-one');
+  assert.deepStrictEqual(result.unranked[0].missing_fields, [
+    'requiredAction',
+    'expectedImpactCategory',
+    'expectedImpactMagnitude',
+    'actionClassification',
+  ]);
+
+  assert.strictEqual(result.limitations.length, 1);
+  assert.ok(result.limitations[0].includes('1 of 2'));
+  assert.ok(result.limitations[0].includes('Nothing was invented or defaulted'));
+});
+
+test('rankAvailableGrowthOpportunities: all-incomplete candidates ranks nothing and never invents a winner', () => {
+  const result = rankAvailableGrowthOpportunities([
+    { category: 'seo', opportunity: 'a' },
+    { category: 'listings', opportunity: 'b', reason: 'r' },
+  ]);
+  assert.strictEqual(result.ranked.length, 0);
+  assert.strictEqual(result.unranked.length, 2);
+  assert.ok(result.limitations[0].includes('2 of 2'));
+});
+
+test('rankAvailableGrowthOpportunities: zero candidates returns an honest empty result, not an error', () => {
+  const result = rankAvailableGrowthOpportunities([]);
+  assert.strictEqual(result.total_candidates, 0);
+  assert.deepStrictEqual(result.ranked, []);
+  assert.deepStrictEqual(result.unranked, []);
+  assert.deepStrictEqual(result.limitations, ['No candidates were supplied - nothing to rank.']);
+});
+
+test('rankAvailableGrowthOpportunities: never invents expectedImpactMagnitude or actionClassification for an incomplete candidate', () => {
+  const result = rankAvailableGrowthOpportunities([
+    { category: 'seo', opportunity: 'a', reason: 'r', requiredAction: 'do it', expectedImpactCategory: 'revenue' },
+  ]);
+  assert.strictEqual(result.ranked.length, 0);
+  assert.deepStrictEqual(result.unranked[0].missing_fields, ['expectedImpactMagnitude', 'actionClassification']);
+  // the candidate itself is relayed exactly as supplied - no field was added or guessed
+  assert.strictEqual('expectedImpactMagnitude' in result.unranked[0].candidate, false);
+  assert.strictEqual('actionClassification' in result.unranked[0].candidate, false);
+});
+
+test('rankAvailableGrowthOpportunities: throws when candidates is not an array (same contract as rankGrowthOpportunities)', () => {
+  assert.throws(() => rankAvailableGrowthOpportunities('nope'), /requires `candidates` to be an array/);
+});
+
+test('rankAvailableGrowthOpportunities: identical ready candidates produce the exact same ranked output as rankGrowthOpportunities', () => {
+  const candidates = [
+    baseCandidate({ opportunity: 'high', expectedImpactMagnitude: 5, confidence: 'high', evidence: ['x'] }),
+    baseCandidate({ opportunity: 'low', expectedImpactMagnitude: 1, confidence: 'low', evidence: ['x'] }),
+  ];
+  const direct = rankGrowthOpportunities(candidates);
+  const wrapped = rankAvailableGrowthOpportunities(candidates);
+  assert.deepStrictEqual(wrapped.ranked, direct.opportunities);
+  assert.deepStrictEqual(wrapped.unranked, []);
+});
+
+// --- applyGrowthOpportunityOverrides ------------------------------------------------
+
+function sampleDraft(overrides = {}) {
+  return {
+    opportunity: 'Insulated Jacket: Send a win-back email.',
+    category: 'retention',
+    reason: 'Segment: Lapsed customers; Offer: 15% off',
+    evidence: ['(placeholder evidence)'],
+    requiredAction: 'Send a win-back email.',
+    verificationStatus: 'unverified',
+    missing_for_ranking: ['expectedImpactCategory', 'expectedImpactMagnitude', 'actionClassification'],
+    ...overrides,
+  };
+}
+
+test('applyGrowthOpportunityOverrides: fills only the judgment fields the caller supplied', () => {
+  const drafts = [sampleDraft()];
+  const merged = applyGrowthOpportunityOverrides(drafts, {
+    'Insulated Jacket: Send a win-back email.': {
+      expectedImpactCategory: 'customer_retention',
+      expectedImpactMagnitude: 3,
+      actionClassification: 'approval_required',
+    },
+  });
+  assert.strictEqual(merged[0].expectedImpactCategory, 'customer_retention');
+  assert.strictEqual(merged[0].expectedImpactMagnitude, 3);
+  assert.strictEqual(merged[0].actionClassification, 'approval_required');
+});
+
+test('applyGrowthOpportunityOverrides: never overwrites real draft evidence/opportunity/reason/requiredAction even if an override tries to', () => {
+  const drafts = [sampleDraft()];
+  const merged = applyGrowthOpportunityOverrides(drafts, {
+    'Insulated Jacket: Send a win-back email.': {
+      opportunity: 'HIJACKED',
+      reason: 'HIJACKED',
+      evidence: ['HIJACKED'],
+      requiredAction: 'HIJACKED',
+      expectedImpactMagnitude: 3,
+    },
+  });
+  assert.strictEqual(merged[0].opportunity, 'Insulated Jacket: Send a win-back email.');
+  assert.strictEqual(merged[0].reason, 'Segment: Lapsed customers; Offer: 15% off');
+  assert.deepStrictEqual(merged[0].evidence, ['(placeholder evidence)']);
+  assert.strictEqual(merged[0].requiredAction, 'Send a win-back email.');
+  assert.strictEqual(merged[0].expectedImpactMagnitude, 3);
+});
+
+test('applyGrowthOpportunityOverrides: never invents a value for a draft with no matching override', () => {
+  const drafts = [sampleDraft()];
+  const merged = applyGrowthOpportunityOverrides(drafts, {});
+  assert.strictEqual('expectedImpactMagnitude' in merged[0], false);
+  assert.strictEqual('actionClassification' in merged[0], false);
+});
+
+test('applyGrowthOpportunityOverrides: a partial override fills only the fields it names, leaving the rest missing', () => {
+  const drafts = [sampleDraft()];
+  const merged = applyGrowthOpportunityOverrides(drafts, {
+    'Insulated Jacket: Send a win-back email.': { expectedImpactMagnitude: 3 },
+  });
+  assert.strictEqual(merged[0].expectedImpactMagnitude, 3);
+  assert.strictEqual('actionClassification' in merged[0], false);
+  assert.strictEqual('expectedImpactCategory' in merged[0], false);
+});
+
+test('applyGrowthOpportunityOverrides: throws when drafts is not an array', () => {
+  assert.throws(() => applyGrowthOpportunityOverrides('nope', {}), /requires `drafts` to be an array/);
+});
+
+// --- end-to-end: real draft-shaped records + explicit overrides -> partial ranking ---
+
+test('end-to-end: a real draft with an explicit override ranks, and an unmatched real draft stays honestly unranked', () => {
+  const rankedDraft = sampleDraft();
+  const unmatchedDraft = sampleDraft({
+    opportunity: 'Wool Hat: Cross-sell with jacket purchases.',
+    requiredAction: 'Cross-sell with jacket purchases.',
+  });
+
+  const merged = applyGrowthOpportunityOverrides([rankedDraft, unmatchedDraft], {
+    'Insulated Jacket: Send a win-back email.': {
+      expectedImpactCategory: 'customer_retention',
+      expectedImpactMagnitude: 3,
+      actionClassification: 'approval_required',
+    },
+    // no override supplied for the wool hat draft
+  });
+
+  const result = rankAvailableGrowthOpportunities(merged);
+  assert.strictEqual(result.total_candidates, 2);
+  assert.strictEqual(result.ranked.length, 1);
+  assert.strictEqual(result.ranked[0].opportunity, 'Insulated Jacket: Send a win-back email.');
+  assert.strictEqual(result.unranked.length, 1);
+  assert.strictEqual(result.unranked[0].candidate.opportunity, 'Wool Hat: Cross-sell with jacket purchases.');
+  assert.deepStrictEqual(result.unranked[0].missing_fields, [
+    'expectedImpactCategory',
+    'expectedImpactMagnitude',
+    'actionClassification',
+  ]);
+  assert.ok(result.limitations[0].includes('1 of 2'));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

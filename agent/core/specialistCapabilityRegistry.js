@@ -996,6 +996,35 @@ const MARKETING_TASKS = [
     model: 'agent/core/marketingAgentResultModel.js',
     fields: fieldIds(MARKETING_AGENT_RESULT_FIELDS),
   }),
+  buildTask({
+    id: 'marketing_opportunity_ranking',
+    title: 'Marketing opportunity ranking',
+    description:
+      "Rank caller-supplied opportunity candidates by evidence and business impact via marketingAgent.js's analyzeMarketingOpportunities() - agent/core/growthOpportunityEngine.js's rankGrowthOpportunities(), category pinned to 'marketing'. Never invents a candidate, evidence, or impact estimate; nothing not supplied is ever ranked. Answers 'what is my best opportunity' - only when real candidates are provided, not from a bare free-text objective alone.",
+    toolIds: ['marketing_analysis'],
+    required: [
+      'candidates',
+      'candidates[].opportunity',
+      'candidates[].reason',
+      'candidates[].requiredAction',
+      'candidates[].expectedImpactCategory',
+      'candidates[].expectedImpactMagnitude',
+      'candidates[].actionClassification',
+    ],
+    optional: [
+      'candidates[].evidence',
+      'candidates[].confidence',
+      'candidates[].verificationStatus',
+      'topic',
+      'market',
+      'confidence',
+      'recommendations',
+      'verificationStatus',
+      'researchDate',
+    ],
+    model: 'agent/core/marketingAgentResultModel.js',
+    fields: fieldIds(MARKETING_AGENT_RESULT_FIELDS),
+  }),
 ];
 
 // ---------------------------------------------------------------------------------
