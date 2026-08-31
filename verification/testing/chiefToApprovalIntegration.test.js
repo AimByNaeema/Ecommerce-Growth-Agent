@@ -31,6 +31,7 @@ const assert = require('node:assert');
 const { runOrchestratorContract, executeSelectedCapability, resumeApprovedExecution } = require('../../agent/core/orchestratorExecutionContract');
 const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
+const { loadEnvOnce } = require('../../integrations/adapters/shopifyClient');
 
 let passed = 0;
 let failed = 0;
@@ -58,8 +59,22 @@ const ANALYTICS_OBJECTIVE = 'analyze store performance growth metrics and sales 
 function withEnvConfigured(fn) {
   const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
   const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+  const savedClientId = process.env.SHOPIFY_CLIENT_ID;
+  const savedClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
   process.env.SHOPIFY_STORE_DOMAIN = 'test-store.myshopify.com';
   process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = 'shpat_test-token-not-real';
+  // A real local .env may legitimately have SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET
+  // set (Client Credentials is the preferred auth path - see shopifyClient.js's
+  // precedence note). Cleared here so this "static token" scenario is actually
+  // isolated to the static-token code path regardless of local .env contents -
+  // otherwise usesClientCredentials() would pick up the real values and every test
+  // below would incorrectly attempt an OAuth token exchange against a mock that only
+  // ever returns GraphQL-shaped responses. loadEnvOnce() is forced first so the real
+  // .env's one-time load (see shopifyClient.js's envLoadAttempted guard) can never
+  // happen AFTER the deletes below and silently repopulate them.
+  loadEnvOnce();
+  delete process.env.SHOPIFY_CLIENT_ID;
+  delete process.env.SHOPIFY_CLIENT_SECRET;
   return Promise.resolve()
     .then(fn)
     .finally(() => {
@@ -67,6 +82,10 @@ function withEnvConfigured(fn) {
       else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
       if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
       else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+      if (savedClientId === undefined) delete process.env.SHOPIFY_CLIENT_ID;
+      else process.env.SHOPIFY_CLIENT_ID = savedClientId;
+      if (savedClientSecret === undefined) delete process.env.SHOPIFY_CLIENT_SECRET;
+      else process.env.SHOPIFY_CLIENT_SECRET = savedClientSecret;
     });
 }
 
@@ -164,11 +183,11 @@ function buildAnalyticsExecutionRequest(researchParams) {
   // NOTE: tools/analyticsDataTool.js's own contract is "Returns { status, result,
   // error } - never throws" - a Shopify-level failure is caught INSIDE the tool and
   // returned as an honest { status: 'failed', result: null, error } value, not a
-  // rejected promise. So at the ORCHESTRATOR's own dispatch level this is still a
-  // successful call (the executor resolved) - completion_state stays 'complete' and
-  // step.errors stays empty; the honest failure instead shows up one level in, on
-  // step.outputs (the tool's own reported status/error). Asserting on the wrong level
-  // would be exactly the kind of blind spot this integration suite exists to catch.
+  // rejected promise. agent/core/orchestratorExecutionContract.js's validateResult()
+  // (backed by agent/core/executionState.js's getToolResultStatus) unwraps that inner
+  // status rather than trusting only "did the executor call itself throw" - so this
+  // tool-level failure correctly makes completion_state 'failed' too, and the tool's
+  // own error message is surfaced on step.errors, not just buried in step.outputs.
 
   await testAsync('FAILURE: a GraphQL-level error from the external Shopify client propagates as an honest failure, never fabricated data', async () => {
     await withEnvConfigured(() =>
@@ -180,10 +199,11 @@ function buildAnalyticsExecutionRequest(researchParams) {
           });
           const step = response.routing.plan[0];
           assert.strictEqual(step.selected_specialist.id, 'analytics_optimization');
-          assert.strictEqual(step.completion_state, 'complete');
+          assert.strictEqual(step.completion_state, 'failed');
           assert.strictEqual(step.outputs.status, 'failed');
           assert.strictEqual(step.outputs.result, null);
           assert.ok(/GraphQL errors/.test(step.outputs.error));
+          assert.ok(/GraphQL errors/.test(step.errors[0]));
         }
       )
     );
@@ -200,10 +220,11 @@ function buildAnalyticsExecutionRequest(researchParams) {
             researchParams: { analyticsCapability: 'sales', limit: 5 },
           });
           const step = response.routing.plan[0];
-          assert.strictEqual(step.completion_state, 'complete');
+          assert.strictEqual(step.completion_state, 'failed');
           assert.strictEqual(step.outputs.status, 'failed');
           assert.strictEqual(step.outputs.result, null);
           assert.ok(/Could not reach the Shopify Admin API/.test(step.outputs.error));
+          assert.ok(/Could not reach the Shopify Admin API/.test(step.errors[0]));
         }
       )
     );

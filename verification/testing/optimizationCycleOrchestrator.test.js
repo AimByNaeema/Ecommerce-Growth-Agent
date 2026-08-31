@@ -34,6 +34,7 @@ const {
 } = require('../../agent/core/optimizationCycleOrchestrator');
 const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
+const { loadEnvOnce } = require('../../integrations/adapters/shopifyClient');
 
 let passed = 0;
 let failed = 0;
@@ -64,8 +65,23 @@ function withEnv(name, value, fn) {
 function withEnvConfigured(fn) {
   const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
   const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+  const savedClientId = process.env.SHOPIFY_CLIENT_ID;
+  const savedClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
   process.env.SHOPIFY_STORE_DOMAIN = 'test-store.myshopify.com';
   process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = 'shpat_test-token-not-real';
+  // A real local .env may legitimately have SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET
+  // set (Client Credentials is the preferred auth path - see
+  // integrations/adapters/shopifyClient.js's precedence note). Cleared here so this
+  // "static token" scenario is actually isolated to the static-token code path
+  // regardless of local .env contents - otherwise usesClientCredentials() would pick
+  // up the real values and this test would incorrectly attempt an OAuth token
+  // exchange against a mock that only ever returns GraphQL-shaped responses.
+  // loadEnvOnce() is forced first so the real .env's one-time load (see
+  // shopifyClient.js's envLoadAttempted guard) can never happen AFTER the deletes
+  // below and silently repopulate them.
+  loadEnvOnce();
+  delete process.env.SHOPIFY_CLIENT_ID;
+  delete process.env.SHOPIFY_CLIENT_SECRET;
   return Promise.resolve()
     .then(fn)
     .finally(() => {
@@ -73,6 +89,10 @@ function withEnvConfigured(fn) {
       else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
       if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
       else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+      if (savedClientId === undefined) delete process.env.SHOPIFY_CLIENT_ID;
+      else process.env.SHOPIFY_CLIENT_ID = savedClientId;
+      if (savedClientSecret === undefined) delete process.env.SHOPIFY_CLIENT_SECRET;
+      else process.env.SHOPIFY_CLIENT_SECRET = savedClientSecret;
     });
 }
 
@@ -148,10 +168,17 @@ function iterateAnalysis(rationale) {
   await testAsync('a 2-iteration cycle deciding iterate then ship_variant completes with the expected structured records', async () => {
     let result = await startOptimizationCycle({
       researchTarget: RESEARCH_TARGET,
-      researchParams: { market: 'European Union outdoor apparel market' },
+      researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
       experiment: buildExperimentInput('test-exp-iter-1'),
       actionTarget: ACTION_TARGET,
-      actionParams: { productReference: 'Insulated Jacket X' },
+      actionParams: {
+        productReference: 'Insulated Jacket X',
+        evidence: [{ topic: 'On-page SEO', finding: 'Title contains the primary keyword (test placeholder).', source: ['SEO audit reference'] }],
+      },
     });
     assert.strictEqual(result.status, 'awaiting_measurement');
     assert.strictEqual(result.iteration, 1);
@@ -177,10 +204,17 @@ function iterateAnalysis(rationale) {
 
     result = await startNextIteration(result._resumeState, {
       researchTarget: RESEARCH_TARGET,
-      researchParams: { market: 'European Union outdoor apparel market' },
+      researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
       experiment: buildExperimentInput('test-exp-iter-2'),
       actionTarget: ACTION_TARGET,
-      actionParams: { productReference: 'Insulated Jacket X' },
+      actionParams: {
+        productReference: 'Insulated Jacket X',
+        evidence: [{ topic: 'On-page SEO', finding: 'Title contains the primary keyword (test placeholder).', source: ['SEO audit reference'] }],
+      },
     });
     assert.strictEqual(result.status, 'awaiting_measurement');
     assert.strictEqual(result.iteration, 2);
@@ -226,7 +260,11 @@ function iterateAnalysis(rationale) {
           async () => {
             const paused = await startOptimizationCycle({
               researchTarget: RESEARCH_TARGET,
-              researchParams: { market: 'European Union outdoor apparel market' },
+              researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
               experiment: buildExperimentInput('test-exp-rejected'),
               actionTarget: EXTERNAL_ACTION_TARGET,
               actionParams: {},
@@ -271,7 +309,11 @@ function iterateAnalysis(rationale) {
           async () => {
             const paused = await startOptimizationCycle({
               researchTarget: RESEARCH_TARGET,
-              researchParams: { market: 'European Union outdoor apparel market' },
+              researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
               experiment: buildExperimentInput('test-exp-keep-control'),
               actionTarget: EXTERNAL_ACTION_TARGET,
               actionParams: {},
@@ -317,10 +359,17 @@ function iterateAnalysis(rationale) {
   await testAsync('an inconclusive decision stops the cycle without attempting to record a lesson', async () => {
     let result = await startOptimizationCycle({
       researchTarget: RESEARCH_TARGET,
-      researchParams: { market: 'European Union outdoor apparel market' },
+      researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
       experiment: buildExperimentInput('test-exp-inconclusive'),
       actionTarget: ACTION_TARGET,
-      actionParams: { productReference: 'Insulated Jacket X' },
+      actionParams: {
+        productReference: 'Insulated Jacket X',
+        evidence: [{ topic: 'On-page SEO', finding: 'Title contains the primary keyword (test placeholder).', source: ['SEO audit reference'] }],
+      },
     });
     assert.strictEqual(result.status, 'awaiting_measurement');
 
@@ -351,10 +400,17 @@ function iterateAnalysis(rationale) {
     await withEnv('MAX_OPTIMIZATION_CYCLE_ITERATIONS', 1, async () => {
       let result = await startOptimizationCycle({
         researchTarget: RESEARCH_TARGET,
-        researchParams: { market: 'European Union outdoor apparel market' },
+        researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
         experiment: buildExperimentInput('test-exp-iteration-limit'),
         actionTarget: ACTION_TARGET,
-        actionParams: { productReference: 'Insulated Jacket X' },
+        actionParams: {
+        productReference: 'Insulated Jacket X',
+        evidence: [{ topic: 'On-page SEO', finding: 'Title contains the primary keyword (test placeholder).', source: ['SEO audit reference'] }],
+      },
       });
       assert.strictEqual(result.max_iterations, 1);
 
@@ -381,10 +437,17 @@ function iterateAnalysis(rationale) {
     await withEnv('MAX_TOOL_CALLS_PER_RUN', 2, async () => {
       let result = await startOptimizationCycle({
         researchTarget: RESEARCH_TARGET,
-        researchParams: { market: 'European Union outdoor apparel market' },
+        researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
         experiment: buildExperimentInput('test-exp-tool-budget'),
         actionTarget: ACTION_TARGET,
-        actionParams: { productReference: 'Insulated Jacket X' },
+        actionParams: {
+        productReference: 'Insulated Jacket X',
+        evidence: [{ topic: 'On-page SEO', finding: 'Title contains the primary keyword (test placeholder).', source: ['SEO audit reference'] }],
+      },
       });
       assert.strictEqual(result.status, 'awaiting_measurement', 'iteration 1 itself stays within the 2-call budget (research + action)');
 
@@ -409,10 +472,17 @@ function iterateAnalysis(rationale) {
   await testAsync('an exhausted token budget stops the next iteration before it dispatches Research', async () => {
     let result = await startOptimizationCycle({
       researchTarget: RESEARCH_TARGET,
-      researchParams: { market: 'European Union outdoor apparel market' },
+      researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
       experiment: buildExperimentInput('test-exp-token-budget'),
       actionTarget: ACTION_TARGET,
-      actionParams: { productReference: 'Insulated Jacket X' },
+      actionParams: {
+        productReference: 'Insulated Jacket X',
+        evidence: [{ topic: 'On-page SEO', finding: 'Title contains the primary keyword (test placeholder).', source: ['SEO audit reference'] }],
+      },
     });
 
     result = await recordMeasurementAndAnalyze(result._resumeState, {
@@ -430,10 +500,17 @@ function iterateAnalysis(rationale) {
 
     result = await startNextIteration(result._resumeState, {
       researchTarget: RESEARCH_TARGET,
-      researchParams: { market: 'European Union outdoor apparel market' },
+      researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
       experiment: buildExperimentInput('test-exp-token-budget-iter-2'),
       actionTarget: ACTION_TARGET,
-      actionParams: { productReference: 'Insulated Jacket X' },
+      actionParams: {
+        productReference: 'Insulated Jacket X',
+        evidence: [{ topic: 'On-page SEO', finding: 'Title contains the primary keyword (test placeholder).', source: ['SEO audit reference'] }],
+      },
     });
 
     assert.strictEqual(result.status, 'stopped');
@@ -443,10 +520,12 @@ function iterateAnalysis(rationale) {
 
   // --- 8. Research stage failure: no recommendation/approval/action attempted -------
   // (an oversized array field trips agent/core/executionBounds.js's checkArrayFieldBounds
-  // - a genuine, deterministic outer 'error' outcome, unlike a missing required field,
-  // which every tool in this codebase catches internally and reports as a normal,
-  // 'complete' step with an empty/failed research record - see
-  // agent/core/executionBounds.js's own header on why this bound exists.)
+  // before the tool is ever invoked - a genuine, deterministic outer 'error' outcome.
+  // A tool-level missing-required-field result is also honestly non-'complete' today
+  // (agent/core/executionState.js's getToolResultStatus unwraps the tool's own
+  // {status,result,error} outcome), so either path halts the cycle here - this
+  // specific test exercises the bounds-check path; see
+  // agent/core/executionBounds.js's own header on why that bound exists.)
 
   await testAsync('a failing Research stage stops the cycle before any recommendation, approval, or action is attempted', async () => {
     const result = await startOptimizationCycle({
@@ -454,7 +533,10 @@ function iterateAnalysis(rationale) {
       researchParams: { market: 'European Union outdoor apparel market', tooManyEntries: new Array(101).fill('x') },
       experiment: buildExperimentInput('test-exp-research-failed'),
       actionTarget: ACTION_TARGET,
-      actionParams: { productReference: 'Insulated Jacket X' },
+      actionParams: {
+        productReference: 'Insulated Jacket X',
+        evidence: [{ topic: 'On-page SEO', finding: 'Title contains the primary keyword (test placeholder).', source: ['SEO audit reference'] }],
+      },
     });
 
     assert.strictEqual(result.status, 'stopped');
@@ -469,7 +551,11 @@ function iterateAnalysis(rationale) {
   await testAsync('a failing Action stage stops the cycle before measurement is attempted', async () => {
     const result = await startOptimizationCycle({
       researchTarget: RESEARCH_TARGET,
-      researchParams: { market: 'European Union outdoor apparel market' },
+      researchParams: {
+        market: 'European Union outdoor apparel market',
+        demandSignals: ['strong demand signal (test placeholder)'],
+        evidence: [{ topic: 'Demand', finding: 'Search volume trending up (test placeholder).', source: ['market evidence reference'] }],
+      },
       experiment: buildExperimentInput('test-exp-action-failed'),
       actionTarget: ACTION_TARGET,
       actionParams: { productReference: 'Insulated Jacket X', tooManyEntries: new Array(101).fill('x') },

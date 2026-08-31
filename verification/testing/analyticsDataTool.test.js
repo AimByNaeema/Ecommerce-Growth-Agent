@@ -39,8 +39,23 @@ async function testAsync(name, fn) {
 function withEnvConfigured(fn) {
   const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
   const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+  const savedClientId = process.env.SHOPIFY_CLIENT_ID;
+  const savedClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
   process.env.SHOPIFY_STORE_DOMAIN = 'test-store.myshopify.com';
   process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = 'shpat_test-token-not-real';
+  // A real local .env may legitimately have SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET
+  // set (Client Credentials is the preferred auth path - see
+  // integrations/adapters/shopifyClient.js's precedence note). Cleared here so this
+  // "static token" scenario is actually isolated to the static-token code path
+  // regardless of local .env contents - otherwise usesClientCredentials() would pick
+  // up the real values and this test would incorrectly attempt an OAuth token
+  // exchange against a mock that only ever returns GraphQL-shaped responses.
+  // loadEnvOnce() is forced first so the real .env's one-time load (see
+  // shopifyClient.js's envLoadAttempted guard) can never happen AFTER the deletes
+  // below and silently repopulate them.
+  loadEnvOnce();
+  delete process.env.SHOPIFY_CLIENT_ID;
+  delete process.env.SHOPIFY_CLIENT_SECRET;
   return Promise.resolve()
     .then(fn)
     .finally(() => {
@@ -48,6 +63,10 @@ function withEnvConfigured(fn) {
       else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
       if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
       else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+      if (savedClientId === undefined) delete process.env.SHOPIFY_CLIENT_ID;
+      else process.env.SHOPIFY_CLIENT_ID = savedClientId;
+      if (savedClientSecret === undefined) delete process.env.SHOPIFY_CLIENT_SECRET;
+      else process.env.SHOPIFY_CLIENT_SECRET = savedClientSecret;
     });
 }
 
@@ -300,6 +319,29 @@ const SAMPLE_INVENTORY_RESPONSE = {
           assert.strictEqual(outcome.status, 'partial');
           assert.ok(outcome.result.limitations.some((l) => l.includes('not permitted or unavailable')));
           assert.deepStrictEqual(outcome.result.specialized_records[0].customer_behavior.actual_metrics, []);
+        }
+      )
+    );
+  });
+
+  await testAsync('runAnalyticsDataTool (inventory) degrades to partial status honestly when the store denies access (e.g. missing read_locations scope), instead of failing the whole call', async () => {
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async () =>
+          jsonResponse(200, {
+            errors: [
+              {
+                message:
+                  'Access denied for name field. Required access: `read_locations` access scope or `read_markets_home` access scope.',
+              },
+            ],
+          }),
+        async () => {
+          const outcome = await runAnalyticsDataTool({ analyticsCapability: 'inventory' });
+          assert.strictEqual(outcome.status, 'partial');
+          assert.ok(outcome.result.limitations.some((l) => l.includes('not permitted or unavailable')));
+          assert.deepStrictEqual(outcome.result.specialized_records[0].inventory.actual_metrics, []);
+          assert.deepStrictEqual(outcome.result.specialized_records[0].inventory.calculated_metrics, []);
         }
       )
     );

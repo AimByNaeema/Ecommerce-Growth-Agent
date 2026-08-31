@@ -23,6 +23,7 @@ const assert = require('node:assert');
 const { runGrowthWorkflow, resumeGrowthWorkflow, STAGE_KEYS } = require('../../agent/core/growthWorkflowOrchestrator');
 const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
+const { loadEnvOnce } = require('../../integrations/adapters/shopifyClient');
 
 let passed = 0;
 let failed = 0;
@@ -42,8 +43,23 @@ async function testAsync(name, fn) {
 function withEnvConfigured(fn) {
   const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
   const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+  const savedClientId = process.env.SHOPIFY_CLIENT_ID;
+  const savedClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
   process.env.SHOPIFY_STORE_DOMAIN = 'test-store.myshopify.com';
   process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = 'shpat_test-token-not-real';
+  // A real local .env may legitimately have SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET
+  // set (Client Credentials is the preferred auth path - see
+  // integrations/adapters/shopifyClient.js's precedence note). Cleared here so this
+  // "static token" scenario is actually isolated to the static-token code path
+  // regardless of local .env contents - otherwise usesClientCredentials() would pick
+  // up the real values and this test would incorrectly attempt an OAuth token
+  // exchange against a mock that only ever returns GraphQL-shaped responses.
+  // loadEnvOnce() is forced first so the real .env's one-time load (see
+  // shopifyClient.js's envLoadAttempted guard) can never happen AFTER the deletes
+  // below and silently repopulate them.
+  loadEnvOnce();
+  delete process.env.SHOPIFY_CLIENT_ID;
+  delete process.env.SHOPIFY_CLIENT_SECRET;
   return Promise.resolve()
     .then(fn)
     .finally(() => {
@@ -51,6 +67,10 @@ function withEnvConfigured(fn) {
       else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
       if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
       else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+      if (savedClientId === undefined) delete process.env.SHOPIFY_CLIENT_ID;
+      else process.env.SHOPIFY_CLIENT_ID = savedClientId;
+      if (savedClientSecret === undefined) delete process.env.SHOPIFY_CLIENT_SECRET;
+      else process.env.SHOPIFY_CLIENT_SECRET = savedClientSecret;
     });
 }
 
@@ -123,6 +143,19 @@ function buildStageInputs() {
               source: ['product source reference'],
             },
           ],
+          // customer_need is one of compareGlobalMarkets()'s 9 evidence-backed
+          // facets (workflows/globalEcommerceMarketResearchWorkflow.js) - without at
+          // least one customerSegments entry, that facet comes back 'empty' and the
+          // whole row (and this research stage's completion_state) is honestly only
+          // 'partial', not the full success this "8 stages, real data flowing" happy
+          // path is meant to demonstrate.
+          customerSegments: [
+            {
+              segmentDefinition: 'Budget-conscious outdoor enthusiasts (test placeholder).',
+              needs: ['Reliable warmth at a lower price point (test placeholder).'],
+              evidence: ['customer segment evidence reference'],
+            },
+          ],
         },
       ],
     },
@@ -142,10 +175,21 @@ function buildStageInputs() {
       benefits: ['Keeps you warm in cold weather.'],
       evidence: [{ topic: 'Spec sheet', finding: 'Shell fabric is ripstop nylon.', source: ['spec sheet reference'] }],
     },
+    // productReference for seo/marketing is auto-filled from the Product stage's own
+    // real product_identity output (see growthWorkflowOrchestrator.js's
+    // withSharedProductReference) - only each capability's own evidence needs to be
+    // supplied here for a genuine 'success' status, not just 'empty'.
+    seo: {
+      evidence: [{ topic: 'On-page SEO', finding: 'Title contains the primary keyword.', source: ['SEO audit reference'] }],
+    },
+    marketing: {
+      evidence: [{ topic: 'Retention', finding: 'Repeat purchase rate trails category average.', source: ['retention analysis reference'] }],
+    },
     social_advertising: {
       entryReference: 'calendar-entry-2026-09-01-instagram',
       date: '2026-09-01',
       platform: 'instagram',
+      evidence: [{ topic: 'Content calendar', finding: 'Instagram slot is open for this date.', source: ['content calendar reference'] }],
     },
   };
 }

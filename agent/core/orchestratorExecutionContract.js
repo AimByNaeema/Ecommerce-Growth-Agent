@@ -65,7 +65,7 @@ const {
 } = require('./crossAgentContext');
 const { getContextBoundaries } = require('./contextBoundaries');
 const { createEmptyState } = require('./stateModel');
-const { deriveExecutionState } = require('./executionState');
+const { deriveExecutionState, getToolResultStatus } = require('./executionState');
 const {
   CATEGORY_TO_SPECIALIST,
   SPECIALIST_TO_CATEGORIES,
@@ -643,15 +643,30 @@ async function resumeApprovedExecution(
 }
 
 // Validate the result. Never treats an unverified/failed outcome as passed.
+//
+// outcome.status only reflects whether runExecutor's call itself threw - most tools
+// (see agent/core/executionState.js's getToolResultStatus) never throw, they return
+// their own honest { status, result, error } outcome instead, nested inside
+// outcome.data. Without unwrapping that inner status, a tool-level 'failed'/'empty'
+// result (e.g. required structured input was never supplied, or a live data pull
+// found nothing) would be validated as 'passed' just because the call didn't throw -
+// exactly the conflation that let a failed/empty specialist result get reported as a
+// completed answer.
 function validateResult(outcome) {
   if (!outcome || typeof outcome !== 'object' || !('status' in outcome)) {
     return 'failed';
   }
-  if (outcome.status === 'success' && outcome.data) {
-    return 'passed';
-  }
   if (outcome.status === 'error') {
     return 'failed';
+  }
+  if (outcome.status === 'success' && outcome.data) {
+    const toolStatus = getToolResultStatus(outcome.data);
+    if (toolStatus === 'failed') return 'failed';
+    if (toolStatus === 'empty' || toolStatus === 'partial') return 'unverified';
+    // toolStatus === 'success', or no { status, result, error } convention at all
+    // (e.g. business_configuration_retrieval, ai_reasoning_completion) - a real
+    // success either way.
+    return 'passed';
   }
   return 'unverified';
 }
@@ -1046,6 +1061,35 @@ async function buildPlanStep(
       forcedSelection && forcedSelection.capabilityId
         ? candidateTasks.find((task) => task.id === forcedSelection.capabilityId) || null
         : bestMatchingTask(candidateTasks, objectiveWords);
+  }
+
+  // PREFER REAL DATA OVER NO DATA: plain word-overlap scoring has no notion of "which
+  // candidate tool can actually produce evidence" - it can settle on 'analytics'
+  // (composes a record from CALLER-SUPPLIED evidence only - see tools/analyticsTool.js)
+  // over 'analytics_data_retrieval' (a real, read-only Shopify pull - see
+  // tools/analyticsDataTool.js) purely because their wording ties, even when this call
+  // has no caller-supplied evidence to hand the former at all. Deterministic and
+  // narrow: only swaps when the matched capability itself already declares
+  // analytics_data_retrieval as one of its own tool_ids (true only for the 4 snapshot
+  // tasks that have a live counterpart: sales/products/customers/inventory - see
+  // agent/core/specialistCapabilityRegistry.js's ANALYTICS_DATA_RETRIEVAL_CAPABILITIES),
+  // so this never redirects a capability - like conversion/traffic/marketing/
+  // advertising/growth_opportunities/insights - that has no live counterpart at all.
+  // A caller who DID supply real research input is never overridden. Never fabricates
+  // data either way: analytics_data_retrieval reports its own honest 'failed' status
+  // (with a clear reason) when Shopify isn't configured, exactly like every other tool
+  // in TOOL_EXECUTORS.
+  const hasCallerResearchParams =
+    researchParams && typeof researchParams === 'object' && Object.keys(researchParams).length > 0;
+  if (
+    toolMatch &&
+    toolMatch.id === 'analytics' &&
+    matchedCapability &&
+    matchedCapability.tool_ids.includes('analytics_data_retrieval') &&
+    !hasCallerResearchParams &&
+    !(forcedSelection && forcedSelection.toolId)
+  ) {
+    toolMatch = getToolById('analytics_data_retrieval') || toolMatch;
   }
 
   // STRUCTURED CROSS-AGENT CONTEXT PASSING (see agent/core/crossAgentContext.js): now

@@ -165,6 +165,30 @@ test('loadBusinessCredentials parses a temp .env into a plain object with exactl
   );
 });
 
+test('CREDENTIAL_KEYS includes the Shopify OAuth Client Credentials keys alongside the static access token key', () => {
+  assert.ok(CREDENTIAL_KEYS.includes('SHOPIFY_ADMIN_API_ACCESS_TOKEN'));
+  assert.ok(CREDENTIAL_KEYS.includes('SHOPIFY_CLIENT_ID'));
+  assert.ok(CREDENTIAL_KEYS.includes('SHOPIFY_CLIENT_SECRET'));
+});
+
+test('loadBusinessCredentials parses SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET from a temp .env (Dev Dashboard app shape)', () => {
+  withTempBusiness(
+    'test-registry-creds-client-credentials',
+    {
+      envFile:
+        'SHOPIFY_STORE_DOMAIN=acme.myshopify.com\nSHOPIFY_CLIENT_ID=fake-client-id-not-real\nSHOPIFY_CLIENT_SECRET=fake-client-secret-not-real\n',
+    },
+    () => {
+      const credentials = loadBusinessCredentials('test-registry-creds-client-credentials');
+      assert.strictEqual(credentials.SHOPIFY_CLIENT_ID, 'fake-client-id-not-real');
+      assert.strictEqual(credentials.SHOPIFY_CLIENT_SECRET, 'fake-client-secret-not-real');
+      // The static-token key stays present-but-empty, not omitted - loadBusinessCredentials
+      // always returns exactly CREDENTIAL_KEYS regardless of which auth shape a .env uses.
+      assert.strictEqual(credentials.SHOPIFY_ADMIN_API_ACCESS_TOKEN, '');
+    }
+  );
+});
+
 test('loadBusinessCredentials throws a clear, actionable error when .env is missing - never fabricates credentials', () => {
   withTempBusiness('test-registry-creds-missing', {}, () => {
     assert.throws(

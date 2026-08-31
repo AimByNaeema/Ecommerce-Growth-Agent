@@ -97,6 +97,30 @@ const ARRAY_FIELD_IDS = EXECUTION_STATE_FIELDS.filter((field) => field.type === 
   (field) => field.id
 );
 
+// Most tools (see tools/marketProductOpportunityTool.js, tools/analyticsDataTool.js,
+// and 16 others - business_configuration_retrieval and ai_reasoning_completion are the
+// only exceptions, they throw instead) return their own honest
+// { status, result, error } outcome rather than throwing - distinct from whether the
+// executor call itself threw (agent/core/orchestratorExecutionContract.js's
+// runExecutor wraps either case as outer outcome.status 'success'/'error'). Recognizes
+// that convention wherever it shows up (outcome.data, which becomes this state's own
+// .outputs) so a tool-level 'failed'/'empty' result is never read as a real success
+// just because the call didn't throw. Returns null for tools that don't follow the
+// convention - their outer outcome.status is the only signal there is.
+const TOOL_RESULT_STATUSES = ['success', 'failed', 'empty', 'partial'];
+function getToolResultStatus(data) {
+  if (
+    data &&
+    typeof data === 'object' &&
+    typeof data.status === 'string' &&
+    TOOL_RESULT_STATUSES.includes(data.status) &&
+    'result' in data
+  ) {
+    return data.status;
+  }
+  return null;
+}
+
 // Returns a blank execution state conforming to EXECUTION_STATE_FIELDS. No specialist
 // has been dispatched yet - callers fill it in via deriveExecutionState().
 function createEmptyExecutionState(request = '') {
@@ -145,10 +169,19 @@ function deriveExecutionState({
 
   if (outcome) {
     state.outputs = outcome.data || null;
-    state.evidence = outcome.status === 'success' && outcome.data
+    // Evidence is keyed off verificationStatus (already the single source of truth
+    // for "was this actually usable"), never off the outer outcome.status alone - a
+    // tool-level failure/empty result must never be recorded as successful evidence
+    // just because the call itself didn't throw.
+    state.evidence = verificationStatus === 'passed' && outcome.data
       ? [{ tool_id: toolId, status: outcome.status }]
       : [];
-    state.errors = outcome.error ? [outcome.error] : [];
+    // Prefer the outer error; when absent, surface the tool's own honest inner error
+    // (see getToolResultStatus) instead of silently reporting no error at all for a
+    // step that did in fact fail/come back empty.
+    const innerError =
+      getToolResultStatus(outcome.data) && typeof outcome.data.error === 'string' ? outcome.data.error : null;
+    state.errors = outcome.error ? [outcome.error] : innerError ? [innerError] : [];
 
     if (outcome.status === 'approval_required') {
       state.approvals = [{ classification: outcome.classification, status: 'required', approval_request_id: approvalRequestId }];
@@ -223,6 +256,7 @@ module.exports = {
   createEmptyExecutionState,
   deriveExecutionState,
   validateExecutionStateShape,
+  getToolResultStatus,
 };
 
 if (require.main === module) {

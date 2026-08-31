@@ -394,11 +394,14 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     // TOOL_CAPABILITY_SELECTORS), so the tool receives a non-null researchParams and
     // reports the specific real gap (no keywords array) rather than a generic
     // "nothing was supplied at all" message - honest and more precise, never a
-    // fabricated result.
-    assert.strictEqual(step.completion_state, 'complete');
+    // fabricated result. Its own tool-level 'failed' status (see
+    // agent/core/executionState.js's getToolResultStatus) is what completion_state
+    // must reflect - a tool-level failure is never reported as a completed answer.
+    assert.strictEqual(step.completion_state, 'failed');
     assert.strictEqual(step.outputs.status, 'failed');
     assert.strictEqual(step.outputs.result, null);
     assert.ok(step.outputs.error.includes('requires a non-empty `keywords` array'));
+    assert.ok(step.errors[0].includes('requires a non-empty `keywords` array'));
   });
 
   await testAsync('runOrchestratorContract: a clean single-specialist task (Listing) produces a one-step plan of shared execution state', async () => {
@@ -412,8 +415,9 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     // listing_content_generation is implemented and its matched capability
     // (listing_content) is injected into researchParams, so the tool reports the
     // specific real gap (no productReference) rather than a generic
-    // "nothing was supplied at all" message.
-    assert.strictEqual(step.completion_state, 'complete');
+    // "nothing was supplied at all" message. Its own tool-level 'failed' status must
+    // never be reported as a completed answer.
+    assert.strictEqual(step.completion_state, 'failed');
     assert.strictEqual(step.outputs.status, 'failed');
     assert.strictEqual(step.outputs.result, null);
     assert.ok(step.outputs.error.includes('requires a non-empty `productReference` string'));
@@ -430,7 +434,8 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     // marketing_analysis is implemented and its matched capability (marketing_strategy)
     // is injected into researchParams, so the tool reports the specific real gap (no
     // marketingChannel) rather than a generic "nothing was supplied at all" message.
-    assert.strictEqual(step.completion_state, 'complete');
+    // Its own tool-level 'failed' status must never be reported as a completed answer.
+    assert.strictEqual(step.completion_state, 'failed');
     assert.strictEqual(step.outputs.status, 'failed');
     assert.strictEqual(step.outputs.result, null);
     assert.ok(step.outputs.error.includes('requires a non-empty `marketingChannel` string'));
@@ -453,7 +458,8 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     // specific real gap (no contentReference) rather than a generic
     // "nothing was supplied at all" message.
     assert.deepStrictEqual(socialStep.tool_calls, ['social_content_planning']);
-    assert.strictEqual(socialStep.completion_state, 'complete');
+    // Its own tool-level 'failed' status must never be reported as a completed answer.
+    assert.strictEqual(socialStep.completion_state, 'failed');
     assert.strictEqual(socialStep.outputs.status, 'failed');
     assert.strictEqual(socialStep.outputs.result, null);
     assert.ok(socialStep.outputs.error.includes('requires a non-empty `contentReference` string'));
@@ -1385,7 +1391,11 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     const response = await runOrchestratorContract('market competitor research and social media advertising');
     assert.strictEqual(response.routing.status, 'planned');
     assert.strictEqual(response.routing.plan.length, 2);
-    assert.ok(response.routing.plan.every((step) => step.completion_state !== 'failed'));
+    // Neither step supplies researchParams here, so both tools honestly report their
+    // own tool-level 'failed' status (missing structured input) - the point of this
+    // test is that usage-limit bookkeeping itself is unaffected by a 2-step plan, not
+    // that the steps succeed; each step still only used exactly one tool call.
+    assert.ok(response.routing.plan.every((step) => step.tool_calls.length === 1));
   });
 
   test('buildRoutingResponse dedupes identical failed_work entries across plan steps', () => {
@@ -1398,6 +1408,137 @@ test('planRouting requires clarification for a fully unmatched task', () => {
       routing: { status: 'planned', clarification_type: null, reason: null, candidates: null, unmatched_segment: null, plan: fakePlan },
     });
     assert.deepStrictEqual(response.state.failed_work, ['Same error message']);
+  });
+
+  // ---------------------------------------------------------------------------------
+  // Regression coverage: the Chief orchestration/data-acquisition gap the latest Chief
+  // Agent tests surfaced for "Analyze my ecommerce business and identify the single
+  // biggest opportunity to increase sales." - see this file's own header for the wider
+  // pipeline this exercises.
+  // ---------------------------------------------------------------------------------
+
+  await testAsync('TEST A: a structured-input capability (market_product_opportunity_analysis) routed from a free-text objective with no research params never reports a completed/fabricated result', async () => {
+    const response = await runOrchestratorContract(
+      'Analyze my ecommerce business and identify the single biggest opportunity to increase sales.'
+    );
+    const productStep = response.routing.plan.find((step) => step.inputs && step.inputs.tool_id === 'market_product_opportunity_analysis');
+    assert.ok(productStep, 'expected a market_product_opportunity_analysis step');
+    // Never reported as a completed answer - the tool's own required structured
+    // input (marketRow, productIdentity) was never supplied, and no read-only tool
+    // in this codebase can produce a full market comparison row on its own.
+    assert.notStrictEqual(productStep.completion_state, 'complete');
+    assert.strictEqual(productStep.completion_state, 'failed');
+    assert.strictEqual(productStep.outputs.result, null);
+    assert.ok(/marketRow, productIdentity/.test(productStep.outputs.error));
+    assert.ok(productStep.errors.length > 0 && /marketRow, productIdentity/.test(productStep.errors[0]));
+    // Nothing fabricated: no marketRow/productIdentity-shaped data anywhere in the step.
+    assert.strictEqual(JSON.stringify(productStep).includes('"product_identity"'), false);
+  });
+
+  await testAsync('TEST B: a sales-growth request prefers the live, read-only analytics_data_retrieval tool over the caller-evidence-only analytics tool when no evidence was supplied', async () => {
+    const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
+    const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    const savedClientId = process.env.SHOPIFY_CLIENT_ID;
+    const savedClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
+    process.env.SHOPIFY_STORE_DOMAIN = 'test-store.myshopify.com';
+    process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = 'shpat_test-token-not-real';
+    // A real local .env may legitimately have SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET
+    // set (Client Credentials is the preferred auth path - see
+    // integrations/adapters/shopifyClient.js's precedence note). Cleared here so this
+    // "static token" scenario is actually isolated to the static-token code path
+    // regardless of local .env contents. loadShopifyEnvOnce() is forced first so the
+    // real .env's one-time load (see shopifyClient.js's envLoadAttempted guard) can
+    // never happen AFTER the deletes below and silently repopulate them.
+    loadShopifyEnvOnce();
+    delete process.env.SHOPIFY_CLIENT_ID;
+    delete process.env.SHOPIFY_CLIENT_SECRET;
+    const savedFetch = global.fetch;
+    let calls = 0;
+    global.fetch = async () => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          data: {
+            orders: {
+              edges: [
+                {
+                  node: {
+                    id: 'gid://shopify/Order/1',
+                    name: '#1001',
+                    createdAt: '2026-01-15T10:00:00Z',
+                    displayFinancialStatus: 'PAID',
+                    displayFulfillmentStatus: 'FULFILLED',
+                    currentTotalPriceSet: { shopMoney: { amount: '89.00', currencyCode: 'USD' } },
+                    lineItems: { edges: [{ node: { title: 'Insulated Jacket', quantity: 1, sku: 'JCK-001' } }] },
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      };
+    };
+    try {
+      const response = await runOrchestratorContract(
+        'Analyze my ecommerce business and identify the single biggest opportunity to increase sales.'
+      );
+      const analyticsStep = response.routing.plan.find(
+        (step) => step.selected_specialist && step.selected_specialist.id === 'analytics_optimization'
+      );
+      assert.ok(analyticsStep, 'expected an analytics_optimization step');
+      // Real, minimum-necessary business data was gathered before specialist
+      // analysis - the Chief preferred the live Shopify pull over the tool that can
+      // only ever compose caller-supplied evidence (which this free-text request
+      // never supplied).
+      assert.deepStrictEqual(analyticsStep.tool_calls, ['analytics_data_retrieval']);
+      assert.strictEqual(analyticsStep.completion_state, 'complete');
+      assert.strictEqual(analyticsStep.outputs.status, 'success');
+      const salesRecord = analyticsStep.outputs.result.specialized_records[0].sales;
+      assert.strictEqual(salesRecord.actual_metrics[0].orderId, 'gid://shopify/Order/1');
+      assert.strictEqual(calls, 1, 'the live Shopify client should be called exactly once');
+    } finally {
+      global.fetch = savedFetch;
+      if (savedDomain === undefined) delete process.env.SHOPIFY_STORE_DOMAIN;
+      else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
+      if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+      else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+      if (savedClientId === undefined) delete process.env.SHOPIFY_CLIENT_ID;
+      else process.env.SHOPIFY_CLIENT_ID = savedClientId;
+      if (savedClientSecret === undefined) delete process.env.SHOPIFY_CLIENT_SECRET;
+      else process.env.SHOPIFY_CLIENT_SECRET = savedClientSecret;
+    }
+  });
+
+  test('TEST C: validateResult never marks a tool-level failure as passed just because the executor call itself did not throw', () => {
+    // Exactly runExecutor's own shape (agent/core/orchestratorExecutionContract.js) for
+    // a tool that followed its honest { status, result, error } convention (see
+    // agent/core/executionState.js's getToolResultStatus) but could not actually run.
+    const outcome = {
+      status: 'success',
+      data: { status: 'failed', result: null, error: 'requires structured input this request did not supply' },
+      error: null,
+      classification: 'analysis_only',
+    };
+    assert.strictEqual(validateResult(outcome), 'failed');
+
+    const emptyOutcome = {
+      status: 'success',
+      data: { status: 'empty', result: { findings: [] }, error: null },
+      error: null,
+      classification: 'analysis_only',
+    };
+    assert.strictEqual(validateResult(emptyOutcome), 'unverified');
+
+    const realSuccessOutcome = {
+      status: 'success',
+      data: { status: 'success', result: { findings: ['x'] }, error: null },
+      error: null,
+      classification: 'analysis_only',
+    };
+    assert.strictEqual(validateResult(realSuccessOutcome), 'passed');
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

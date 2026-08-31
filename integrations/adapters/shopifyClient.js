@@ -35,6 +35,31 @@ const businessRegistry = require('../../configuration/businessRegistry');
 // this writing (confirmed at https://shopify.dev/docs/api/usage/versioning).
 const DEFAULT_API_VERSION = '2026-07';
 
+// Apps created via Shopify's newer Dev Dashboard don't hand out a static, copyable
+// Admin API access token the way a classic custom app does - they authenticate via
+// the OAuth Client Credentials grant instead (SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET
+// exchanged for a short-lived token). Confirmed against Shopify's own docs
+// (https://shopify.dev/docs/apps/build/dev-dashboard/get-api-access-tokens): POST
+// https://{shop}.myshopify.com/admin/oauth/access_token, form-urlencoded body
+// {grant_type: 'client_credentials', client_id, client_secret}, response
+// {access_token, scope, expires_in} with expires_in always 86399 (24h) - refresh
+// before expiry, per that same doc's own guidance.
+//
+// PRECEDENCE (explicit, not silent - see resolveCredentials()/usesClientCredentials()
+// below): when SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET are both present, this mode
+// is used. Otherwise SHOPIFY_ADMIN_API_ACCESS_TOKEN is used exactly as before - the
+// static-token path is untouched, kept as a fallback for a classic custom-app-style
+// store, per CLAUDE.md rule 11 (never break existing, tested behavior) and rule 14
+// (this system must be able to point at a different store without code changes,
+// including a store on the older auth model).
+//
+// Cached in memory only, per resolved credential set (keyed by businessId, or
+// '__default__' for the root .env/process.env) - never written to disk, matching
+// CLAUDE.md rule 6 (no secret/credential material persisted beyond what .env's own
+// git-ignore already covers).
+const CLIENT_CREDENTIALS_TOKEN_CACHE = new Map(); // cacheKey -> { accessToken, expiresAt }
+const TOKEN_EXPIRY_SAFETY_MARGIN_MS = 60000;
+
 let envLoadAttempted = false;
 
 // Loads .env (git-ignored - see .env.example) into process.env exactly once, using
@@ -53,12 +78,16 @@ function loadEnvOnce() {
   }
 }
 
-// Resolves { domain, accessToken, apiVersion } for one call. businessId falsy (the
-// default) reproduces today's exact single-business behavior: the root .env loaded
-// once into global process.env. businessId set delegates to
+// Resolves { domain, accessToken, apiVersion, clientId, clientSecret } for one call.
+// businessId falsy (the default) reproduces today's exact single-business behavior:
+// the root .env loaded once into global process.env. businessId set delegates to
 // configuration/businessRegistry.js's per-business .env instead - never touches
 // process.env, so two businesses' credentials can safely coexist in one process (see
 // that module's header for why process.loadEnvFile is unsafe for this).
+//
+// clientId/clientSecret are additive (see the Client Credentials block above) - a
+// business/root .env that only has SHOPIFY_ADMIN_API_ACCESS_TOKEN gets them back as
+// undefined, exactly like before this field existed.
 function resolveCredentials(businessId) {
   if (!businessId) {
     loadEnvOnce();
@@ -66,6 +95,8 @@ function resolveCredentials(businessId) {
       domain: process.env.SHOPIFY_STORE_DOMAIN,
       accessToken: process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN,
       apiVersion: process.env.SHOPIFY_API_VERSION,
+      clientId: process.env.SHOPIFY_CLIENT_ID,
+      clientSecret: process.env.SHOPIFY_CLIENT_SECRET,
     };
   }
   const credentials = businessRegistry.loadBusinessCredentials(businessId);
@@ -73,21 +104,107 @@ function resolveCredentials(businessId) {
     domain: credentials.SHOPIFY_STORE_DOMAIN,
     accessToken: credentials.SHOPIFY_ADMIN_API_ACCESS_TOKEN,
     apiVersion: credentials.SHOPIFY_API_VERSION,
+    clientId: credentials.SHOPIFY_CLIENT_ID,
+    clientSecret: credentials.SHOPIFY_CLIENT_SECRET,
   };
 }
 
-// True once a non-empty domain and access token are both present for businessId (or,
-// when omitted, for the root .env/process.env - today's default single business).
-// Lets a caller check readiness and fail fast with a clear message instead of
-// attempting a network call that can only fail.
+// True when both a client id and client secret are present and non-blank - the signal
+// to use the OAuth Client Credentials grant instead of the static access token. Takes
+// the already-resolved credentials object (not businessId) so callers that already
+// called resolveCredentials() once don't do it twice.
+function usesClientCredentials({ clientId, clientSecret } = {}) {
+  return Boolean(clientId && clientId.trim() && clientSecret && clientSecret.trim());
+}
+
+// True once a store is reachable under EITHER supported auth model for businessId (or,
+// when omitted, for the root .env/process.env - today's default single business): a
+// non-empty domain plus either (a) a non-empty static access token, or (b) a non-empty
+// client id and secret. Lets a caller check readiness and fail fast with a clear
+// message instead of attempting a network call that can only fail.
 function isConfigured({ businessId = null } = {}) {
-  const { domain, accessToken } = resolveCredentials(businessId);
-  return Boolean(domain && domain.trim() && accessToken && accessToken.trim());
+  const resolved = resolveCredentials(businessId);
+  const hasDomain = Boolean(resolved.domain && resolved.domain.trim());
+  if (!hasDomain) return false;
+  const hasStaticToken = Boolean(resolved.accessToken && resolved.accessToken.trim());
+  return hasStaticToken || usesClientCredentials(resolved);
 }
 
 // Builds the versioned Admin GraphQL endpoint URL for the configured store.
 function buildGraphqlUrl(domain, apiVersion) {
   return `https://${domain}/admin/api/${apiVersion}/graphql.json`;
+}
+
+// Builds the OAuth Client Credentials token endpoint URL for the configured store, per
+// https://shopify.dev/docs/apps/build/dev-dashboard/get-api-access-tokens.
+function buildTokenUrl(domain) {
+  return `https://${domain}/admin/oauth/access_token`;
+}
+
+// Exchanges client_id/client_secret for a short-lived Admin API access token,
+// caching it in memory (keyed by cacheKey - businessId, or '__default__') so repeated
+// calls within the same process don't re-request a token on every GraphQL call.
+// Refreshes TOKEN_EXPIRY_SAFETY_MARGIN_MS (60s) before the token's actual expiry, per
+// Shopify's own documented guidance, rather than waiting for it to fail.
+//
+// Reuses this module's existing retry/timeout infrastructure
+// (agent/core/networkRetry.js) rather than writing new retry logic: a thrown fetch
+// failure or a 429/5xx response is retried (bounded, with backoff); any other non-ok
+// status, or a response missing access_token, is a config/permission problem that
+// throws a plain (non-retryable) Error instead. Never returns a fabricated token.
+async function getClientCredentialsToken(domain, clientId, clientSecret, cacheKey) {
+  const cached = CLIENT_CREDENTIALS_TOKEN_CACHE.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.accessToken;
+  }
+
+  const url = buildTokenUrl(domain);
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: clientId,
+    client_secret: clientSecret,
+  });
+
+  const accessToken = await retryAsync(async () => {
+    let response;
+    try {
+      response = await withTimeout((signal) =>
+        fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+          signal,
+        })
+      );
+    } catch (err) {
+      throw new RetryableError(`Could not reach the Shopify OAuth token endpoint: ${err.message}`);
+    }
+
+    const raw = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      const apiMessage = raw && (raw.error_description || raw.error) ? (raw.error_description || raw.error) : response.statusText;
+      const message = `Shopify OAuth token request failed (${response.status}): ${apiMessage}`;
+      if (response.status === 429 || response.status >= 500) {
+        throw new RetryableError(message, { retryAfterMs: parseRetryAfterMs(response) });
+      }
+      throw new Error(message);
+    }
+
+    if (!raw || !raw.access_token) {
+      throw new Error('Shopify OAuth token response did not include an access_token.');
+    }
+
+    const expiresInMs = (typeof raw.expires_in === 'number' ? raw.expires_in : 86399) * 1000;
+    CLIENT_CREDENTIALS_TOKEN_CACHE.set(cacheKey, {
+      accessToken: raw.access_token,
+      expiresAt: Date.now() + expiresInMs - TOKEN_EXPIRY_SAFETY_MARGIN_MS,
+    });
+
+    return raw.access_token;
+  });
+
+  return accessToken;
 }
 
 // Runs a getter's reshape step (the .edges.map(...) chain that turns a raw GraphQL
@@ -126,18 +243,31 @@ async function runAdminGraphqlQuery(query, fnName, businessId = null) {
   if (!isConfigured({ businessId })) {
     const message = businessId
       ? `Business '${businessId}' has no configured Shopify credentials. Create ` +
-        `configuration/businesses/${businessId}/.env with real values before calling ${fnName}().`
-      : 'SHOPIFY_STORE_DOMAIN and/or SHOPIFY_ADMIN_API_ACCESS_TOKEN are not set. Copy ' +
-        '.env.example to .env and add real values for the owner\'s Shopify store before ' +
-        `calling ${fnName}().`;
+        `configuration/businesses/${businessId}/.env with either SHOPIFY_ADMIN_API_ACCESS_TOKEN ` +
+        `or SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET (plus SHOPIFY_STORE_DOMAIN) before calling ${fnName}().`
+      : 'SHOPIFY_STORE_DOMAIN is not set, or neither SHOPIFY_ADMIN_API_ACCESS_TOKEN nor ' +
+        'SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET is set. Copy .env.example to .env and add real ' +
+        `values for the owner's Shopify store before calling ${fnName}().`;
     throw new Error(message);
   }
 
   const resolved = resolveCredentials(businessId);
   const domain = resolved.domain.trim();
-  const accessToken = resolved.accessToken.trim();
   const apiVersion = (resolved.apiVersion && resolved.apiVersion.trim()) || DEFAULT_API_VERSION;
   const url = buildGraphqlUrl(domain, apiVersion);
+
+  // Resolve the access token to send: the OAuth Client Credentials flow when
+  // client id/secret are configured (cached/refreshed per resolved credential set),
+  // otherwise the static long-lived token exactly as before - see the precedence note
+  // above CLIENT_CREDENTIALS_TOKEN_CACHE. Cache key prefers businessId (today's
+  // multi-business scoping); when there's no businessId (the root .env/process.env
+  // case), the client id itself is used instead of a single '__default__' bucket, so
+  // that swapping which client id is configured in process.env can never reuse a
+  // stale token cached under a different client id.
+  const cacheKey = businessId || (resolved.clientId && resolved.clientId.trim()) || '__default__';
+  const accessToken = usesClientCredentials(resolved)
+    ? await getClientCredentialsToken(domain, resolved.clientId.trim(), resolved.clientSecret.trim(), cacheKey)
+    : resolved.accessToken.trim();
 
   return retryAsync(async () => {
     let response;
@@ -470,6 +600,9 @@ module.exports = {
   isConfigured,
   loadEnvOnce,
   resolveCredentials,
+  usesClientCredentials,
+  buildTokenUrl,
+  getClientCredentialsToken,
   DEFAULT_API_VERSION,
 };
 
@@ -477,9 +610,11 @@ if (require.main === module) {
   loadEnvOnce();
   if (!isConfigured()) {
     console.log('Shopify connection layer loaded, but store credentials are not set.');
-    console.log('Copy .env.example to .env and fill in:');
-    console.log('  SHOPIFY_STORE_DOMAIN=your-store.myshopify.com');
-    console.log('  SHOPIFY_ADMIN_API_ACCESS_TOKEN=shpat_...');
+    console.log('Copy .env.example to .env and fill in SHOPIFY_STORE_DOMAIN plus EITHER:');
+    console.log('  SHOPIFY_ADMIN_API_ACCESS_TOKEN=shpat_...   (classic custom app)');
+    console.log('  or');
+    console.log('  SHOPIFY_CLIENT_ID=...');
+    console.log('  SHOPIFY_CLIENT_SECRET=...                  (Dev Dashboard app)');
     process.exit(0);
   }
   getShopInfo()

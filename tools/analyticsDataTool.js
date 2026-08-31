@@ -36,12 +36,17 @@
 // estimated_metrics.estimated_days_of_inventory_remaining
 // (estimateDaysOfInventoryRemaining). Omitted entirely when not supplied.
 //
-// 'customers' degrades gracefully and honestly: if the connected access token lacks
-// the read_customers scope (or any other Shopify error occurs), that source is
-// reported as unavailable in limitations with the real error message, rather than
-// throwing and failing the whole call - "customers where permitted" (see
-// integrations/adapters/shopifyClient.js's header for what "permitted" means here:
-// both API-scope permission and a privacy-conscious, non-PII-only field selection).
+// 'customers' and 'inventory' both degrade gracefully and honestly: if the connected
+// access token lacks the scope that source needs (read_customers, or read_locations/
+// read_markets_home for inventory's per-location `location.name` field) - or any other
+// Shopify error occurs - that source is reported as unavailable in limitations with the
+// real error message, rather than throwing and failing the whole call. "customers where
+// permitted" (see integrations/adapters/shopifyClient.js's header for what "permitted"
+// means there: both API-scope permission and a privacy-conscious, non-PII-only field
+// selection) and "inventory where permitted" follow the same reasoning: a real store's
+// access token/app scopes are configured by its owner, outside this agent's control,
+// so a missing optional scope for ONE source must never block every OTHER source's
+// otherwise-successful analysis.
 //
 // Each retrieval attaches its own live-pull evidence citation (topic/finding/source)
 // automatically when the caller doesn't supply one - the retrieved record count is
@@ -160,33 +165,47 @@ async function retrieveProducts(params) {
   return { result, recordCount: products.length, degraded: false };
 }
 
+// Deliberately DOES NOT throw on a Shopify error (e.g. missing read_locations/
+// read_markets_home scope) - catches it and reports the category as
+// degraded/unavailable instead, so one unauthorized source never fails an otherwise-
+// successful multi-source analytics call. Same reasoning and shape as
+// retrieveCustomers() above (see this file's header).
 async function retrieveInventory(params) {
   const limit = params.limit || 50;
-  const inventoryItems = await shopifyClient.getInventoryLevels({ limit, businessId: params.businessId });
+  let inventoryItems = [];
+  let inventoryError = null;
+  try {
+    inventoryItems = await shopifyClient.getInventoryLevels({ limit, businessId: params.businessId });
+  } catch (err) {
+    inventoryError = err.message;
+  }
+
   const actualMetrics = inventoryItems.map(inventoryItemToActualMetric);
-  const calculatedMetrics = calculateInventoryMetrics(inventoryItems);
-  const estimatedMetrics = params.averageDailyUnitsSold
+  const calculatedMetrics = inventoryError ? [] : calculateInventoryMetrics(inventoryItems);
+  const estimatedMetrics = !inventoryError && params.averageDailyUnitsSold
     ? estimateDaysOfInventoryRemaining(inventoryItems, params.averageDailyUnitsSold)
     : [];
 
   const result = analyzeInventory({
     reportingPeriod: params.reportingPeriod || '',
-    summary: params.summary || `${inventoryItems.length} inventory item(s) retrieved from the connected Shopify store.`,
+    summary: params.summary || (inventoryError
+      ? 'Inventory data is unavailable for this store connection.'
+      : `${inventoryItems.length} inventory item(s) retrieved from the connected Shopify store.`),
     actualMetrics,
     calculatedMetrics,
     estimatedMetrics,
-    evidence: params.evidence || buildLivePullEvidence('inventory item', inventoryItems.length),
+    evidence: params.evidence || (inventoryError ? [] : buildLivePullEvidence('inventory item', inventoryItems.length)),
     topic: params.topic,
     market: params.market,
     confidence: params.confidence,
     verificationStatus: params.verificationStatus,
     recommendations: params.recommendations,
   });
-  result.limitations = [
-    ...result.limitations,
-    `Pulled ${inventoryItems.length} inventory item(s) from Shopify (limit ${limit}) - a capped read, not necessarily the full catalog.`,
-  ];
-  return { result, recordCount: inventoryItems.length, degraded: false };
+  const limitations = inventoryError
+    ? [`Inventory data could not be retrieved (not permitted or unavailable): ${inventoryError}`]
+    : [`Pulled ${inventoryItems.length} inventory item(s) from Shopify (limit ${limit}) - a capped read, not necessarily the full catalog.`];
+  result.limitations = [...result.limitations, ...limitations];
+  return { result, recordCount: inventoryItems.length, degraded: Boolean(inventoryError) };
 }
 
 // Deliberately DOES NOT throw on a Shopify error (e.g. missing read_customers scope) -

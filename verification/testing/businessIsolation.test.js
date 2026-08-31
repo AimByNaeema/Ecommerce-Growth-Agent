@@ -217,7 +217,7 @@ const ANALYTICS_OBJECTIVE = 'analyze store performance growth metrics and sales 
             throw new Error('fetch should never be called - not configured');
           },
           async () => {
-            await assert.rejects(() => getShopInfo(), /SHOPIFY_STORE_DOMAIN and\/or SHOPIFY_ADMIN_API_ACCESS_TOKEN are not set/);
+            await assert.rejects(() => getShopInfo(), /SHOPIFY_STORE_DOMAIN is not set, or neither SHOPIFY_ADMIN_API_ACCESS_TOKEN nor SHOPIFY_CLIENT_ID\+SHOPIFY_CLIENT_SECRET is set/);
           }
         );
       } finally {

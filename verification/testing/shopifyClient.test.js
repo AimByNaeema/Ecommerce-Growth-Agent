@@ -10,6 +10,9 @@ const {
   getCollections,
   isConfigured,
   loadEnvOnce,
+  usesClientCredentials,
+  buildTokenUrl,
+  getClientCredentialsToken,
   DEFAULT_API_VERSION,
 } = require('../../integrations/adapters/shopifyClient');
 
@@ -22,8 +25,22 @@ const {
 function withEnvConfigured(fn) {
   const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
   const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+  const savedClientId = process.env.SHOPIFY_CLIENT_ID;
+  const savedClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
   process.env.SHOPIFY_STORE_DOMAIN = 'test-store.myshopify.com';
   process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = 'shpat_test-token-not-real';
+  // A real local .env may legitimately have SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET
+  // set (Client Credentials is the preferred auth path - see shopifyClient.js's
+  // precedence note). Cleared here so this "static token" scenario is actually
+  // isolated to the static-token code path regardless of local .env contents -
+  // otherwise usesClientCredentials() would pick up the real values and every test
+  // below would incorrectly attempt the OAuth token exchange against a mock that
+  // only ever returns GraphQL-shaped responses. loadEnvOnce() is forced first so the
+  // real .env's one-time load (see shopifyClient.js's envLoadAttempted guard) can
+  // never happen AFTER the deletes below and silently repopulate them.
+  loadEnvOnce();
+  delete process.env.SHOPIFY_CLIENT_ID;
+  delete process.env.SHOPIFY_CLIENT_SECRET;
   return Promise.resolve()
     .then(fn)
     .finally(() => {
@@ -31,6 +48,39 @@ function withEnvConfigured(fn) {
       else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
       if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
       else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+      if (savedClientId === undefined) delete process.env.SHOPIFY_CLIENT_ID;
+      else process.env.SHOPIFY_CLIENT_ID = savedClientId;
+      if (savedClientSecret === undefined) delete process.env.SHOPIFY_CLIENT_SECRET;
+      else process.env.SHOPIFY_CLIENT_SECRET = savedClientSecret;
+    });
+}
+
+// Same purpose as withEnvConfigured, but sets up the OAuth Client Credentials shape
+// (SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET) instead of the static access token, and
+// makes sure no static token lingers so a test can't accidentally pass via the wrong
+// auth path. clientId defaults to a per-call-site-unique value so distinct tests never
+// collide in CLIENT_CREDENTIALS_TOKEN_CACHE, which is keyed by client id when there's
+// no businessId (see shopifyClient.js's runAdminGraphqlQuery cacheKey comment).
+function withClientCredentialsEnvConfigured(clientId, fn) {
+  const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
+  const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+  const savedClientId = process.env.SHOPIFY_CLIENT_ID;
+  const savedClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
+  process.env.SHOPIFY_STORE_DOMAIN = 'test-store.myshopify.com';
+  delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+  process.env.SHOPIFY_CLIENT_ID = clientId;
+  process.env.SHOPIFY_CLIENT_SECRET = `${clientId}-secret`;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (savedDomain === undefined) delete process.env.SHOPIFY_STORE_DOMAIN;
+      else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
+      if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+      else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+      if (savedClientId === undefined) delete process.env.SHOPIFY_CLIENT_ID;
+      else process.env.SHOPIFY_CLIENT_ID = savedClientId;
+      if (savedClientSecret === undefined) delete process.env.SHOPIFY_CLIENT_SECRET;
+      else process.env.SHOPIFY_CLIENT_SECRET = savedClientSecret;
     });
 }
 
@@ -134,8 +184,26 @@ test('exports the expected connection-layer functions and constants', () => {
   assert.strictEqual(typeof getCollections, 'function');
   assert.strictEqual(typeof isConfigured, 'function');
   assert.strictEqual(typeof loadEnvOnce, 'function');
+  assert.strictEqual(typeof usesClientCredentials, 'function');
+  assert.strictEqual(typeof buildTokenUrl, 'function');
+  assert.strictEqual(typeof getClientCredentialsToken, 'function');
   assert.strictEqual(typeof DEFAULT_API_VERSION, 'string');
   assert.ok(DEFAULT_API_VERSION.trim() !== '');
+});
+
+test('usesClientCredentials is true only when both client id and secret are non-blank', () => {
+  assert.strictEqual(usesClientCredentials({ clientId: 'id', clientSecret: 'secret' }), true);
+  assert.strictEqual(usesClientCredentials({ clientId: 'id', clientSecret: '' }), false);
+  assert.strictEqual(usesClientCredentials({ clientId: '', clientSecret: 'secret' }), false);
+  assert.strictEqual(usesClientCredentials({}), false);
+  assert.strictEqual(usesClientCredentials({ clientId: '  ', clientSecret: '  ' }), false);
+});
+
+test('buildTokenUrl builds the documented OAuth token endpoint for the store domain', () => {
+  assert.strictEqual(
+    buildTokenUrl('test-store.myshopify.com'),
+    'https://test-store.myshopify.com/admin/oauth/access_token'
+  );
 });
 
 (async () => {
@@ -161,11 +229,18 @@ test('exports the expected connection-layer functions and constants', () => {
     }
   });
 
-  await testAsync('isConfigured is false when SHOPIFY_ADMIN_API_ACCESS_TOKEN is missing', async () => {
+  await testAsync('isConfigured is false when SHOPIFY_ADMIN_API_ACCESS_TOKEN is missing and no client id/secret is set either', async () => {
     const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
     const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    const savedClientId = process.env.SHOPIFY_CLIENT_ID;
+    const savedClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
     process.env.SHOPIFY_STORE_DOMAIN = 'test-store.myshopify.com';
     delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    // A real local .env may legitimately have client id/secret set (see
+    // withEnvConfigured's comment above) - cleared here so this test isolates the
+    // "no auth mode at all is usable" case it's actually named for.
+    delete process.env.SHOPIFY_CLIENT_ID;
+    delete process.env.SHOPIFY_CLIENT_SECRET;
     try {
       assert.strictEqual(isConfigured(), false);
     } finally {
@@ -173,6 +248,10 @@ test('exports the expected connection-layer functions and constants', () => {
       else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
       if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
       else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+      if (savedClientId === undefined) delete process.env.SHOPIFY_CLIENT_ID;
+      else process.env.SHOPIFY_CLIENT_ID = savedClientId;
+      if (savedClientSecret === undefined) delete process.env.SHOPIFY_CLIENT_SECRET;
+      else process.env.SHOPIFY_CLIENT_SECRET = savedClientSecret;
     }
   });
 
@@ -189,6 +268,210 @@ test('exports the expected connection-layer functions and constants', () => {
       if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
       else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
     }
+  });
+
+  await testAsync('isConfigured is true when only SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET are set (no access token)', async () => {
+    await withClientCredentialsEnvConfigured('isconfigured-cc-test', async () => {
+      assert.strictEqual(isConfigured(), true);
+    });
+  });
+
+  await testAsync('isConfigured is false when domain is set but neither the access token nor a client id/secret pair is', async () => {
+    const savedDomain = process.env.SHOPIFY_STORE_DOMAIN;
+    const savedToken = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    const savedClientId = process.env.SHOPIFY_CLIENT_ID;
+    const savedClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
+    process.env.SHOPIFY_STORE_DOMAIN = 'test-store.myshopify.com';
+    delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    delete process.env.SHOPIFY_CLIENT_ID;
+    delete process.env.SHOPIFY_CLIENT_SECRET;
+    try {
+      assert.strictEqual(isConfigured(), false);
+    } finally {
+      if (savedDomain === undefined) delete process.env.SHOPIFY_STORE_DOMAIN;
+      else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
+      if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+      else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+      if (savedClientId === undefined) delete process.env.SHOPIFY_CLIENT_ID;
+      else process.env.SHOPIFY_CLIENT_ID = savedClientId;
+      if (savedClientSecret === undefined) delete process.env.SHOPIFY_CLIENT_SECRET;
+      else process.env.SHOPIFY_CLIENT_SECRET = savedClientSecret;
+    }
+  });
+
+  // --- OAuth Client Credentials token acquisition (getClientCredentialsToken) -------
+  // Each test below uses its own unique cacheKey (via a unique clientId/businessId, per
+  // withClientCredentialsEnvConfigured's own doc comment) so it can never read a token
+  // cached by a different test in this same process.
+
+  await testAsync('getClientCredentialsToken fetches and returns a token from the documented endpoint/body shape', async () => {
+    let capturedUrl;
+    let capturedInit;
+    await withMockedFetch(
+      async (url, init) => {
+        capturedUrl = url;
+        capturedInit = init;
+        return jsonResponse(200, { access_token: 'shcat_fresh-token', scope: 'read_orders', expires_in: 86399 });
+      },
+      async () => {
+        const token = await getClientCredentialsToken(
+          'test-store.myshopify.com',
+          'cc-fetch-client-id',
+          'cc-fetch-client-secret',
+          'cc-fetch-cache-key'
+        );
+        assert.strictEqual(token, 'shcat_fresh-token');
+      }
+    );
+    assert.strictEqual(capturedUrl, 'https://test-store.myshopify.com/admin/oauth/access_token');
+    assert.strictEqual(capturedInit.method, 'POST');
+    assert.strictEqual(capturedInit.headers['content-type'], 'application/x-www-form-urlencoded');
+    const bodyParams = new URLSearchParams(capturedInit.body);
+    assert.strictEqual(bodyParams.get('grant_type'), 'client_credentials');
+    assert.strictEqual(bodyParams.get('client_id'), 'cc-fetch-client-id');
+    assert.strictEqual(bodyParams.get('client_secret'), 'cc-fetch-client-secret');
+  });
+
+  await testAsync('getClientCredentialsToken reuses the cached token on a second call (fetch called once)', async () => {
+    let calls = 0;
+    await withMockedFetch(
+      async () => {
+        calls += 1;
+        return jsonResponse(200, { access_token: 'shcat_cached-token', expires_in: 86399 });
+      },
+      async () => {
+        const first = await getClientCredentialsToken(
+          'test-store.myshopify.com',
+          'cc-cache-client-id',
+          'cc-cache-client-secret',
+          'cc-cache-reuse-key'
+        );
+        const second = await getClientCredentialsToken(
+          'test-store.myshopify.com',
+          'cc-cache-client-id',
+          'cc-cache-client-secret',
+          'cc-cache-reuse-key'
+        );
+        assert.strictEqual(first, 'shcat_cached-token');
+        assert.strictEqual(second, 'shcat_cached-token');
+      }
+    );
+    assert.strictEqual(calls, 1, 'a still-valid cached token must never trigger a second token request');
+  });
+
+  await testAsync('getClientCredentialsToken refreshes once the cached token is past its expiry/safety margin', async () => {
+    let calls = 0;
+    await withMockedFetch(
+      async () => {
+        calls += 1;
+        // expires_in: 0 combined with the module's fixed 60s safety margin makes the
+        // cached entry already-expired the instant it's stored, without needing to
+        // fake the clock - the next call must treat it as needing a fresh token.
+        return jsonResponse(200, { access_token: `shcat_token-${calls}`, expires_in: 0 });
+      },
+      async () => {
+        const first = await getClientCredentialsToken(
+          'test-store.myshopify.com',
+          'cc-refresh-client-id',
+          'cc-refresh-client-secret',
+          'cc-refresh-key'
+        );
+        const second = await getClientCredentialsToken(
+          'test-store.myshopify.com',
+          'cc-refresh-client-id',
+          'cc-refresh-client-secret',
+          'cc-refresh-key'
+        );
+        assert.strictEqual(first, 'shcat_token-1');
+        assert.strictEqual(second, 'shcat_token-2');
+      }
+    );
+    assert.strictEqual(calls, 2, 'an expired cached token must be refreshed, not reused');
+  });
+
+  await testAsync('getClientCredentialsToken throws a clear error on a non-ok token response, without caching anything', async () => {
+    await withMockedFetch(
+      async () => jsonResponse(401, { error: 'invalid_client', error_description: 'Invalid API key or access token' }),
+      () =>
+        assert.rejects(
+          () =>
+            getClientCredentialsToken(
+              'test-store.myshopify.com',
+              'cc-error-client-id',
+              'cc-error-client-secret',
+              'cc-error-key'
+            ),
+          /OAuth token request failed \(401\).*Invalid API key or access token/
+        )
+    );
+  });
+
+  await testAsync('getClientCredentialsToken throws a clear error when the response is missing access_token', async () => {
+    await withMockedFetch(
+      async () => jsonResponse(200, { scope: 'read_orders' }),
+      () =>
+        assert.rejects(
+          () =>
+            getClientCredentialsToken(
+              'test-store.myshopify.com',
+              'cc-missing-token-client-id',
+              'cc-missing-token-client-secret',
+              'cc-missing-token-key'
+            ),
+          /did not include an access_token/
+        )
+    );
+  });
+
+  await testAsync('getShopInfo uses the Client Credentials flow end-to-end: fetches a token, then sends it as the Admin API header', async () => {
+    const calledUrls = [];
+    let capturedAdminHeader;
+    await withClientCredentialsEnvConfigured('cc-e2e-client-id', () =>
+      withMockedFetch(
+        async (url, init) => {
+          calledUrls.push(url);
+          if (url === 'https://test-store.myshopify.com/admin/oauth/access_token') {
+            return jsonResponse(200, { access_token: 'shcat_e2e-token', expires_in: 86399 });
+          }
+          capturedAdminHeader = init.headers['X-Shopify-Access-Token'];
+          return jsonResponse(200, {
+            data: { shop: { name: 'Digital Studio', myshopifyDomain: 'test-store.myshopify.com', email: 'owner@example.com' } },
+          });
+        },
+        async () => {
+          const result = await getShopInfo();
+          assert.strictEqual(result.name, 'Digital Studio');
+        }
+      )
+    );
+    assert.strictEqual(calledUrls.length, 2);
+    assert.strictEqual(calledUrls[0], 'https://test-store.myshopify.com/admin/oauth/access_token');
+    assert.strictEqual(calledUrls[1].includes('/admin/api/'), true);
+    assert.strictEqual(capturedAdminHeader, 'shcat_e2e-token');
+  });
+
+  await testAsync('getShopInfo still uses the static access token unchanged when no client id/secret is set (regression)', async () => {
+    let tokenEndpointCalled = false;
+    let capturedAdminHeader;
+    await withEnvConfigured(() =>
+      withMockedFetch(
+        async (url, init) => {
+          if (url === 'https://test-store.myshopify.com/admin/oauth/access_token') {
+            tokenEndpointCalled = true;
+          }
+          capturedAdminHeader = init.headers['X-Shopify-Access-Token'];
+          return jsonResponse(200, {
+            data: { shop: { name: 'Digital Studio', myshopifyDomain: 'test-store.myshopify.com', email: 'owner@example.com' } },
+          });
+        },
+        async () => {
+          const result = await getShopInfo();
+          assert.strictEqual(result.name, 'Digital Studio');
+        }
+      )
+    );
+    assert.strictEqual(tokenEndpointCalled, false, 'the static-token path must never call the OAuth token endpoint');
+    assert.strictEqual(capturedAdminHeader, 'shpat_test-token-not-real');
   });
 
   await testAsync('getShopInfo rejects clearly when not configured', async () => {

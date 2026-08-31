@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { sendMessage } = require('../../agent/core/claudeClient');
-const { getShopInfo, getProducts } = require('../../integrations/adapters/shopifyClient');
+const { getShopInfo, getProducts, getClientCredentialsToken } = require('../../integrations/adapters/shopifyClient');
 
 // This file is a regression guard, not a re-audit: a manual audit already confirmed
 // agent/core/claudeClient.js and integrations/adapters/shopifyClient.js never log or
@@ -18,6 +18,7 @@ const { getShopInfo, getProducts } = require('../../integrations/adapters/shopif
 
 const CLAUDE_CANARY = 'sk-ant-CANARY-DO-NOT-LEAK-3f9a7c2e';
 const SHOPIFY_CANARY = 'shpat_CANARY-DO-NOT-LEAK-3f9a7c2e';
+const SHOPIFY_CLIENT_SECRET_CANARY = 'shcss_CANARY-DO-NOT-LEAK-3f9a7c2e';
 
 function withEnv(vars, fn) {
   const saved = {};
@@ -215,6 +216,81 @@ function test(name, fn) {
             });
             assertNoCanaryAnywhere(SHOPIFY_CANARY, result, lines);
           }
+        )
+    );
+  });
+
+  // --- shopifyClient.getClientCredentialsToken (OAuth Client Credentials secret) --
+
+  await testAsync('getClientCredentialsToken never leaks SHOPIFY_CLIENT_SECRET when the network call fails', async () => {
+    await withMockedFetch(
+      async () => {
+        throw new Error('simulated DNS failure');
+      },
+      async () => {
+        const { result, lines } = await withCapturedConsole(async () => {
+          try {
+            await getClientCredentialsToken(
+              'test-store.myshopify.com',
+              'canary-client-id',
+              SHOPIFY_CLIENT_SECRET_CANARY,
+              'secret-audit-network-failure-key'
+            );
+            return null;
+          } catch (err) {
+            return err.message;
+          }
+        });
+        assertNoCanaryAnywhere(SHOPIFY_CLIENT_SECRET_CANARY, result, lines);
+      }
+    );
+  });
+
+  await testAsync('getClientCredentialsToken never leaks SHOPIFY_CLIENT_SECRET when the token endpoint returns a non-ok status', async () => {
+    await withMockedFetch(
+      async () => jsonResponse(401, { error: 'invalid_client', error_description: 'Invalid client credentials' }),
+      async () => {
+        const { result, lines } = await withCapturedConsole(async () => {
+          try {
+            await getClientCredentialsToken(
+              'test-store.myshopify.com',
+              'canary-client-id',
+              SHOPIFY_CLIENT_SECRET_CANARY,
+              'secret-audit-bad-status-key'
+            );
+            return null;
+          } catch (err) {
+            return err.message;
+          }
+        });
+        assertNoCanaryAnywhere(SHOPIFY_CLIENT_SECRET_CANARY, result, lines);
+      }
+    );
+  });
+
+  await testAsync('getShopInfo never leaks SHOPIFY_CLIENT_SECRET when the OAuth Client Credentials flow is configured and the token request fails', async () => {
+    await withEnv(
+      {
+        SHOPIFY_STORE_DOMAIN: 'test-store.myshopify.com',
+        SHOPIFY_CLIENT_ID: 'canary-client-id',
+        SHOPIFY_CLIENT_SECRET: SHOPIFY_CLIENT_SECRET_CANARY,
+      },
+      () =>
+        withEnv({ SHOPIFY_ADMIN_API_ACCESS_TOKEN: '' }, () =>
+          withMockedFetch(
+            async () => jsonResponse(401, { error: 'invalid_client', error_description: 'Invalid client credentials' }),
+            async () => {
+              const { result, lines } = await withCapturedConsole(async () => {
+                try {
+                  await getShopInfo();
+                  return null;
+                } catch (err) {
+                  return err.message;
+                }
+              });
+              assertNoCanaryAnywhere(SHOPIFY_CLIENT_SECRET_CANARY, result, lines);
+            }
+          )
         )
     );
   });

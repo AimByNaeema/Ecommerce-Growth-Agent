@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  /* ============ Design tokens ============ */
+  /* ============ Design tokens (unchanged from the previous dashboard) ============ */
   :root {
     --ground: #020617;
     --surface: #0B1220;
@@ -114,48 +114,121 @@
     background: var(--ground);
     color: var(--ink);
     font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    display: flex;
-    flex-direction: column;
-    min-height: 100vh;
   }
 
   ::selection { background: var(--accent-soft); }
 
-  .shell {
-    max-width: 800px;
-    width: 100%;
-    margin: 0 auto;
+  /* ============ App shell: sidebar + main ============ */
+  .app-shell {
     display: flex;
-    flex-direction: column;
-    flex: 1;
     min-height: 100vh;
-    padding: 0 20px;
   }
 
-  /* ============ Header ============ */
-  .studio-header {
+  .sidebar {
+    width: 236px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 22px 14px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    opacity: 0;
+    animation: rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  .brand {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 10px 22px;
+  }
+
+  .brand-mark {
+    font-family: "Fraunces", Georgia, serif;
+    font-optical-sizing: auto;
+    font-weight: 600;
+    font-size: 19px;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+  }
+
+  .brand-sub { font-size: 12px; color: var(--ink-faint); }
+
+  .nav-group { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ink-soft);
+    background: none;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 12px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .nav-item:hover { background: var(--surface); color: var(--ink); }
+  .nav-item[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+  .nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .nav-icon { width: 17px; height: 17px; flex-shrink: 0; }
+
+  .nav-badge {
+    margin-left: auto;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    font-weight: 500;
+    color: var(--warn);
+    background: var(--warn-soft);
+    border-radius: 100px;
+    padding: 2px 7px;
+    min-width: 18px;
+    text-align: center;
+  }
+  .nav-badge[hidden] { display: none; }
+
+  .sidebar-foot {
+    padding: 14px 10px 4px;
+    border-top: 1px solid var(--border);
+    margin-top: 10px;
+  }
+
+  .main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    max-height: 100vh;
+    overflow-y: auto;
+  }
+
+  .main-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 28px 4px 18px;
+    padding: 26px 32px 18px;
+    border-bottom: 1px solid var(--border);
     opacity: 0;
-    animation: rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    animation: rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) 0.05s forwards;
   }
 
-  .studio-id { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-
-  .studio-mark {
+  .page-title {
     font-family: "Fraunces", Georgia, serif;
     font-optical-sizing: auto;
-    font-weight: 600;
+    font-weight: 500;
     font-size: 22px;
     letter-spacing: -0.01em;
     color: var(--ink);
-    text-wrap: balance;
   }
 
-  .studio-sub { font-size: 13px; color: var(--ink-faint); }
+  .page-subtitle { font-size: 13px; color: var(--ink-faint); margin-top: 3px; }
 
   .status-pill {
     display: inline-flex;
@@ -169,6 +242,7 @@
     font-weight: 500;
     letter-spacing: 0.02em;
     white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .status-dot {
@@ -185,54 +259,89 @@
   .status-pill[data-state="error"] { background: var(--danger-soft); color: var(--danger); }
   .status-pill[data-state="error"] .status-dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
 
-  /* ============ Tabs ============ */
-  .tabs {
+  .page { display: none; flex-direction: column; padding: 26px 32px 40px; max-width: 900px; }
+  .page.active { display: flex; }
+
+  /* ============ Overview page ============ */
+  .overview-intro p { color: var(--ink-soft); font-size: 14.5px; line-height: 1.6; max-width: 60ch; margin: 0 0 22px; }
+
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 26px; }
+
+  .stat-tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); margin-bottom: 6px; }
+  .stat-value { font-family: "IBM Plex Mono", monospace; font-size: 20px; font-weight: 500; color: var(--ink); }
+  .stat-value.accent { color: var(--accent); }
+
+  .section-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-faint);
+    margin: 4px 0 12px;
+  }
+
+  .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+
+  .agent-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
     display: flex;
-    gap: 4px;
-    padding: 0 4px;
-    border-bottom: 1px solid var(--border);
-    opacity: 0;
-    animation: rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.05s forwards;
+    flex-direction: column;
+    gap: 10px;
   }
 
-  .tab-btn {
-    font-family: inherit;
-    font-size: 13.5px;
-    font-weight: 500;
-    color: var(--ink-faint);
-    background: none;
-    border: none;
-    padding: 12px 6px;
-    cursor: pointer;
-    position: relative;
-    transition: color 0.15s ease;
+  .agent-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .agent-name { font-size: 14.5px; font-weight: 600; color: var(--ink); }
+  .agent-desc { font-size: 12.5px; color: var(--ink-soft); line-height: 1.45; margin-top: 3px; }
+
+  .agent-status {
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 4px 9px; border-radius: 100px; white-space: nowrap; flex-shrink: 0;
   }
+  .agent-status.idle { background: var(--surface-raised); color: var(--ink-faint); border: 1px solid var(--border); }
+  .agent-status.running { background: var(--accent-soft); color: var(--accent); }
+  .agent-status.success { background: var(--growth-soft); color: var(--growth); }
+  .agent-status.partial { background: var(--warn-soft); color: var(--warn); }
+  .agent-status.error { background: var(--danger-soft); color: var(--danger); }
 
-  .tab-btn::after {
-    content: "";
-    position: absolute;
-    left: 0; right: 0; bottom: -1px;
-    height: 2px;
-    background: var(--accent);
-    transform: scaleX(0);
-    transition: transform 0.2s ease;
+  .agent-summary { font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; min-height: 18px; }
+  .agent-summary.empty { color: var(--ink-faint); font-style: italic; }
+
+  .agent-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 2px; }
+
+  .agent-run-btn {
+    font-family: inherit; font-size: 12.5px; font-weight: 500;
+    color: var(--ink); background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 13px; cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
   }
+  .agent-run-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .agent-run-btn:disabled { opacity: 0.5; cursor: default; }
+  .agent-run-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-  .tab-btn[aria-selected="true"] { color: var(--ink); }
-  .tab-btn[aria-selected="true"]::after { transform: scaleX(1); }
-  .tab-btn + .tab-btn { margin-left: 18px; }
+  .agent-open-link { font-size: 12px; color: var(--ink-faint); text-decoration: none; }
+  .agent-open-link:hover { color: var(--accent); }
 
-  .panel { display: none; flex: 1; min-height: 0; flex-direction: column; }
-  .panel.active { display: flex; }
+  /* ============ Shared chart component (real data only) ============ */
+  .metric-chart { margin-top: 4px; }
+  .metric-chart-caption { font-size: 11px; color: var(--ink-faint); margin-bottom: 6px; font-family: "IBM Plex Mono", monospace; }
+  .metric-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .metric-bar { fill: var(--accent); }
+  .metric-bar-track { fill: var(--surface-raised); }
+  .metric-bar-label { fill: var(--ink-faint); font-size: 8.5px; font-family: "IBM Plex Mono", monospace; }
+  .metric-bar-value { fill: var(--ink); font-size: 8.5px; font-family: "IBM Plex Mono", monospace; font-weight: 500; }
 
-  /* ============ Chat / Ask panel ============ */
+  /* ============ Chat / Ask page ============ */
   .conversation {
     flex: 1;
-    padding: 24px 4px 24px;
+    padding: 4px 0 24px;
     display: flex;
     flex-direction: column;
     gap: 18px;
-    overflow-y: auto;
   }
 
   .intro { opacity: 0; animation: rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.1s forwards; }
@@ -241,7 +350,7 @@
     font-family: "Fraunces", Georgia, serif;
     font-optical-sizing: auto;
     font-weight: 500;
-    font-size: clamp(22px, 4vw, 28px);
+    font-size: clamp(20px, 3.6vw, 25px);
     line-height: 1.25;
     letter-spacing: -0.01em;
     margin: 0 0 10px;
@@ -249,7 +358,7 @@
     max-width: 30ch;
   }
 
-  .intro p { color: var(--ink-soft); font-size: 15px; line-height: 1.6; max-width: 52ch; margin: 0 0 20px; }
+  .intro p { color: var(--ink-soft); font-size: 14.5px; line-height: 1.6; max-width: 54ch; margin: 0 0 18px; }
 
   .suggestion-row { display: flex; flex-wrap: wrap; gap: 8px; }
 
@@ -276,7 +385,7 @@
   .thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
   .thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
 
-  .composer { padding: 14px 4px 24px; }
+  .composer { padding: 14px 0 4px; margin-top: auto; }
 
   .composer-field {
     display: flex; align-items: flex-end; gap: 10px;
@@ -302,21 +411,14 @@
   .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   .composer-footnote {
-    margin: 10px 4px 0; font-size: 12px; color: var(--ink-faint);
+    margin: 10px 2px 0; font-size: 12px; color: var(--ink-faint);
     display: flex; justify-content: space-between; gap: 12px; font-family: "IBM Plex Mono", monospace;
   }
 
-  /* ============ Specialists panel ============ */
-  .specialists-scroll { flex: 1; overflow-y: auto; padding: 24px 4px 32px; }
+  /* ============ Specialists / Chief Orchestrator pages ============ */
+  .page-intro p { color: var(--ink-soft); font-size: 14px; line-height: 1.6; max-width: 58ch; margin: 0 0 20px; }
 
-  .specialists-intro p { color: var(--ink-soft); font-size: 14px; line-height: 1.6; max-width: 56ch; margin: 0 0 20px; }
-
-  .specialist-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-    gap: 10px;
-    margin-bottom: 20px;
-  }
+  .specialist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-bottom: 20px; }
 
   .specialist-card {
     text-align: left;
@@ -339,10 +441,9 @@
   .specialist-desc { font-size: 12.5px; color: var(--ink-soft); line-height: 1.45; }
 
   .objective-block { margin-bottom: 18px; }
-
   .objective-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-faint); margin-bottom: 8px; display: block; }
 
-  #objective {
+  #objective, .objective-input {
     width: 100%;
     background: var(--surface-raised);
     border: 1px solid var(--border);
@@ -355,7 +456,7 @@
     min-height: 64px;
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
-  #objective:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--focus-ring); }
+  #objective:focus, .objective-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--focus-ring); }
 
   .run-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 
@@ -383,14 +484,10 @@
     background: var(--surface-raised);
     overflow: hidden;
     animation: rise 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    margin-bottom: 14px;
   }
 
-  .result-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-
+  .result-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
   .result-title { font-size: 13.5px; font-weight: 600; color: var(--ink); }
 
   .result-status {
@@ -400,6 +497,23 @@
   .result-status.success { background: var(--growth-soft); color: var(--growth); }
   .result-status.partial { background: var(--warn-soft); color: var(--warn); }
   .result-status.error { background: var(--danger-soft); color: var(--danger); }
+
+  .result-summary {
+    margin: 0;
+    padding: 14px 16px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--ink);
+  }
+
+  .result-details { border-top: 1px solid var(--border); }
+  .result-details > summary {
+    cursor: pointer;
+    padding: 10px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-soft);
+  }
 
   .result-body {
     margin: 0;
@@ -414,11 +528,106 @@
     word-break: break-word;
   }
 
+  .result-chart-wrap { padding: 4px 16px 16px; }
+
   .jk { color: var(--code-key); }
   .js { color: var(--code-string); }
   .jp { color: var(--code-punct); }
 
   .empty-result { color: var(--ink-faint); font-size: 13.5px; padding: 4px; }
+
+  .plan-step-card { margin-bottom: 14px; }
+
+  .approval-panel {
+    margin: 0 16px 16px;
+    padding: 14px;
+    border: 1px solid var(--warn);
+    border-radius: 12px;
+    background: var(--warn-soft);
+  }
+
+  .approval-label { font-size: 11px; font-weight: 600; color: var(--warn); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; display: block; }
+  .approval-reason { font-size: 13px; color: var(--ink); margin: 0 0 10px; line-height: 1.5; }
+
+  .approval-notes {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 9px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    margin-bottom: 10px;
+    resize: vertical;
+    min-height: 44px;
+  }
+  .approval-notes:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+  .approval-notes::placeholder { color: var(--ink-faint); }
+
+  .approval-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  .approve-btn, .reject-btn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 9px;
+    padding: 9px 16px;
+    cursor: pointer;
+    transition: transform 0.12s ease, opacity 0.12s ease;
+  }
+  .approve-btn { background: var(--growth); color: #06210F; border: none; }
+  .reject-btn { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  .approve-btn:hover:not(:disabled), .reject-btn:hover:not(:disabled) { transform: translateY(-1px); }
+  .approve-btn:disabled, .reject-btn:disabled { opacity: 0.45; cursor: default; }
+  .approve-btn:focus-visible, .reject-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .approval-decided { font-size: 13px; margin: 0; font-weight: 500; }
+  .approval-decided.approved { color: var(--growth); }
+  .approval-decided.rejected { color: var(--danger); }
+
+  .approval-panel.decided-approved { border-color: var(--growth); background: var(--growth-soft); }
+  .approval-panel.decided-rejected { border-color: var(--danger); background: var(--danger-soft); }
+
+  /* ============ Approval Center page ============ */
+  .filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+
+  .filter-pill {
+    font-family: inherit; font-size: 12.5px; font-weight: 500; color: var(--ink-soft);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 100px; padding: 7px 15px; cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+  }
+  .filter-pill:hover { border-color: var(--accent); color: var(--ink); }
+  .filter-pill[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .filter-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .approval-row {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    padding: 16px;
+    margin-bottom: 12px;
+  }
+
+  .approval-row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .approval-row-title { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+  .approval-row-meta { font-size: 11.5px; color: var(--ink-faint); font-family: "IBM Plex Mono", monospace; margin-top: 3px; }
+
+  .approval-row-status {
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 4px 10px; border-radius: 100px; white-space: nowrap;
+  }
+  .approval-row-status.pending { background: var(--warn-soft); color: var(--warn); }
+  .approval-row-status.approved { background: var(--growth-soft); color: var(--growth); }
+  .approval-row-status.rejected { background: var(--danger-soft); color: var(--danger); }
+
+  .approval-row-reason { font-size: 13px; color: var(--ink-soft); line-height: 1.5; margin: 0 0 10px; }
+
+  .session-note {
+    font-size: 12px; color: var(--ink-faint); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 18px;
+  }
 
   @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.6); opacity: 0.5; } }
@@ -432,66 +641,127 @@
     }
   }
 
-  @media (max-width: 520px) {
-    .shell { padding: 0 14px; }
-    .studio-header { padding-top: 20px; }
+  @media (max-width: 860px) {
+    .app-shell { flex-direction: column; }
+    .sidebar { width: 100%; height: auto; position: static; flex-direction: row; overflow-x: auto; padding: 14px; }
+    .brand { padding: 0 10px 0 0; }
+    .nav-group { flex-direction: row; flex: none; }
+    .sidebar-foot { display: none; }
+    .main { max-height: none; }
+    .main-header { padding: 20px 18px 16px; }
+    .page { padding: 20px 18px 32px; }
   }
 </style>
 </head>
 <body>
 
-<div class="shell">
+<div class="app-shell">
 
-  <header class="studio-header">
-    <div class="studio-id">
-      <span class="studio-mark">Digital Studio</span>
-      <span class="studio-sub">Growth Assistant</span>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">Digital Studio</span>
+      <span class="brand-sub">Growth Assistant</span>
     </div>
-    <div class="status-pill" id="statusPill" data-state="idle">
-      <span class="status-dot"></span>
-      <span id="statusText">Connected · Gemini</span>
+
+    <nav class="nav-group" role="tablist" aria-label="Dashboard sections">
+      <button class="nav-item" id="navOverview" role="tab" aria-current="page" type="button">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="2.5" width="6.5" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2.5" y="11" width="6.5" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="6.5" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
+        Overview
+      </button>
+      <button class="nav-item" id="navAsk" role="tab" aria-current="false" type="button">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 4.5h14v9H8.5L5 16.5v-3H3v-9Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        Ask
+      </button>
+      <button class="nav-item" id="navSpecialists" role="tab" aria-current="false" type="button">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="6.5" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M3.5 17c0-3.3 2.9-6 6.5-6s6.5 2.7 6.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Run a Specialist
+      </button>
+      <button class="nav-item" id="navOrchestrator" role="tab" aria-current="false" type="button">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="4" r="2" stroke="currentColor" stroke-width="1.5"/><circle cx="4" cy="16" r="2" stroke="currentColor" stroke-width="1.5"/><circle cx="16" cy="16" r="2" stroke="currentColor" stroke-width="1.5"/><path d="M10 6v4M10 10 5 14M10 10l5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Chief Orchestrator
+      </button>
+      <button class="nav-item" id="navApprovals" role="tab" aria-current="false" type="button">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 10.5 8.5 14 15 6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><rect x="2.5" y="2.5" width="15" height="15" rx="4" stroke="currentColor" stroke-width="1.5"/></svg>
+        Approval Center
+        <span class="nav-badge" id="approvalNavBadge" hidden>0</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <span class="brand-sub">digitalstudiobynaeema.com</span>
     </div>
-  </header>
+  </aside>
 
-  <nav class="tabs" role="tablist">
-    <button class="tab-btn" id="tabAsk" role="tab" aria-selected="true" type="button">Ask</button>
-    <button class="tab-btn" id="tabSpecialists" role="tab" aria-selected="false" type="button">Run a Specialist</button>
-  </nav>
+  <div class="main">
+    <header class="main-header">
+      <div>
+        <div class="page-title" id="pageTitle">Overview</div>
+        <div class="page-subtitle" id="pageSubtitle">Everything below reflects a real run against your connected Shopify store — nothing here is sample data.</div>
+      </div>
+      <div class="status-pill" id="statusPill" data-state="idle">
+        <span class="status-dot"></span>
+        <span id="statusText">Connected · Gemini</span>
+      </div>
+    </header>
 
-  <!-- ============ ASK PANEL ============ -->
-  <section class="panel active" id="panelAsk">
-    <main class="conversation" id="conversation">
-      <div class="intro" id="intro">
-        <h1>Ask your store anything.</h1>
-        <p>This assistant knows Digital Studio By Naeema's catalog, markets, and customers — ask it for SEO keywords, listing ideas, seasonal angles, or a quick strategy check.</p>
-        <div class="suggestion-row">
-          <button class="suggestion" type="button">Suggest 5 SEO keywords for our Halloween SVG bundles</button>
-          <button class="suggestion" type="button">Write 3 short listing titles for a new baby shower bundle</button>
-          <button class="suggestion" type="button">What seasonal collection should we plan next for the UK market?</button>
+    <!-- ============ OVERVIEW PAGE ============ -->
+    <section class="page active" id="pageOverview">
+      <div class="overview-intro">
+        <p>A live status board for your 7 specialists and the Chief Orchestrator. Run any specialist directly from its card below — each one calls your real Shopify/Gemini connection, the same way the "Run a Specialist" page does. Nothing here updates until you actually run something.</p>
+      </div>
+
+      <div class="stat-row" id="overviewStats">
+        <div class="stat-tile">
+          <div class="stat-label">Specialists run this session</div>
+          <div class="stat-value" id="statRunsCount">0 / 7</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-label">Approvals awaiting you</div>
+          <div class="stat-value accent" id="statPendingApprovals">0</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-label">Last activity</div>
+          <div class="stat-value" id="statLastActivity" style="font-size:14px;">None yet</div>
         </div>
       </div>
-    </main>
 
-    <form class="composer" id="composer">
-      <div class="composer-field">
-        <textarea id="question" rows="1" placeholder="Ask about SEO, listings, marketing, or your customers…" required></textarea>
-        <button class="icon-btn" id="sendBtn" type="submit" aria-label="Send">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M4 12L20 4L13 20L11 13L4 12Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
-          </svg>
-        </button>
-      </div>
-      <div class="composer-footnote">
-        <span>digitalstudiobynaeema.com</span>
-        <span id="providerTag">provider: gemini</span>
-      </div>
-    </form>
-  </section>
+      <div class="section-label">Your 7 specialists</div>
+      <div class="agent-grid" id="agentGrid"></div>
+    </section>
 
-  <!-- ============ SPECIALISTS PANEL ============ -->
-  <section class="panel" id="panelSpecialists">
-    <div class="specialists-scroll">
-      <div class="specialists-intro">
+    <!-- ============ ASK PAGE ============ -->
+    <section class="page" id="pageAsk">
+      <main class="conversation" id="conversation">
+        <div class="intro" id="intro">
+          <h1>Ask your store anything.</h1>
+          <p>This assistant knows Digital Studio By Naeema's catalog, markets, and customers — ask it for SEO keywords, listing ideas, seasonal angles, or a quick strategy check.</p>
+          <div class="suggestion-row">
+            <button class="suggestion" type="button">Suggest 5 SEO keywords for our Halloween SVG bundles</button>
+            <button class="suggestion" type="button">Write 3 short listing titles for a new baby shower bundle</button>
+            <button class="suggestion" type="button">What seasonal collection should we plan next for the UK market?</button>
+          </div>
+        </div>
+      </main>
+
+      <form class="composer" id="composer">
+        <div class="composer-field">
+          <textarea id="question" rows="1" placeholder="Ask about SEO, listings, marketing, or your customers…" required></textarea>
+          <button class="icon-btn" id="sendBtn" type="submit" aria-label="Send">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 12L20 4L13 20L11 13L4 12Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="composer-footnote">
+          <span>digitalstudiobynaeema.com</span>
+          <span id="providerTag">provider: gemini</span>
+        </div>
+      </form>
+    </section>
+
+    <!-- ============ SPECIALISTS PAGE ============ -->
+    <section class="page" id="pageSpecialists">
+      <div class="page-intro">
         <p>Pick a specialist and run it for real against the Chief Orchestrator. Specialists answer only from real, connected evidence (like your Shopify data) — if none is available yet for a capability, it will say so honestly instead of guessing.</p>
       </div>
 
@@ -508,29 +778,195 @@
       </div>
 
       <div id="resultArea"></div>
-    </div>
-  </section>
+    </section>
 
+    <!-- ============ CHIEF ORCHESTRATOR PAGE ============ -->
+    <section class="page" id="pageOrchestrator">
+      <div class="page-intro">
+        <p>Tell the Chief what you want to accomplish, in your own words — you don't pick a specialist here. The Chief decides on its own which specialist(s) the goal needs and how to route it. If any step needs your sign-off before it runs, the Chief stops and asks you right here, before doing it — nothing consequential happens without your approval.</p>
+      </div>
+
+      <div class="objective-block">
+        <label class="objective-label" for="chiefObjective">Your goal</label>
+        <textarea id="chiefObjective" class="objective-input" rows="3" placeholder="e.g. Look at our real Shopify sales and suggest one SEO fix and one marketing angle to grow revenue this month."></textarea>
+      </div>
+
+      <div class="run-row">
+        <button class="run-btn" id="chiefRunBtn" type="button">Ask the Chief</button>
+        <span class="run-hint" id="chiefRunHint"></span>
+      </div>
+
+      <div id="chiefResultArea"></div>
+    </section>
+
+    <!-- ============ APPROVAL CENTER PAGE ============ -->
+    <section class="page" id="pageApprovals">
+      <div class="page-intro">
+        <p>Every approval the Chief has asked you for during this browser session, in one place — decide from here or from the Chief Orchestrator page, both stay in sync. This list is not saved anywhere; closing or reloading the page clears it, exactly like the Chief's own runs do.</p>
+      </div>
+
+      <div class="session-note" id="approvalSessionNote">No approvals yet this session — they will appear here the moment the Chief asks for one.</div>
+
+      <div class="filter-row" id="approvalFilterRow">
+        <button class="filter-pill" data-filter="all" aria-pressed="true" type="button">All</button>
+        <button class="filter-pill" data-filter="pending" aria-pressed="false" type="button">Pending</button>
+        <button class="filter-pill" data-filter="approved" aria-pressed="false" type="button">Approved</button>
+        <button class="filter-pill" data-filter="rejected" aria-pressed="false" type="button">Rejected</button>
+      </div>
+
+      <div id="approvalListArea"></div>
+    </section>
+  </div>
 </div>
 
 <script>
-  /* ---------- Tabs ---------- */
-  const tabAsk = document.getElementById('tabAsk');
-  const tabSpecialists = document.getElementById('tabSpecialists');
-  const panelAsk = document.getElementById('panelAsk');
-  const panelSpecialists = document.getElementById('panelSpecialists');
+  /* ==========================================================================
+     Navigation: one sidebar item = one page. Purely a display-state switch -
+     no page here has its own URL/route, matching the previous tab-based
+     dashboard's approach (this file is served as one static page by
+     server.js's express.static, so client-side page switching is the right
+     fit, not a new backend concern).
+     ========================================================================== */
+  const PAGE_MAP = {
+    overview: { nav: 'navOverview', page: 'pageOverview', title: 'Overview', subtitle: 'Everything below reflects a real run against your connected Shopify store — nothing here is sample data.' },
+    ask: { nav: 'navAsk', page: 'pageAsk', title: 'Ask', subtitle: 'A direct conversation with your assistant, grounded in your business configuration.' },
+    specialists: { nav: 'navSpecialists', page: 'pageSpecialists', title: 'Run a Specialist', subtitle: 'Run one specialist directly against a specific objective you write.' },
+    orchestrator: { nav: 'navOrchestrator', page: 'pageOrchestrator', title: 'Chief Orchestrator', subtitle: 'Give the Chief a goal — it decides which specialist(s) to use.' },
+    approvals: { nav: 'navApprovals', page: 'pageApprovals', title: 'Approval Center', subtitle: 'Every human sign-off the Chief has requested this session.' },
+  };
 
-  function selectTab(name) {
-    const askActive = name === 'ask';
-    tabAsk.setAttribute('aria-selected', String(askActive));
-    tabSpecialists.setAttribute('aria-selected', String(!askActive));
-    panelAsk.classList.toggle('active', askActive);
-    panelSpecialists.classList.toggle('active', !askActive);
+  const pageTitleEl = document.getElementById('pageTitle');
+  const pageSubtitleEl = document.getElementById('pageSubtitle');
+
+  function selectPage(name) {
+    const entry = PAGE_MAP[name];
+    if (!entry) return;
+    Object.entries(PAGE_MAP).forEach(([key, cfg]) => {
+      const active = key === name;
+      document.getElementById(cfg.nav).setAttribute('aria-current', active ? 'page' : 'false');
+      document.getElementById(cfg.page).classList.toggle('active', active);
+    });
+    pageTitleEl.textContent = entry.title;
+    pageSubtitleEl.textContent = entry.subtitle;
+    if (name === 'approvals') renderApprovalList();
   }
-  tabAsk.addEventListener('click', () => selectTab('ask'));
-  tabSpecialists.addEventListener('click', () => selectTab('specialists'));
 
-  /* ---------- Ask panel (direct AI chat) ---------- */
+  Object.keys(PAGE_MAP).forEach((key) => {
+    document.getElementById(PAGE_MAP[key].nav).addEventListener('click', () => selectPage(key));
+  });
+
+  /* ---------- Shared helpers (escaping, JSON highlighting) ---------- */
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  }
+
+  function highlightJson(obj) {
+    const json = escapeHtml(JSON.stringify(obj, null, 2));
+    return json
+      .replace(/(&quot;[^&]*?&quot;)(:)/g, '<span class="jk">$1</span><span class="jp">$2</span>')
+      .replace(/: (&quot;[^&]*?&quot;)/g, ': <span class="js">$1</span>');
+  }
+
+  /* ==========================================================================
+     Real-data chart renderer. Draws a horizontal bar chart from whatever
+     numeric array a tool actually returned - never fabricates a value, and
+     renders nothing at all when no real chartable array is found. The fields
+     it looks for (value / available / amountSpent / ordersCount) come
+     straight from tools/analyticsDataTool.js's own actual_metrics shapes
+     (orderToActualMetric, inventoryItemToActualMetric, customerToActualMetric)
+     - so a real Shopify sales/inventory/customers pull draws a real chart of
+     its own real numbers, and a specialist with no such data simply shows no
+     chart, honestly.
+     ========================================================================== */
+  const CHART_VALUE_FIELDS = ['value', 'available', 'amountSpent', 'ordersCount'];
+  const CHART_LABEL_FIELDS = ['name', 'orderId', 'sku', 'id'];
+
+  function looksChartable(item) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    return CHART_VALUE_FIELDS.some((f) => typeof item[f] === 'number' && Number.isFinite(item[f]));
+  }
+
+  // Bounded recursive search (depth <= 5, nodes <= 3000) for the first array whose
+  // items are real actual_metrics-shaped records with a numeric value. Bounded so a
+  // large or unusual real response can never make this scan expensive or infinite.
+  function findChartableArray(node, depth, budget) {
+    if (!node || typeof node !== 'object' || depth > 5 || budget.count > 3000) return null;
+    budget.count += 1;
+
+    if (Array.isArray(node)) {
+      if (node.length > 0 && node.filter(looksChartable).length >= Math.ceil(node.length * 0.6)) {
+        return node.filter(looksChartable);
+      }
+      for (const item of node) {
+        const found = findChartableArray(item, depth + 1, budget);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    for (const key of Object.keys(node)) {
+      const found = findChartableArray(node[key], depth + 1, budget);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function extractChartPoints(root) {
+    const found = findChartableArray(root, 0, { count: 0 });
+    if (!found || found.length === 0) return null;
+
+    const valueField = CHART_VALUE_FIELDS.find((f) => typeof found[0][f] === 'number');
+    if (!valueField) return null;
+
+    const total = found.length;
+    const points = found.slice(0, 12).map((item, i) => {
+      const labelField = CHART_LABEL_FIELDS.find((f) => item[f] !== undefined && item[f] !== null);
+      return {
+        label: labelField ? String(item[labelField]) : 'Item ' + (i + 1),
+        value: item[valueField],
+        unit: item.unit || '',
+      };
+    });
+    return { points, truncated: total > 12, total, field: valueField };
+  }
+
+  // Renders a minimal horizontal-bar SVG chart into `container` from real
+  // {label, value, unit} points - no charting library, so this file stays fully
+  // self-contained and dependency-free like the rest of the dashboard.
+  function renderMetricChart(container, chartData, captionPrefix) {
+    if (!chartData) return;
+    const { points, truncated, total, field } = chartData;
+    const maxValue = Math.max(...points.map((p) => Math.abs(p.value)), 1);
+    const rowHeight = 22;
+    const chartWidth = 560;
+    const labelWidth = 108;
+    const barAreaWidth = chartWidth - labelWidth - 60;
+    const height = points.length * rowHeight + 8;
+
+    const bars = points.map((p, i) => {
+      const y = i * rowHeight;
+      const barWidth = Math.max((Math.abs(p.value) / maxValue) * barAreaWidth, 2);
+      const valueLabel = (Number.isInteger(p.value) ? p.value : p.value.toFixed(2)) + (p.unit ? ' ' + p.unit : '');
+      return (
+        '<text class="metric-bar-label" x="0" y="' + (y + rowHeight / 2 + 3) + '">' +
+        escapeHtml(p.label.length > 14 ? p.label.slice(0, 13) + '…' : p.label) + '</text>' +
+        '<rect class="metric-bar-track" x="' + labelWidth + '" y="' + (y + 3) + '" width="' + barAreaWidth + '" height="' + (rowHeight - 8) + '" rx="3"></rect>' +
+        '<rect class="metric-bar" x="' + labelWidth + '" y="' + (y + 3) + '" width="' + barWidth + '" height="' + (rowHeight - 8) + '" rx="3"></rect>' +
+        '<text class="metric-bar-value" x="' + (labelWidth + barAreaWidth + 8) + '" y="' + (y + rowHeight / 2 + 3) + '">' + escapeHtml(valueLabel) + '</text>'
+      );
+    }).join('');
+
+    const caption = (captionPrefix || 'Real values from this run') + ' (field: ' + field + (truncated ? ', showing 12 of ' + total : '') + ')';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'metric-chart';
+    wrap.innerHTML =
+      '<div class="metric-chart-caption">' + escapeHtml(caption) + '</div>' +
+      '<svg viewBox="0 0 ' + chartWidth + ' ' + height + '" role="img" aria-label="Chart of real values from this run">' + bars + '</svg>';
+    container.appendChild(wrap);
+  }
+
+  /* ---------- Ask page (direct AI chat) ---------- */
   const form = document.getElementById('composer');
   const input = document.getElementById('question');
   const sendBtn = document.getElementById('sendBtn');
@@ -544,7 +980,7 @@
     input.style.height = Math.min(input.scrollHeight, 140) + 'px';
   });
 
-  document.querySelectorAll('#panelAsk .suggestion').forEach(btn => {
+  document.querySelectorAll('#pageAsk .suggestion').forEach((btn) => {
     btn.addEventListener('click', () => {
       input.value = btn.textContent;
       input.dispatchEvent(new Event('input'));
@@ -555,6 +991,11 @@
   function setStatus(state, text) {
     statusPill.dataset.state = state;
     statusText.textContent = text;
+  }
+
+  function noteActivity(text) {
+    const el = document.getElementById('statLastActivity');
+    if (el) el.textContent = text;
   }
 
   function addMessage(role, text) {
@@ -611,7 +1052,7 @@
       const res = await fetch('/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: question })
+        body: JSON.stringify({ message: question }),
       });
       const data = await res.json().catch(() => ({}));
       removeThinking();
@@ -623,6 +1064,7 @@
       }
       addMessage('assistant', data.reply || 'No reply received.');
       setStatus('idle', 'Connected · Gemini');
+      noteActivity('Asked a question just now');
     } catch (err) {
       removeThinking();
       addMessage('assistant', 'Could not reach the server. Check that it is running.').classList.add('error');
@@ -633,7 +1075,7 @@
     }
   });
 
-  /* ---------- Specialists panel (real orchestrator) ---------- */
+  /* ---------- Specialists page + Overview page (both call the real /run endpoint) ---------- */
   const SPECIALISTS = [
     { id: 'research', name: 'Research', desc: 'Market, competitor & customer research', objective: 'Summarize what real research evidence exists on file about our target customers and competitors.' },
     { id: 'product', name: 'Product', desc: 'Catalog analysis & opportunity research', objective: 'Pull our real product catalog from Shopify and flag any opportunity signals.' },
@@ -641,7 +1083,7 @@
     { id: 'listing', name: 'Listing', desc: 'Listing content & optimization', objective: 'Suggest structural improvements to our real product listings.' },
     { id: 'marketing', name: 'Marketing', desc: 'Campaign ideas, copy & strategy', objective: 'Propose a marketing angle grounded in our real business configuration.' },
     { id: 'social_advertising', name: 'Social & Advertising', desc: 'Social content & paid ads', objective: 'Suggest a social content idea grounded in our real product catalog.' },
-    { id: 'analytics', name: 'Analytics & Optimization', desc: 'Store performance & growth metrics', objective: 'Pull a real sales, product, and inventory snapshot from Shopify.' }
+    { id: 'analytics', name: 'Analytics & Optimization', desc: 'Store performance & growth metrics', objective: 'Pull a real sales, product, and inventory snapshot from Shopify.' },
   ];
 
   const grid = document.getElementById('specialistGrid');
@@ -651,14 +1093,14 @@
   const resultArea = document.getElementById('resultArea');
   let activeSpecialist = null;
 
-  SPECIALISTS.forEach(sp => {
+  SPECIALISTS.forEach((sp) => {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'specialist-card';
     card.setAttribute('aria-pressed', 'false');
     card.innerHTML = '<div class="specialist-name">' + sp.name + '</div><div class="specialist-desc">' + sp.desc + '</div>';
     card.addEventListener('click', () => {
-      document.querySelectorAll('.specialist-card').forEach(c => c.setAttribute('aria-pressed', 'false'));
+      document.querySelectorAll('.specialist-card').forEach((c) => c.setAttribute('aria-pressed', 'false'));
       card.setAttribute('aria-pressed', 'true');
       activeSpecialist = sp;
       objective.value = sp.objective;
@@ -669,35 +1111,62 @@
     grid.appendChild(card);
   });
 
-  function escapeHtml(str) {
-    return str.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-  }
-
-  function highlightJson(obj) {
-    const json = escapeHtml(JSON.stringify(obj, null, 2));
-    return json
-      .replace(/(&quot;[^&]*?&quot;)(:)/g, '<span class="jk">$1</span><span class="jp">$2</span>')
-      .replace(/: (&quot;[^&]*?&quot;)/g, ': <span class="js">$1</span>');
-  }
-
-  function renderResult(statusLabel, payload) {
+  function renderResult(statusLabel, payload, titleOverride) {
     const card = document.createElement('div');
     card.className = 'result-card';
 
     const header = document.createElement('div');
     header.className = 'result-header';
     header.innerHTML =
-      '<span class="result-title">' + (activeSpecialist ? activeSpecialist.name : 'Result') + '</span>' +
+      '<span class="result-title">' + escapeHtml(titleOverride || (activeSpecialist ? activeSpecialist.name : 'Result')) + '</span>' +
       '<span class="result-status ' + statusLabel + '">' + statusLabel + '</span>';
+    card.appendChild(header);
+
+    // The plain-language answer (server-computed, see agent/core/resultSummary.js) is
+    // the primary thing shown - the raw internal JSON is demoted to a collapsed
+    // "Technical details" block below it, never the final answer on its own.
+    const summaryLine = document.createElement('p');
+    summaryLine.className = 'result-summary';
+    summaryLine.textContent =
+      (payload && typeof payload.summary === 'string' && payload.summary) || agentSummaryLine(statusLabel, payload);
+    card.appendChild(summaryLine);
+
+    const details = document.createElement('details');
+    details.className = 'result-details';
+    const detailsLabel = document.createElement('summary');
+    detailsLabel.textContent = 'Technical details';
+    details.appendChild(detailsLabel);
 
     const body = document.createElement('pre');
     body.className = 'result-body';
     body.innerHTML = highlightJson(payload);
+    details.appendChild(body);
 
-    card.appendChild(header);
-    card.appendChild(body);
+    card.appendChild(details);
+
+    const chartData = extractChartPoints(payload && payload.outputs ? payload.outputs : payload);
+    if (chartData) {
+      const chartWrap = document.createElement('div');
+      chartWrap.className = 'result-chart-wrap';
+      renderMetricChart(chartWrap, chartData, 'Real data from this run');
+      card.appendChild(chartWrap);
+    }
+
     resultArea.innerHTML = '';
     resultArea.appendChild(card);
+  }
+
+  // Runs one specialist for real via POST /run - shared by both the Specialists
+  // page's Run button and each Overview agent card's own Run button, so there is
+  // exactly one code path that ever calls this endpoint.
+  async function runSpecialist(specialistId, objectiveText) {
+    const res = await fetch('/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ specialist: specialistId, objective: objectiveText }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, data };
   }
 
   runBtn.addEventListener('click', async () => {
@@ -708,18 +1177,14 @@
     resultArea.innerHTML = '<p class="empty-result">Running ' + activeSpecialist.name + '…</p>';
 
     try {
-      const res = await fetch('/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ specialist: activeSpecialist.id, objective: objective.value.trim() })
-      });
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
+      const { ok, data } = await runSpecialist(activeSpecialist.id, objective.value.trim());
+      if (!ok) {
         renderResult('error', data);
       } else {
-        const label = (data && data.status === 'partial') ? 'partial' : 'success';
+        const label = data && data.status === 'partial' ? 'partial' : 'success';
         renderResult(label, data);
+        noteActivity('Ran ' + activeSpecialist.name + ' just now');
+        markAgentRun(activeSpecialist.id, label, data);
       }
     } catch (err) {
       renderResult('error', { error: 'Could not reach the server. Check that it is running.' });
@@ -728,6 +1193,516 @@
       runBtn.textContent = 'Run ' + activeSpecialist.name;
     }
   });
+
+  /* ---------- Overview page: one real status card per specialist ---------- */
+  const agentGrid = document.getElementById('agentGrid');
+  const agentCardEls = {};
+  const agentRunState = {}; // specialistId -> { status, completedRuns }
+  let runsCompletedCount = 0;
+
+  function agentSummaryLine(status, data) {
+    if (data && typeof data.summary === 'string' && data.summary) return data.summary;
+    if (status === 'error') return data && data.error ? data.error : 'The run failed.';
+    const outputs = data && data.outputs;
+    if (!outputs) return 'Completed, but returned no output data.';
+    if (typeof outputs.summary === 'string' && outputs.summary) return outputs.summary;
+    if (outputs.result && typeof outputs.result === 'object') {
+      const recordCount = typeof outputs.recordCount === 'number' ? outputs.recordCount : null;
+      if (recordCount !== null) return recordCount + ' real record(s) retrieved from Shopify.';
+    }
+    return 'Completed — see full result on the Run a Specialist page.';
+  }
+
+  SPECIALISTS.forEach((sp) => {
+    const card = document.createElement('div');
+    card.className = 'agent-card';
+    card.innerHTML =
+      '<div class="agent-card-head">' +
+      '<div><div class="agent-name">' + escapeHtml(sp.name) + '</div><div class="agent-desc">' + escapeHtml(sp.desc) + '</div></div>' +
+      '<span class="agent-status idle" data-role="status">Not run yet</span>' +
+      '</div>' +
+      '<div class="agent-summary empty" data-role="summary">No result yet this session.</div>' +
+      '<div data-role="chart"></div>' +
+      '<div class="agent-card-foot">' +
+      '<button class="agent-run-btn" data-role="run" type="button">Run now</button>' +
+      '<a class="agent-open-link" data-role="open">Open in Run a Specialist →</a>' +
+      '</div>';
+
+    const runButton = card.querySelector('[data-role="run"]');
+    const statusBadge = card.querySelector('[data-role="status"]');
+    const summaryEl = card.querySelector('[data-role="summary"]');
+    const chartEl = card.querySelector('[data-role="chart"]');
+    const openLink = card.querySelector('[data-role="open"]');
+
+    openLink.addEventListener('click', () => {
+      selectPage('specialists');
+      const targetCard = Array.from(document.querySelectorAll('.specialist-card')).find(
+        (c, i) => SPECIALISTS[i].id === sp.id
+      );
+      if (targetCard) targetCard.click();
+    });
+
+    runButton.addEventListener('click', async () => {
+      runButton.disabled = true;
+      runButton.textContent = 'Running…';
+      statusBadge.className = 'agent-status running';
+      statusBadge.textContent = 'Running';
+      summaryEl.className = 'agent-summary';
+      summaryEl.textContent = 'Calling your real Shopify/Gemini connection…';
+      chartEl.innerHTML = '';
+
+      try {
+        const { ok, data } = await runSpecialist(sp.id, sp.objective);
+        const label = !ok ? 'error' : data && data.status === 'partial' ? 'partial' : 'success';
+        statusBadge.className = 'agent-status ' + label;
+        statusBadge.textContent = label;
+        summaryEl.className = 'agent-summary';
+        summaryEl.textContent = agentSummaryLine(label, data);
+
+        chartEl.innerHTML = '';
+        const chartData = extractChartPoints(data && data.outputs ? data.outputs : null);
+        if (chartData) renderMetricChart(chartEl, chartData, 'Real data from this run');
+
+        markAgentRun(sp.id, label, data);
+        noteActivity('Ran ' + sp.name + ' just now');
+      } catch (err) {
+        statusBadge.className = 'agent-status error';
+        statusBadge.textContent = 'error';
+        summaryEl.className = 'agent-summary';
+        summaryEl.textContent = 'Could not reach the server. Check that it is running.';
+      } finally {
+        runButton.disabled = false;
+        runButton.textContent = 'Run again';
+      }
+    });
+
+    agentCardEls[sp.id] = card;
+    agentGrid.appendChild(card);
+  });
+
+  function markAgentRun(specialistId, status, data) {
+    if (!agentRunState[specialistId]) runsCompletedCount += 1;
+    agentRunState[specialistId] = { status, data };
+    const runsEl = document.getElementById('statRunsCount');
+    if (runsEl) runsEl.textContent = runsCompletedCount + ' / ' + SPECIALISTS.length;
+  }
+
+  /* ---------- Chief Orchestrator page ----------
+     The human never picks a specialist here - a free-text goal goes to POST /orchestrate,
+     which hands it straight to the real orchestratorExecutionContract.runOrchestratorContract
+     (see server.js). Any step the Chief cannot run on its own (approval_required /
+     externally_executable, per CLAUDE.md rule 7) comes back with a pending approval instead of
+     a result - this page renders an inline Approve/Reject control for exactly that step, posts
+     the decision to POST /orchestrate/approve (the only path that can actually run it), and
+     also logs the approval into approvalLog below so the Approval Center page shows the same
+     real record. Nothing here executes anything itself. */
+  const chiefObjective = document.getElementById('chiefObjective');
+  const chiefRunBtn = document.getElementById('chiefRunBtn');
+  const chiefRunHint = document.getElementById('chiefRunHint');
+  const chiefResultArea = document.getElementById('chiefResultArea');
+  let currentRunId = null;
+
+  function stepStatusLabel(step) {
+    if (!step) return 'error';
+    if (step.completion_state === 'complete') return 'success';
+    if (step.completion_state === 'blocked' || step.completion_state === 'failed') return 'error';
+    return 'partial';
+  }
+
+  function pendingApprovalsForStep(step) {
+    if (!step || !Array.isArray(step.approvals)) return [];
+    return step.approvals.filter((a) => a && a.status === 'required' && a.approval_request_id);
+  }
+
+  function planStepTitle(step, index) {
+    const sel = step && step.selected_specialist;
+    if (sel && typeof sel === 'object') return sel.title || sel.id || 'Step ' + (index + 1);
+    if (typeof sel === 'string' && sel) return sel;
+    return 'Step ' + (index + 1);
+  }
+
+  /* ---------- Approval log: the single real source of truth for the Approval
+     Center page, populated only from actual /orchestrate and /orchestrate/approve
+     responses - never seeded with placeholder rows. Session-only, exactly like
+     orchestratorRuns on the server (see server.js) - a reload clears it, and the
+     UI says so (see #approvalSessionNote). ---------- */
+  const approvalLog = []; // { runId, approvalId, classification, title, reason, status, decidedBy, decidedAt, notes }
+
+  function upsertApprovalLog(entry) {
+    const existing = approvalLog.find((a) => a.approvalId === entry.approvalId);
+    if (existing) Object.assign(existing, entry);
+    else approvalLog.push(entry);
+    refreshApprovalBadges();
+  }
+
+  function refreshApprovalBadges() {
+    const pendingCount = approvalLog.filter((a) => a.status === 'pending').length;
+    const badge = document.getElementById('approvalNavBadge');
+    badge.hidden = pendingCount === 0;
+    badge.textContent = String(pendingCount);
+    const statEl = document.getElementById('statPendingApprovals');
+    if (statEl) statEl.textContent = String(pendingCount);
+    const note = document.getElementById('approvalSessionNote');
+    if (note) {
+      note.textContent = approvalLog.length === 0
+        ? 'No approvals yet this session — they will appear here the moment the Chief asks for one.'
+        : approvalLog.length + ' approval(s) recorded this session (' + pendingCount + ' still pending).';
+    }
+  }
+
+  function attachApprovalPanel(card, header, body, approval, runId, stepTitle) {
+    const panel = document.createElement('div');
+    panel.className = 'approval-panel';
+    panel.dataset.approvalId = approval.approval_request_id;
+    panel.innerHTML =
+      '<span class="approval-label">Waiting for your approval</span>' +
+      '<p class="approval-reason">This step is classified <strong>' +
+      escapeHtml(String(approval.classification || 'approval_required')) +
+      '</strong> and will not run until you approve it here.</p>' +
+      '<textarea class="approval-notes" placeholder="Optional note (why you approved or rejected this)"></textarea>' +
+      '<div class="approval-actions">' +
+      '<button class="approve-btn" type="button">Approve</button>' +
+      '<button class="reject-btn" type="button">Reject</button>' +
+      '</div>';
+
+    upsertApprovalLog({
+      runId,
+      approvalId: approval.approval_request_id,
+      classification: approval.classification || 'approval_required',
+      title: stepTitle,
+      reason: 'This step is classified ' + (approval.classification || 'approval_required') + ' and needs your sign-off before it runs.',
+      status: 'pending',
+      decidedBy: null,
+      decidedAt: null,
+      notes: null,
+    });
+
+    const approveBtn = panel.querySelector('.approve-btn');
+    const rejectBtn = panel.querySelector('.reject-btn');
+    const notesField = panel.querySelector('.approval-notes');
+
+    async function decide(decision) {
+      approveBtn.disabled = true;
+      rejectBtn.disabled = true;
+      try {
+        const res = await fetch('/orchestrate/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            runId,
+            approvalId: approval.approval_request_id,
+            decision,
+            decidedBy: 'naeema',
+            notes: notesField.value.trim() || undefined,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          panel.innerHTML = '<p class="approval-decided rejected">' + escapeHtml(data.error || 'Could not record that decision.') + '</p>';
+          return;
+        }
+
+        panel.classList.add(decision === 'approved' ? 'decided-approved' : 'decided-rejected');
+        panel.innerHTML =
+          '<p class="approval-decided ' + (decision === 'approved' ? 'approved' : 'rejected') + '">' +
+          (decision === 'approved' ? 'Approved' : 'Rejected') +
+          (data.task_status ? ' — plan status: ' + escapeHtml(String(data.task_status)) : '') +
+          '</p>';
+
+        upsertApprovalLog({
+          runId,
+          approvalId: approval.approval_request_id,
+          classification: approval.classification || 'approval_required',
+          title: stepTitle,
+          reason: 'Decided from the Chief Orchestrator page.',
+          status: decision,
+          decidedBy: 'naeema',
+          decidedAt: new Date().toISOString(),
+          notes: notesField.value.trim() || null,
+        });
+
+        if (data.step) {
+          const newBody = document.createElement('pre');
+          newBody.className = 'result-body';
+          newBody.innerHTML = highlightJson(data.step);
+          body.replaceWith(newBody);
+          const newLabel = stepStatusLabel(data.step);
+          const statusEl = header.querySelector('.result-status');
+          statusEl.className = 'result-status ' + newLabel;
+          statusEl.textContent = newLabel;
+        }
+
+        noteActivity('Decided an approval (' + decision + ') just now');
+      } catch (err) {
+        panel.innerHTML = '<p class="approval-decided rejected">Could not reach the server. Check that it is running.</p>';
+      }
+    }
+
+    approveBtn.addEventListener('click', () => decide('approved'));
+    rejectBtn.addEventListener('click', () => decide('rejected'));
+    card.appendChild(panel);
+  }
+
+  function renderPlanStep(step, index, runId) {
+    const card = document.createElement('div');
+    card.className = 'result-card plan-step-card';
+
+    const title = planStepTitle(step, index);
+    const label = stepStatusLabel(step);
+
+    const header = document.createElement('div');
+    header.className = 'result-header';
+    header.innerHTML =
+      '<span class="result-title">' + escapeHtml(title) + '</span>' +
+      '<span class="result-status ' + label + '">' + label + '</span>';
+    card.appendChild(header);
+
+    const summaryLine = document.createElement('p');
+    summaryLine.className = 'result-summary';
+    summaryLine.textContent = (step && typeof step.summary === 'string' && step.summary) || agentSummaryLine(label, step);
+    card.appendChild(summaryLine);
+
+    const details = document.createElement('details');
+    details.className = 'result-details';
+    const detailsLabel = document.createElement('summary');
+    detailsLabel.textContent = 'Technical details';
+    details.appendChild(detailsLabel);
+
+    const body = document.createElement('pre');
+    body.className = 'result-body';
+    body.innerHTML = highlightJson(step);
+    details.appendChild(body);
+    card.appendChild(details);
+
+    const chartData = extractChartPoints(step && step.outputs ? step.outputs : null);
+    if (chartData) {
+      const chartWrap = document.createElement('div');
+      chartWrap.className = 'result-chart-wrap';
+      renderMetricChart(chartWrap, chartData, 'Real data from this step');
+      card.appendChild(chartWrap);
+    }
+
+    pendingApprovalsForStep(step).forEach((approval) => attachApprovalPanel(card, header, body, approval, runId, title));
+
+    return card;
+  }
+
+  function renderClarification(routing) {
+    const card = document.createElement('div');
+    card.className = 'result-card';
+
+    let bodyHtml = '<p class="approval-reason" style="padding:16px 16px 0;margin:0;">' +
+      escapeHtml(routing.reason || 'The Chief needs more detail before it can route this goal.') + '</p>';
+
+    if (routing.unmatched_segment) {
+      bodyHtml += '<p class="approval-reason" style="padding:8px 16px 0;margin:0;color:var(--ink-soft);">' +
+        'The part it could not place: “' + escapeHtml(String(routing.unmatched_segment)) + '”</p>';
+    }
+
+    if (Array.isArray(routing.candidates) && routing.candidates.length) {
+      bodyHtml += '<pre class="result-body">' + highlightJson(routing.candidates) + '</pre>';
+    } else {
+      bodyHtml += '<div style="height:16px;"></div>';
+    }
+
+    card.innerHTML =
+      '<div class="result-header"><span class="result-title">Needs clarification</span>' +
+      '<span class="result-status partial">' + escapeHtml(String(routing.clarification_type || 'clarification_required')) + '</span></div>' +
+      bodyHtml;
+    chiefResultArea.appendChild(card);
+
+    const tip = document.createElement('p');
+    tip.className = 'empty-result';
+    tip.textContent = 'Tip: give the Chief one clear task per sentence, aimed at what to do (e.g. "Suggest one SEO fix" or "Draft a marketing angle for our bestseller") — instructions about not taking actions without approval aren’t needed, the Chief already asks before anything consequential.';
+    chiefResultArea.appendChild(tip);
+  }
+
+  function renderChiefPlan(result, runId) {
+    chiefResultArea.innerHTML = '';
+    const routing = result.routing || {};
+    const plan = Array.isArray(routing.plan) ? routing.plan : [];
+
+    if (routing.status) {
+      const statusNote = document.createElement('p');
+      statusNote.className = 'run-hint';
+      statusNote.style.margin = '0 0 14px';
+      statusNote.textContent = 'Routing status: ' + routing.status;
+      chiefResultArea.appendChild(statusNote);
+    }
+
+    if (routing.status === 'clarification_required') {
+      renderClarification(routing);
+      return;
+    }
+
+    if (!plan.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty-result';
+      empty.textContent = 'The Chief did not produce a plan for this goal — try rephrasing it more specifically.';
+      chiefResultArea.appendChild(empty);
+      return;
+    }
+
+    plan.forEach((step, index) => chiefResultArea.appendChild(renderPlanStep(step, index, runId)));
+  }
+
+  chiefRunBtn.addEventListener('click', async () => {
+    const goal = chiefObjective.value.trim();
+    if (!goal) {
+      chiefRunHint.textContent = 'Type a goal first.';
+      return;
+    }
+
+    chiefRunBtn.disabled = true;
+    chiefRunBtn.textContent = 'Thinking…';
+    chiefRunHint.textContent = '';
+    chiefResultArea.innerHTML = '<p class="empty-result">The Chief is deciding how to route this…</p>';
+
+    try {
+      const res = await fetch('/orchestrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ objective: goal }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        chiefResultArea.innerHTML =
+          '<div class="result-card"><div class="result-header"><span class="result-title">Chief Orchestrator</span>' +
+          '<span class="result-status error">error</span></div><pre class="result-body">' +
+          escapeHtml(data.error || 'Something went wrong.') + '</pre></div>';
+        return;
+      }
+
+      currentRunId = data.run_id || null;
+      renderChiefPlan(data, currentRunId);
+      noteActivity('Asked the Chief just now');
+    } catch (err) {
+      chiefResultArea.innerHTML = '<p class="empty-result">Could not reach the server. Check that it is running.</p>';
+    } finally {
+      chiefRunBtn.disabled = false;
+      chiefRunBtn.textContent = 'Ask the Chief';
+    }
+  });
+
+  /* ---------- Approval Center page ---------- */
+  let approvalFilter = 'all';
+
+  document.querySelectorAll('#approvalFilterRow .filter-pill').forEach((pill) => {
+    pill.addEventListener('click', () => {
+      document.querySelectorAll('#approvalFilterRow .filter-pill').forEach((p) => p.setAttribute('aria-pressed', 'false'));
+      pill.setAttribute('aria-pressed', 'true');
+      approvalFilter = pill.dataset.filter;
+      renderApprovalList();
+    });
+  });
+
+  async function decideFromApprovalCenter(entry, decision, row) {
+    const notesField = row.querySelector('.approval-notes');
+    const approveBtn = row.querySelector('.approve-btn');
+    const rejectBtn = row.querySelector('.reject-btn');
+    approveBtn.disabled = true;
+    rejectBtn.disabled = true;
+
+    try {
+      const res = await fetch('/orchestrate/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: entry.runId,
+          approvalId: entry.approvalId,
+          decision,
+          decidedBy: 'naeema',
+          notes: (notesField && notesField.value.trim()) || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        row.querySelector('[data-role="row-error"]').textContent = data.error || 'Could not record that decision.';
+        approveBtn.disabled = false;
+        rejectBtn.disabled = false;
+        return;
+      }
+
+      upsertApprovalLog({
+        runId: entry.runId,
+        approvalId: entry.approvalId,
+        classification: entry.classification,
+        title: entry.title,
+        reason: 'Decided from the Approval Center.',
+        status: decision,
+        decidedBy: 'naeema',
+        decidedAt: new Date().toISOString(),
+        notes: (notesField && notesField.value.trim()) || null,
+      });
+      noteActivity('Decided an approval (' + decision + ') just now');
+      renderApprovalList();
+
+      // Keep the Chief Orchestrator page's own panel for this same approval in sync,
+      // in case it is still open there too - same approval_request_id, one real record.
+      const livePanel = document.querySelector('.approval-panel[data-approval-id="' + entry.approvalId + '"]');
+      if (livePanel && !livePanel.classList.contains('decided-approved') && !livePanel.classList.contains('decided-rejected')) {
+        livePanel.classList.add(decision === 'approved' ? 'decided-approved' : 'decided-rejected');
+        livePanel.innerHTML = '<p class="approval-decided ' + (decision === 'approved' ? 'approved' : 'rejected') + '">' +
+          (decision === 'approved' ? 'Approved' : 'Rejected') + ' (from Approval Center)</p>';
+      }
+    } catch (err) {
+      row.querySelector('[data-role="row-error"]').textContent = 'Could not reach the server. Check that it is running.';
+      approveBtn.disabled = false;
+      rejectBtn.disabled = false;
+    }
+  }
+
+  function renderApprovalList() {
+    const area = document.getElementById('approvalListArea');
+    area.innerHTML = '';
+    refreshApprovalBadges();
+
+    const visible = approvalLog.filter((a) => approvalFilter === 'all' || a.status === approvalFilter);
+    if (visible.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'empty-result';
+      empty.textContent = approvalLog.length === 0
+        ? 'Nothing to show yet — ask the Chief something on the Chief Orchestrator page that needs your sign-off.'
+        : 'No approvals match this filter.';
+      area.appendChild(empty);
+      return;
+    }
+
+    visible.slice().reverse().forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = 'approval-row';
+      row.dataset.approvalId = entry.approvalId;
+
+      row.innerHTML =
+        '<div class="approval-row-head">' +
+        '<div><div class="approval-row-title">' + escapeHtml(entry.title || 'Approval') + '</div>' +
+        '<div class="approval-row-meta">' + escapeHtml(entry.classification) + ' · run ' + escapeHtml(entry.runId || '') + '</div></div>' +
+        '<span class="approval-row-status ' + entry.status + '">' + entry.status + '</span>' +
+        '</div>' +
+        '<p class="approval-row-reason">' + escapeHtml(entry.reason || '') + '</p>' +
+        (entry.status === 'pending'
+          ? '<textarea class="approval-notes" placeholder="Optional note (why you approved or rejected this)"></textarea>' +
+            '<div class="approval-actions">' +
+            '<button class="approve-btn" type="button">Approve</button>' +
+            '<button class="reject-btn" type="button">Reject</button>' +
+            '</div>' +
+            '<p class="approval-row-meta" data-role="row-error" style="color:var(--danger);margin-top:8px;"></p>'
+          : '<div class="approval-row-meta">Decided by ' + escapeHtml(entry.decidedBy || '—') +
+            (entry.notes ? ' — “' + escapeHtml(entry.notes) + '”' : '') + '</div>');
+
+      if (entry.status === 'pending') {
+        row.querySelector('.approve-btn').addEventListener('click', () => decideFromApprovalCenter(entry, 'approved', row));
+        row.querySelector('.reject-btn').addEventListener('click', () => decideFromApprovalCenter(entry, 'rejected', row));
+      }
+
+      area.appendChild(row);
+    });
+  }
+
+  refreshApprovalBadges();
 </script>
 
 </body>
