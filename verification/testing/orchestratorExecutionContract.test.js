@@ -295,6 +295,31 @@ test('planRouting plans "analyze my business and identify the biggest sales oppo
   assert.ok(!result.targets.some((target) => target.type === 'shared_infrastructure'));
 });
 
+// PHASE 1 REGRESSION (real-world testing): plural phrasing a business owner naturally
+// types used to score 0 everywhere (no stemming in tokenize()) and fell through to
+// "unmatched" instead of routing at all. See ROUTING_SYNONYMS's own comment above for
+// the full investigation.
+test('routeClause routes "what keywords should we target" (plural) to SEO', () => {
+  const result = routeClause('What keywords should we target for our SVG bundle?');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.type, 'specialist');
+  assert.strictEqual(result.target.id, 'seo');
+});
+
+test('routeClause routes "improve our bundle listings" (plural) to Listing', () => {
+  const result = routeClause('Improve our bundle listings.');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.type, 'specialist');
+  assert.strictEqual(result.target.id, 'listing');
+});
+
+test('routeClause routes "how many orders have we had recently" to Analytics & Optimization', () => {
+  const result = routeClause('How many orders have we had recently?');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.type, 'specialist');
+  assert.strictEqual(result.target.id, 'analytics_optimization');
+});
+
 // --- Structured routing: planRouting -----------------------------------------------
 
 test('planRouting produces a single-target plan for a single-capability task', () => {

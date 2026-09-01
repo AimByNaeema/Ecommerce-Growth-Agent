@@ -735,9 +735,25 @@ function validateResult(outcome) {
 // ambiguous, not unmatched, just wrong (see
 // verification/testing/orchestratorExecutionContract.test.js's regression cases added
 // alongside this change).
+// PHASE 1 REGRESSION (real-world testing): tokenize() has no stemming, so a plural a
+// business owner naturally types never matched these specialists' singular
+// title/description vocabulary, silently producing "unmatched" for an ordinary
+// request instead of routing it - "What keywords should we target for our SVG bundle
+// listings?" scored 0 everywhere (seo's own text only has "keyword" singular, from
+// "Search visibility analysis and keyword research"; listing's only has "listing"
+// singular, from "Product listing content and optimization"), and "How many orders
+// have we had recently?" scored 0 everywhere too (analytics_optimization's text never
+// mentioned orders at all, despite analyticsDataTool.js/orderModel.js existing
+// specifically for order data). Same bug class, same fix, as the "shopify"/"products"
+// and "business" entries above - additive vocabulary only, never touching
+// agent/core/specialistRegistry.js's real title/description (see
+// verification/testing/orchestratorExecutionContract.test.js's regression cases added
+// alongside this change).
 const ROUTING_SYNONYMS = {
-  analytics_optimization: ['analyze', 'analysis', 'business', 'ecommerce', 'commerce'],
+  analytics_optimization: ['analyze', 'analysis', 'business', 'ecommerce', 'commerce', 'orders'],
   product: ['shopify', 'products'],
+  seo: ['keywords'],
+  listing: ['listings'],
 };
 
 // Generic words a user naturally types that, on their own, do not indicate which
