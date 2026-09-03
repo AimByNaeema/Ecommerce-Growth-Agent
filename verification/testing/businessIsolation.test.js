@@ -16,6 +16,7 @@
 
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { getShopInfo, getProducts, getCustomers, loadEnvOnce } = require('../../integrations/adapters/shopifyClient');
 const { runOrchestratorContract } = require('../../agent/core/orchestratorExecutionContract');
@@ -23,6 +24,18 @@ const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
 const { runMarketResearchTool } = require('../../tools/marketResearchTool');
 const { getMemoryRules } = require('../../agent/core/memoryRules');
+const { listMemoryRecords } = require('../../agent/core/memoryStore');
+
+// This suite now runs real orchestrator runs with real businessIds (BUSINESS_A/
+// BUSINESS_B below) through agent/core/orchestratorExecutionContract.js's own Memory
+// layer wiring (agent/core/memoryContextRetrieval.js) - see this file's own MEMORY
+// section. Every function that layer touches reads MEMORY_STORE_DIR at call time
+// (never at require time - see agent/core/memoryStore.js's getDefaultMemoryRootDir),
+// so setting it once here, before any test runs, keeps every real memory read/write
+// this whole file produces inside a throwaway temp directory - never this project's
+// own real memory/state/business/ (the same discipline verification/testing/server.test.js
+// already applies to RUN_HISTORY_STORE_DIR).
+process.env.MEMORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'business-isolation-test-memory-'));
 
 const BUSINESSES_ROOT = path.join(__dirname, '..', '..', 'configuration', 'businesses');
 
@@ -347,10 +360,12 @@ const ANALYTICS_OBJECTIVE = 'analyze store performance growth metrics and sales 
   });
 
   // --- 6. MEMORY ----------------------------------------------------------------------
-  // No memory persistence exists yet (see agent/core/memoryRules.js's own header) - the
-  // regression guard here is that the rule declaring "never leaks across businesses"
-  // still exists, so a future persistence implementation inherits this requirement
-  // rather than silently losing it.
+  // Same proof through the real Chief -> specialist -> Memory layer pipeline
+  // (agent/core/orchestratorExecutionContract.js's wiring to
+  // agent/core/memoryContextRetrieval.js/agent/core/memoryStore.js), not just the
+  // declared rule directly - confirms business_id survives all the way into what gets
+  // saved/retrieved as memory, the same way the ANALYTICS section above confirms it
+  // for live order data.
 
   test('MEMORY: memoryRules.js\'s "safe" quality still declares memory must stay scoped to its business and never leak across businesses', () => {
     const { qualities } = getMemoryRules();
@@ -361,6 +376,63 @@ const ANALYTICS_OBJECTIVE = 'analyze store performance growth metrics and sales 
       `expected the 'safe' quality to state the cross-business leak rule, got: ${safeQuality.description}`
     );
   });
+
+  await testAsync(
+    'MEMORY: two full orchestrator runs (different businessId) each persist and retrieve memory scoped only to their own business',
+    async () => {
+      await withTwoTempBusinesses(BUSINESS_A, BUSINESS_B, async () => {
+        await withMockedFetch(
+          async (url) => {
+            if (url.includes(BUSINESS_A.domain)) return ordersResponse([sampleOrderNode(3, '42.00')]);
+            if (url.includes(BUSINESS_B.domain)) return ordersResponse([sampleOrderNode(4, '77.00')]);
+            throw new Error(`unexpected domain in url: ${url}`);
+          },
+          async () => {
+            // Run 1 for each business: a real, verified analytics finding should be
+            // persisted to that business's own memory only (never the other's).
+            await runOrchestratorContract(ANALYTICS_OBJECTIVE, { businessId: BUSINESS_A.id });
+            await runOrchestratorContract(ANALYTICS_OBJECTIVE, { businessId: BUSINESS_B.id });
+
+            const recordsA = listMemoryRecords(BUSINESS_A.id);
+            const recordsB = listMemoryRecords(BUSINESS_B.id);
+            assert.ok(recordsA.length > 0, "expected business A's verified analytics finding to be saved to its own memory");
+            assert.ok(recordsB.length > 0, "expected business B's verified analytics finding to be saved to its own memory");
+            assert.ok(recordsA.every((record) => record.business_id === BUSINESS_A.id));
+            assert.ok(recordsB.every((record) => record.business_id === BUSINESS_B.id));
+            const idsA = new Set(recordsA.map((record) => record.id));
+            const idsB = new Set(recordsB.map((record) => record.id));
+            assert.ok([...idsA].every((id) => !idsB.has(id)), 'business A and B memory records must never share an id');
+
+            // Run 2 for each business: retrieval (agent/core/memoryContextRetrieval.js's
+            // getRelevantMemoryContext) must see only what that same business saved in
+            // run 1 - proven via the audit trail's own 'data_access' retrieval event,
+            // never the other business's count.
+            const responseA2 = await runOrchestratorContract(ANALYTICS_OBJECTIVE, { businessId: BUSINESS_A.id });
+            const responseB2 = await runOrchestratorContract(ANALYTICS_OBJECTIVE, { businessId: BUSINESS_B.id });
+            const retrievalEventA = responseA2.audit_trail.find(
+              (event) => event.type === 'data_access' && /Retrieved \d+ relevant memory record/.test(event.summary)
+            );
+            const retrievalEventB = responseB2.audit_trail.find(
+              (event) => event.type === 'data_access' && /Retrieved \d+ relevant memory record/.test(event.summary)
+            );
+            assert.ok(retrievalEventA, "expected business A's run 2 to retrieve its own already-saved memory");
+            assert.ok(retrievalEventB, "expected business B's run 2 to retrieve its own already-saved memory");
+            assert.strictEqual(retrievalEventA.summary.includes(BUSINESS_A.id), true);
+            assert.strictEqual(retrievalEventB.summary.includes(BUSINESS_B.id), true);
+          }
+        );
+      });
+    }
+  );
+
+  await testAsync(
+    'MEMORY: runOrchestratorContract without a businessId never touches the Memory layer at all (today\'s default single-business behavior)',
+    async () => {
+      const response = await runOrchestratorContract(ANALYTICS_OBJECTIVE);
+      const memoryEvent = (response.audit_trail || []).find((event) => /memory/i.test(event.summary));
+      assert.strictEqual(memoryEvent, undefined, 'expected zero memory-related audit events when no businessId is supplied');
+    }
+  );
 
   // --- 7. APPROVALS -------------------------------------------------------------------
   // Business identity rides inside execution_request.business_id (set by

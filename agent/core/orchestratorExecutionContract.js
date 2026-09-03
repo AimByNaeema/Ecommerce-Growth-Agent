@@ -81,6 +81,16 @@ const { createToolResultCache, getCachedResult, setCachedResult } = require('./t
 const { checkArrayFieldBounds, checkPlanStepBounds } = require('./executionBounds');
 const { createUsageTracker, checkUsageLimits, recordUsage, MODEL_CALL_TOOL_IDS, EXTERNAL_API_TOOL_IDS, RESEARCH_TOOL_IDS } = require('./usageLimits');
 const { createUsageLedger, appendUsageEvent, summarizeUsage } = require('../../usage/usageTracker');
+const { isValidBusinessId } = require('../../configuration/businessRegistry');
+// The Memory layer's own connection into this run flow (agent/core/memoryStore.js's
+// business-isolated storage + agent/core/memoryRecordModel.js's verified/approved
+// gate) - see agent/core/memoryContextRetrieval.js's own header for the full scope
+// this wiring is (and is deliberately not) responsible for.
+const { getRelevantMemoryContext, persistVerifiedFinding } = require('./memoryContextRetrieval');
+// One honest, compact sentence per finished execution state (agent/core/resultSummary.js) -
+// reused unchanged as the memory record's own `summary` (memoryRules.js's "compact"
+// quality) rather than inventing a second summarization path.
+const { summarizeExecutionState } = require('./resultSummary');
 const businessConfigurationRetrieval = require('../../tools/businessConfigurationRetrieval');
 const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
@@ -863,8 +873,67 @@ function scoreRoutingTargets(text) {
 // more than one target instead of forcing a single pick.
 const CLAUSE_SPLIT_REGEX = /\s*(?:,|;|\band\b|\balso\b|\bas well as\b|\bthen\b|\bplus\b)\s*/i;
 
+// PHASE 2 REGRESSION (real-world testing): CLAUSE_SPLIT_REGEX has no grammar
+// awareness, so it splits "research my top competitors for my digital PNG and SVG
+// bundle products" (ONE topic that happens to list two file-format item types) exactly
+// the same way it splits "market competitor research and social media advertising"
+// (genuinely TWO separate tasks) - the comma variant ("...digital PNG ,SVG bundle
+// products") has the identical problem via the `,` branch of the same regex. A real
+// client describing their own digital-product catalog has no way to know which
+// punctuation is "safe" - and per this project's own standard, they should never have
+// to. A pure confidence-score threshold on the split-off fragment was tried and
+// rejected: it was verified empirically (see this file's own test suite run history)
+// to also fold back genuinely-intentional second clauses that happen to score just as
+// low on generic wording alone (e.g. "identify the biggest sales opportunity" scores 1,
+// indistinguishable by magnitude from a spurious "SVG bundle products" fragment, which
+// also scores 1). Fixed instead at the tokenization boundary, before CLAUSE_SPLIT_REGEX
+// ever runs: protectFileFormatLists() (below) recognizes a run of two or more known
+// file-format tokens (the exact kind of list a digital-product seller's objective
+// naturally contains - png, svg, jpg, pdf, etc.) joined only by "and"/comma, and fuses
+// the run into a single non-splitting token (join words with "-" and swap the
+// conjunction for "&") before splitting happens. This is deliberately narrow - it only
+// ever changes text that is ENTIRELY recognized file-format tokens end-to-end
+// (see FILE_FORMAT_TOKENS/protectFileFormatLists below), so it cannot touch a
+// legitimate two-task objective ("business" and "identify" are not file-format tokens,
+// so "analyze my business and identify the biggest sales opportunity" is left
+// completely unmodified and still splits into two clauses exactly as before).
+const FILE_FORMAT_TOKENS = new Set([
+  'png', 'svg', 'jpg', 'jpeg', 'pdf', 'psd', 'ai', 'eps', 'gif', 'webp',
+  'mp3', 'mp4', 'mov', 'docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'csv',
+  'zip', 'tiff', 'tif', 'bmp', 'ico', 'ttf', 'otf', 'woff', 'html', 'css',
+  'json', 'txt', 'stl', 'dxf', 'procreate', 'canva',
+]);
+
+// Matches one contiguous run of 2+ words joined only by "and"/comma, including an
+// Oxford-comma tail (e.g. "PNG and SVG", "PNG, SVG, JPG", "PNG, SVG, and JPG") -
+// deliberately loose (word-level, not format-aware) at the regex stage; every word in
+// the matched run is then checked against FILE_FORMAT_TOKENS below, so a run
+// containing any non-format word is left untouched. The three alternatives inside the
+// repeated group are ordered and mutually exclusive on purpose: ", and word" (Oxford
+// comma) is tried before plain ", word" so a trailing "and" is consumed as part of the
+// delimiter, never as a list item itself; the negative lookahead on the plain-comma
+// branch (?!and\b) exists for the same reason - without it ", and" would match the
+// plain-comma branch first with "and" mistaken for the next item's word.
+const AND_COMMA_LIST_REGEX = /\b[A-Za-z]+(?:\s*,\s*and\s+[A-Za-z]+|\s*,\s*(?!and\b)[A-Za-z]+|\s+and\s+[A-Za-z]+)+\b/gi;
+
+// Rewrites the objective text (never the underlying data/business meaning) so that a
+// pure list of file-format names joined by "and"/comma survives CLAUSE_SPLIT_REGEX as
+// one clause instead of being torn into separate fragments. Returns the original
+// string unchanged whenever no run is found, or whenever a found run contains even one
+// word that isn't a recognized file-format token - so this can only ever make routing
+// MORE permissive for genuine format lists, never change behavior for anything else.
+function protectFileFormatLists(objective) {
+  return objective.replace(AND_COMMA_LIST_REGEX, (run) => {
+    const words = run.split(/\s*(?:,|\band\b)\s*/i).filter((word) => word.length > 0);
+    if (words.length < 2) return run;
+    const allRecognized = words.every((word) => FILE_FORMAT_TOKENS.has(word.toLowerCase()));
+    if (!allRecognized) return run;
+    return words.join('-');
+  });
+}
+
 function splitIntoClauses(objective) {
-  return objective
+  return protectFileFormatLists(objective)
     .split(CLAUSE_SPLIT_REGEX)
     .map((clause) => clause.trim())
     .filter((clause) => clause.length > 0);
@@ -1169,7 +1238,15 @@ async function buildPlanStep(
   // unchanged. The forced tool must still be a real candidate for this target
   // (checked below) - forcing never lets a step execute a tool outside the target's
   // own real ownership.
-  forcedSelection = null
+  forcedSelection = null,
+  // Optional {relevant_memory: [...]} - this business's own already-verified/approved
+  // memory records (see agent/core/memoryContextRetrieval.js's getRelevantMemoryContext),
+  // computed ONCE per run by runOrchestratorContract and threaded into every step the
+  // same way (never re-fetched per step). null for every caller that doesn't compute
+  // it (growthWorkflowOrchestrator.js, optimizationCycleOrchestrator.js, server.js's
+  // /run) - merged in below exactly like every other derived context source, so
+  // omitting it reproduces today's exact behavior unchanged.
+  relevantMemoryContext = null
 ) {
   const capabilityEntry = target.type === 'specialist' ? getSpecialistCapabilityById(target.id) : null;
   appendAuditEvent(runAuditTracker, {
@@ -1412,6 +1489,13 @@ async function buildPlanStep(
     derivedContext = mergeContext(derivedContext, analyticsContext);
     derivedContext = mergeContext(derivedContext, liveEvidenceContext);
     derivedContext = mergeContext(derivedContext, businessConfigContext);
+    // MEMORY LAYER CONTEXT (agent/core/memoryContextRetrieval.js): additive only,
+    // merged in last, same as every other derive*Context source above - never
+    // overrides a real field a tool actually requires, and hasCallerResearchParams
+    // (computed above, from the caller's own untouched researchParams) is already
+    // decided before this merge happens, so this can never itself trigger the
+    // "PREFER REAL DATA OVER NO DATA" live-dispatch swap.
+    derivedContext = mergeContext(derivedContext, relevantMemoryContext || {});
 
     if (Object.keys(derivedContext).length > 0) {
       effectiveResearchParams = { ...derivedContext, ...(researchParams || {}) };
@@ -1807,27 +1891,77 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   // external-API dispatches so this run's configurable ceilings can be enforced.
   const runUsageTracker = createUsageTracker();
 
+  // MEMORY LAYER - RETRIEVAL (agent/core/memoryContextRetrieval.js): fetched ONCE,
+  // before any step executes ("before a run" - never re-fetched per step), and
+  // threaded into every buildPlanStep call below via the same additive-context
+  // mechanism deriveBusinessConfigContext/deriveCrossAgentContext already use. A
+  // null/invalid businessId (today's default single-business server.js behavior) is a
+  // documented no-op - see getRelevantMemoryContext's own header - so this line has no
+  // effect at all for any existing caller that doesn't pass a real businessId.
+  const relevantMemoryContext = getRelevantMemoryContext(businessId);
+  if (isValidBusinessId(businessId)) {
+    const memoryCount = relevantMemoryContext.relevant_memory ? relevantMemoryContext.relevant_memory.length : 0;
+    appendAuditEvent(runAuditTracker, {
+      type: 'data_access',
+      summary:
+        memoryCount > 0
+          ? `Retrieved ${memoryCount} relevant memory record(s) for business '${businessId}'.`
+          : `No saved memory records found yet for business '${businessId}'.`,
+    });
+  }
+
   const plan = [];
   for (let i = 0; i < routingResult.targets.length; i += 1) {
     // plan already holds every step completed so far (0..i-1) at this point - passed
     // as priorSteps so buildPlanStep can derive structured cross-agent context for
     // this step from them (see agent/core/crossAgentContext.js).
-    plan.push(
-      await buildPlanStep(
-        routingResult.targets[i],
-        objective,
-        routingResult.segments[i],
-        runTokenTracker,
-        researchParams,
-        plan,
-        runApprovalTracker,
-        runAuditTracker,
-        runToolResultCache,
-        runUsageTracker,
-        businessId,
-        runUsageLedger
-      )
+    const step = await buildPlanStep(
+      routingResult.targets[i],
+      objective,
+      routingResult.segments[i],
+      runTokenTracker,
+      researchParams,
+      plan,
+      runApprovalTracker,
+      runAuditTracker,
+      runToolResultCache,
+      runUsageTracker,
+      businessId,
+      runUsageLedger,
+      null,
+      relevantMemoryContext
     );
+    plan.push(step);
+
+    // MEMORY LAYER - PERSISTENCE (agent/core/memoryContextRetrieval.js): after a
+    // specialist (never shared-infrastructure) step completes with
+    // verification_status 'passed' (step.completion_state === 'complete' - see
+    // deriveExecutionState), save a compact record of it as a reusable finding.
+    // Reuses summarizeExecutionState's own already-established, compact, honest
+    // sentence unchanged as the record's summary - never a second summarization path.
+    // A null/invalid businessId is a documented no-op (see persistVerifiedFinding's
+    // own header), so this has no effect for any existing caller.
+    if (isValidBusinessId(businessId) && step.selected_specialist && step.selected_specialist.type === 'specialist' && step.completion_state === 'complete') {
+      const toolId = step.inputs ? step.inputs.tool_id : null;
+      const capabilityId = step.inputs ? step.inputs.capability_id : null;
+      const savedRecord = persistVerifiedFinding({
+        businessId,
+        id: `mem-${runId}-${i}`,
+        priorityId: 'reusable_findings',
+        summary: summarizeExecutionState(step),
+        source: { run_id: runId, tool_id: toolId, capability_id: capabilityId },
+        verificationStatus: 'passed',
+      });
+      appendAuditEvent(runAuditTracker, {
+        type: 'result',
+        specialistId: step.selected_specialist.id,
+        toolId,
+        status: savedRecord ? 'saved' : 'not_saved',
+        summary: savedRecord
+          ? `Saved a reusable finding to memory for business '${businessId}'.`
+          : `Could not save this finding to memory for business '${businessId}'.`,
+      });
+    }
   }
 
   // "Analytics -> Optimization": every growth-opportunity-shaped record produced

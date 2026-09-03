@@ -42,7 +42,8 @@
 // composeResult() re-checks and would downgrade to 'unverified' if no evidence/source
 // actually ended up on the record, exactly like any other caller of that function.
 //
-// Returns { status, result, error, model, tokensUsed, inputTokens, outputTokens } -
+// Returns { status, result, error, model, stopReason, tokensUsed, inputTokens,
+// outputTokens } -
 // never throws. The usage fields are absent only when the Claude API was never
 // actually reached (missing/empty objective, ANTHROPIC_API_KEY not configured, this
 // run's token budget already exhausted, or the sendMessage call itself failed) -
@@ -67,9 +68,23 @@ const { checkTokenBudget, totalTokensFromUsage } = require('../agent/core/tokenC
 // versions are not adopted (CLAUDE.md rule 15: no premature technical decisions).
 const WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search', max_uses: 5 };
 const MAX_COMPETITORS = 5;
-const MAX_TOKENS = 4096;
+// Raised from an earlier 4096: agent/core/tokenControls.js's checkTokenBudget() below
+// does Math.min(requestedMaxTokens, the shared MAX_TOKENS_PER_CALL ceiling, remaining
+// run budget) - so THIS constant, not just the .env ceiling, was quietly the binding
+// limit on a real live run (requesting only 4096 here meant raising MAX_TOKENS_PER_CALL
+// past 4096 in .env had no effect at all). 8192 lets a real MAX_TOKENS_PER_CALL=8192
+// .env setting actually be used, while the SYSTEM_PROMPT's new brevity rules below
+// (added at the same time, for the same real truncation this project hit) keep actual
+// usage well under this ceiling in the common case, not just raise the ceiling and hope.
+const MAX_TOKENS = 8192;
 
 const SYSTEM_PROMPT = `You are a competitor research assistant for an e-commerce business. Use the web_search tool to find REAL, currently-operating competitors relevant to the objective you are given. Never invent a competitor, and never describe one from memory alone without actually searching for it first.
+
+Keep every field SHORT - this must fit in one response with no risk of being cut off:
+- "positioning" - one short sentence.
+- Every other array field (pricingEvidence, strengths, weaknesses, marketingSignals, seoSignals, opportunities) - AT MOST 2 items, each under 15 words.
+- "recommendations" - at most 3 items, each under 20 words.
+Brevity is required, not optional - a short, complete answer is always better than a longer one that risks being cut off before it finishes.
 
 After searching, respond with ONLY a single JSON object (no other text, no markdown code fences) with this exact shape:
 {
@@ -79,17 +94,17 @@ After searching, respond with ONLY a single JSON object (no other text, no markd
       "competitor": "company or brand name",
       "market": "market or region",
       "productCategory": "product category",
-      "positioning": "how they position themselves",
-      "pricingEvidence": ["specific pricing facts actually found"],
-      "strengths": ["specific strengths actually found"],
-      "weaknesses": ["specific weaknesses actually found"],
-      "marketingSignals": ["specific marketing activity actually found"],
-      "seoSignals": ["specific SEO/search-visibility signals actually found"],
-      "opportunities": ["specific opportunities this suggests"],
+      "positioning": "how they position themselves, one short sentence",
+      "pricingEvidence": ["specific pricing facts actually found - at most 2"],
+      "strengths": ["specific strengths actually found - at most 2"],
+      "weaknesses": ["specific weaknesses actually found - at most 2"],
+      "marketingSignals": ["specific marketing activity actually found - at most 2"],
+      "seoSignals": ["specific SEO/search-visibility signals actually found - at most 2"],
+      "opportunities": ["specific opportunities this suggests - at most 2"],
       "source": ["the exact URL(s) you actually retrieved this competitor and its evidence from"]
     }
   ],
-  "recommendations": ["suggestions for a human to consider, grounded only in what was found"]
+  "recommendations": ["suggestions for a human to consider, grounded only in what was found - at most 3"]
 }
 
 Rules:
@@ -97,6 +112,36 @@ Rules:
 - Only include array entries where you actually found real evidence - an empty array is honest, a placeholder is not.
 - If you cannot find any real competitors via web_search, return "competitors": [].
 - Return at most ${MAX_COMPETITORS} competitors, the most relevant to the objective.`;
+
+// Returns just the model's FINAL text segment, never claudeClient.extractText()'s
+// full join of every text block in the response. A real web_search-backed reply
+// commonly contains an earlier narration block (e.g. "I'll search for real,
+// currently-operating competitors...") BEFORE the search actually runs, followed by
+// the model's real structured answer once every search this call is going to do has
+// already happened. Naively joining every text block (as extractText() does, for its
+// own different purpose - a plain chat reply) can corrupt JSON extraction below: an
+// earlier narration block can itself carry stray brace characters, or the model can
+// narrate a partial/draft shape before its real final answer, and hunting for the
+// outermost {...} span across the WHOLE joined string would then swallow both non-JSON
+// text and the real JSON together as one invalid blob. The model's true structured
+// answer is always its LAST text block, so only that one is ever handed to
+// tryParseJson() below. Identified as the likely mechanism behind a real
+// "did not return structured competitor data" failure seen against live web_search
+// output (status was 'failed', not 'empty' - so real search results existed and were
+// verifiable, but parsing what claudeClient.extractText() had joined together failed) -
+// this is this project's best available explanation given what claudeClient.js's
+// extractText() is known to do with multiple text blocks, not a claim about the exact
+// live response text, which was never captured for inspection.
+function extractFinalTextBlock(content) {
+  if (!Array.isArray(content)) return '';
+  for (let i = content.length - 1; i >= 0; i -= 1) {
+    const block = content[i];
+    if (block && block.type === 'text' && typeof block.text === 'string') {
+      return block.text;
+    }
+  }
+  return '';
+}
 
 // Finds the outermost {...} span in the model's reply and parses it - tolerates
 // incidental leading/trailing text (a stray "Here is the JSON:" preface, etc.)
@@ -170,6 +215,7 @@ async function runWebCompetitorResearchTool({ objective, businessId = null, toke
   // instead of silently under-reporting real API cost.
   const usage = {
     model: response.model,
+    stopReason: response.stopReason,
     tokensUsed: totalTokensFromUsage(response.usage),
     inputTokens: Number(response.usage && response.usage.input_tokens) || 0,
     outputTokens: Number(response.usage && response.usage.output_tokens) || 0,
@@ -185,12 +231,22 @@ async function runWebCompetitorResearchTool({ objective, businessId = null, toke
     };
   }
 
-  const parsed = tryParseJson(response.text);
+  const parsed = tryParseJson(extractFinalTextBlock(response.raw && response.raw.content));
   if (!parsed || !Array.isArray(parsed.competitors)) {
+    // A real, common cause: the reply was cut off before it finished (the shared
+    // agent/core/tokenControls.js per-call output ceiling - MAX_TOKENS_PER_CALL in
+    // .env, conservatively 1024 by default - can be too small for a multi-competitor,
+    // multi-field structured answer), producing incomplete/invalid JSON rather than a
+    // model mistake. Surfaced explicitly (never left to read as a generic parsing bug)
+    // whenever the API itself reports stopReason 'max_tokens', so this is diagnosed
+    // from a real, returned fact, never guessed.
+    const error = response.stopReason === 'max_tokens'
+      ? `The research assistant's answer was cut off before it finished (Claude's output-token limit for one call was reached). Raise MAX_TOKENS_PER_CALL in .env (e.g. to 8192) and try again.`
+      : 'The research assistant did not return structured competitor data in the expected shape.';
     return {
       status: 'failed',
       result: null,
-      error: 'The research assistant did not return structured competitor data in the expected shape.',
+      error,
       ...usage,
     };
   }

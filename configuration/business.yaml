@@ -1,0 +1,91 @@
+# Business configuration for Digital Studio By Naeema (digitalstudionaeema.com).
+# Drafted from user-supplied facts + read-only inspection of the public storefront
+# (no admin API, no credentials, no Shopify connection). All fields below are now
+# confirmed by the owner directly (see business_model onward for the fields that
+# were previously marked NEEDS YOUR CONFIRMATION).
+
+business_name: "Digital Studio By Naeema"
+
+# Confirmed by the owner.
+business_model: "B2C digital products business. Sells downloadable PNG and SVG bundles directly to individual customers through online stores and marketplaces."
+
+platform: "Shopify"
+
+store_url: "https://digitalstudionaeema.com/"
+
+# From the public storefront's own text: "Instant Digital Access - Receive access
+# after completing your order." and "Digital files only. No physical item will be
+# shipped."
+product_model: "Digital download (instant digital delivery, no physical fulfillment)"
+
+# Confirmed by the owner.
+target_markets:
+  - "Global market for digital design assets"
+  - "Primary focus: English-speaking buyers in the United Kingdom and the United States"
+
+# Confirmed by the owner.
+countries:
+  - "United States (primary)"
+  - "United Kingdom (primary)"
+  - "Canada (secondary)"
+  - "Australia (secondary)"
+  - "Worldwide customers who use English-language digital marketplaces (secondary)"
+
+# From the public storefront: the currency selector and footer ("USD - Secure
+# checkout - Digital delivery") both show USD as the store's only currency.
+currencies:
+  - "USD"
+
+# From the public storefront's own navigation/category structure.
+product_categories:
+  - "SVG design files"
+  - "PNG clipart & sublimation designs"
+  - "DXF/EPS cut files"
+  - "Seasonal & holiday designs (Halloween, Christmas, Easter, Valentine's Day, Thanksgiving, St. Patrick's Day, 4th of July)"
+  - "T-shirt designs"
+  - "Monogram designs"
+  - "Font bundles"
+  - "Design bundles / mega bundles"
+
+# Confirmed by the owner.
+customer_segments:
+  - "Cricut, Silhouette, and cutting-machine users"
+  - "Crafters and DIY hobbyists"
+  - "Small business owners creating products, packaging, and social-media content"
+  - "Etsy sellers and print-on-demand sellers"
+  - "Teachers, event planners, and parents creating personalized items"
+  - "Graphic designers and digital-product creators"
+  - "Customers looking for affordable, ready-to-use PNG and SVG bundles"
+
+# From the public storefront: all site content/copy is in English.
+primary_language: "en"
+
+brand:
+  name: "Digital Studio By Naeema"
+  tagline: "Premium Digital Designs for Creative Makers"
+  # NEEDS YOUR CONFIRMATION - subjective. The storefront reads as friendly/playful and
+  # craft-community-oriented, but please describe this in your own words.
+  tone: ""
+
+# Confirmed by the owner.
+business_goals:
+  - "Increase sales of PNG and SVG bundles"
+  - "Build a recognizable digital-design brand"
+  - "Increase traffic from the UK and USA"
+  - "Grow repeat customers through new bundle releases and seasonal collections"
+  - "Increase average order value through bundle offers and upsells"
+  - "Generate sustainable monthly profit from digital-product sales"
+
+# Confirmed by the owner.
+marketing_channels:
+  - "Etsy SEO and Etsy Ads"
+  - "Pinterest organic pins and Pinterest Ads"
+  - "TikTok and Instagram Reels showing craft/design use cases"
+  - "Google Search and Google Shopping, where applicable"
+  - "Facebook and Instagram retargeting ads"
+  - "Email marketing for new bundles, discounts, and seasonal launches"
+  - "Creative Market, Design Bundles, Gumroad, Shopify, or similar digital-product marketplaces"
+  - "Influencer collaborations with Cricut, craft, and small-business creators"
+
+# Optional - left empty, no integrations confirmed.
+integrations: []

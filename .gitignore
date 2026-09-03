@@ -6,8 +6,32 @@ node_modules/
 .env.local
 .env.*.local
 
-# Real business configuration (not a template) — never commit
-configuration/business.yaml
+# Real business configuration (not a template) — kept out of git normally so this
+# codebase stays reusable for a different business without a code change (CLAUDE.md
+# rule 14). Committed anyway for this repo (private, owner-confirmed) so hosting
+# platforms that deploy straight from GitHub (e.g. Railway) have a real config to
+# start from - no credentials live in this file, only business facts.
+# configuration/business.yaml
+
+# Persisted run history (agent/core/runHistoryStore.js) and other real per-business
+# data - these READMEs already documented this as git-ignored (see
+# memory/state/README.md, data/README.md) before there was any actual data or rule
+# here to back that up; this closes that gap now that runHistoryStore.js is the first
+# thing that actually writes real business/run data to these folders. Each folder's
+# own README.md is kept (it's documentation, not data).
+memory/state/runs/
+
+# Persisted, business-isolated Memory layer records (agent/core/memoryStore.js) - one
+# JSON file per verified/approved fact under memory/state/business/<businessId>/records/.
+# Real business memory, never a template - never commit.
+memory/state/business/
+
+data/business/*
+!data/business/README.md
+data/products/*
+!data/products/README.md
+data/tasks/*
+!data/tasks/README.md
 
 # Logs
 *.log

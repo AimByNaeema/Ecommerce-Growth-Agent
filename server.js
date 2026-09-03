@@ -22,8 +22,56 @@ const { summarizeExecutionState } = require('./agent/core/resultSummary');
 // lifecycle (see verification/testing/chiefToApprovalIntegration.test.js) - reused
 // unchanged, never reimplemented here.
 const { decideApprovalRequest, getApprovalRequestById } = require('./approvals/approvalWorkflow');
+// The persisted counterpart to orchestratorRuns below - see
+// agent/core/runHistoryStore.js's own header for why this exists and its scope. Every
+// /run and /orchestrate result is saved here as soon as it's produced, and
+// /orchestrate/approve re-saves under the same run_id after a human decision is
+// resolved, so a result survives a page refresh or a server restart - unlike
+// orchestratorRuns (still in-memory only, since a pending APPROVAL DECISION itself
+// requires the live approvals/approvalWorkflow.js request object, not just its saved
+// JSON shape - see that Map's own comment above for why that part stays unpersisted).
+const runHistoryStore = require('./agent/core/runHistoryStore');
 
 const BUSINESS_CONFIG_PATH = path.join(__dirname, 'configuration', 'business.yaml');
+
+// Real specialist display name for a dashboard specialist id (SPECIALIST_ID_MAP's
+// keys) - used only for a saved run-history record's human-readable label, never for
+// routing/permissions (that's SPECIALIST_ID_MAP + agent/core/specialistRegistry.js).
+const SPECIALIST_DISPLAY_NAMES = {
+  research: 'Research',
+  product: 'Product',
+  seo: 'SEO',
+  listing: 'Listing',
+  marketing: 'Marketing',
+  social_advertising: 'Social & Advertising',
+  analytics: 'Analytics & Optimization',
+};
+
+// Derives one honest overall status for a Chief Orchestrator run's saved record, from
+// the same fields the response itself already carries - never a new judgment call.
+// Mirrors /run's own success/error/partial vocabulary (see its status computation
+// below) so a saved run-history row can use one shared set of dashboard status colors
+// regardless of which endpoint produced it.
+function deriveOrchestrateHistoryStatus(result) {
+  if (result && result.routing && result.routing.status === 'clarification_required') {
+    return 'needs_clarification';
+  }
+  if (result && result.verification_status === 'passed') return 'success';
+  if (result && result.verification_status === 'failed') return 'error';
+  return 'partial';
+}
+
+// One short, honest sentence for a saved run-history list row - reuses each plan
+// step's own real summarizeExecutionState() text rather than inventing a new one;
+// never fabricates a summary for a clarification stop, which has no steps at all.
+function buildOrchestrateHistorySummary(result) {
+  if (result && result.routing && result.routing.status === 'clarification_required') {
+    return result.routing.reason || 'The Chief needs clarification before it can proceed.';
+  }
+  const plan = result && result.routing && Array.isArray(result.routing.plan) ? result.routing.plan : [];
+  if (plan.length === 0) return 'The Chief did not produce a plan for this goal.';
+  return plan.map((step) => summarizeExecutionState(step)).join(' ');
+}
 
 // Maps the dashboard's specialist ids (public/index.html's SPECIALISTS list) to the
 // real specialist ids agent/core/specialistRegistry.js uses. Identical for every id
@@ -109,7 +157,31 @@ function createApp() {
       // which reads as "still in progress" rather than "this failed".
       const status =
         step.completion_state === 'complete' ? 'success' : step.completion_state === 'failed' ? 'error' : 'partial';
-      res.json({ ...step, status, summary: summarizeExecutionState(step) });
+      const summary = summarizeExecutionState(step);
+      const responseBody = { ...step, status, summary };
+
+      // Persist this result so it survives a page refresh/server restart (see
+      // agent/core/runHistoryStore.js) - a save failure is logged, never allowed to
+      // fail the actual response the user is waiting on; the real result already
+      // succeeded or failed on its own merits before this line ever runs.
+      const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        runHistoryStore.saveRunRecord({
+          run_id: runId,
+          kind: 'run',
+          objective: trimmedObjective,
+          specialist_id: internalSpecialistId,
+          specialist_name: SPECIALIST_DISPLAY_NAMES[specialist] || internalSpecialistId,
+          status,
+          summary,
+          created_at: new Date().toISOString(),
+          result: responseBody,
+        });
+      } catch (saveErr) {
+        console.error('Could not save run history for /run:', saveErr.message);
+      }
+
+      res.json({ ...responseBody, run_id: runId });
     } catch (err) {
       res.status(502).json({ error: 'The specialist could not complete this run right now. Please try again shortly.' });
     }
@@ -150,6 +222,27 @@ function createApp() {
               },
             }
           : result;
+
+      // Persist this run so it survives a page refresh/server restart (see
+      // agent/core/runHistoryStore.js). Uses the SAME runId as orchestratorRuns above,
+      // so /orchestrate/approve below can re-save under this exact id once a pending
+      // approval is resolved - one saved record per run, always reflecting its latest
+      // known state (see runHistoryStore.saveRunRecord's own overwrite-by-run_id
+      // behavior). A save failure is logged, never allowed to fail the response.
+      try {
+        runHistoryStore.saveRunRecord({
+          run_id: runId,
+          kind: 'orchestrate',
+          objective: objective.trim(),
+          status: deriveOrchestrateHistoryStatus(result),
+          summary: buildOrchestrateHistorySummary(result),
+          created_at: new Date().toISOString(),
+          result: responseResult,
+        });
+      } catch (saveErr) {
+        console.error('Could not save run history for /orchestrate:', saveErr.message);
+      }
+
       res.json({ ...responseResult, run_id: runId });
     } catch (err) {
       res.status(502).json({ error: 'The Chief Orchestrator could not complete this run right now. Please try again shortly.' });
@@ -221,6 +314,40 @@ function createApp() {
       }
       const planState = orchestratorExecutionContract.aggregatePlanState(run.plan);
 
+      // Re-save this run's history record (see agent/core/runHistoryStore.js) now that
+      // a pending approval has been resolved, so a later /history/:runId view reflects
+      // the real outcome (e.g. a tool that actually ran after approval) instead of the
+      // "approval_required" snapshot /orchestrate originally saved. Same run_id as
+      // /orchestrate used, so this overwrites that same record rather than creating a
+      // second one (see saveRunRecord's own overwrite-by-run_id behavior). Reads the
+      // prior record back only to preserve its objective/created_at/full routing
+      // shape - never invents anything not already known. A missing prior record (the
+      // server restarted between /orchestrate and this call) or a save failure is
+      // logged, never allowed to fail the real approval decision the user is waiting on.
+      try {
+        const existingRecord = runHistoryStore.getRunRecordById(runId);
+        const planWithSummaries = run.plan.map((step) => ({ ...step, summary: summarizeExecutionState(step) }));
+        const updatedStatus =
+          planState.verification_status === 'passed' ? 'success' : planState.verification_status === 'failed' ? 'error' : 'partial';
+        runHistoryStore.saveRunRecord({
+          ...(existingRecord || {}),
+          run_id: runId,
+          kind: 'orchestrate',
+          status: updatedStatus,
+          summary: planWithSummaries.map((step) => step.summary).join(' '),
+          created_at: (existingRecord && existingRecord.created_at) || new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          result: {
+            ...(existingRecord && existingRecord.result),
+            routing: { ...((existingRecord && existingRecord.result && existingRecord.result.routing) || {}), plan: planWithSummaries },
+            verification_status: planState.verification_status,
+            task_status: planState.task_status,
+          },
+        });
+      } catch (saveErr) {
+        console.error('Could not update run history after approval decision:', saveErr.message);
+      }
+
       res.json({
         run_id: runId,
         approval_request: decidedRequest,
@@ -231,6 +358,33 @@ function createApp() {
     } catch (err) {
       res.status(502).json({ error: 'The approved action could not be executed right now. Please try again shortly.' });
     }
+  });
+
+  // Read-only views onto agent/core/runHistoryStore.js's saved runs - what makes
+  // "Run a Specialist"/"Chief Orchestrator" results survive a page refresh or server
+  // restart (public/index.html's History page). Never executes anything; a bad/unknown
+  // id is an honest 404, never a fabricated result.
+  app.get('/history', (req, res) => {
+    try {
+      res.json({ runs: runHistoryStore.listRunRecordSummaries({ limit: 50 }) });
+    } catch (err) {
+      res.status(502).json({ error: 'Could not read saved run history right now. Please try again shortly.' });
+    }
+  });
+
+  app.get('/history/:runId', (req, res) => {
+    let record;
+    try {
+      record = runHistoryStore.getRunRecordById(req.params.runId);
+    } catch (err) {
+      res.status(502).json({ error: 'Could not read this saved run right now. Please try again shortly.' });
+      return;
+    }
+    if (!record) {
+      res.status(404).json({ error: 'No saved run found for this id.' });
+      return;
+    }
+    res.json(record);
   });
 
   return app;

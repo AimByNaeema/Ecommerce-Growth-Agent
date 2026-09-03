@@ -184,6 +184,48 @@ test('exports the expected function', () => {
         const outcome = await runWebCompetitorResearchTool({ objective: 'Find my top competitors.' });
         assert.strictEqual(outcome.status, 'failed');
         assert.ok(/structured competitor data/.test(outcome.error));
+        assert.strictEqual(outcome.stopReason, 'end_turn');
+      });
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+    }
+  });
+
+  await testAsync('MOCKED: reports a specific, actionable "cut off" error (not a generic parsing failure) when the reply was truncated by the output-token ceiling', async () => {
+    // Reproduces a real live_competitor_research failure seen against a real business
+    // objective: real web_search results existed (verifiedUrls non-empty) but the
+    // model's final JSON never finished, because agent/core/tokenControls.js's shared
+    // per-call output ceiling (MAX_TOKENS_PER_CALL, conservatively 1024 by default) had
+    // capped this call's max_tokens down from what this tool actually requests -
+    // an env/config gap (now documented in .env.example), not a model or code defect.
+    // The Messages API reports this honestly via stop_reason: 'max_tokens', which this
+    // tool must surface as a specific, actionable message instead of a generic one.
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => ({
+      text: '{"topic": "Digital product competitors", "competitors": [{"competitor": "Etsy Seller X", "source": ["https://real.example/etsy-seller-x"',
+      model: 'claude-sonnet-5',
+      stopReason: 'max_tokens',
+      usage: { input_tokens: 52389, output_tokens: 1024 },
+      raw: {
+        content: [
+          {
+            type: 'web_search_tool_result',
+            tool_use_id: 'srvtoolu_1',
+            content: [{ type: 'web_search_result', url: 'https://real.example/etsy-seller-x' }],
+          },
+          // Cut off mid-object - exactly what a max_tokens truncation looks like.
+          { type: 'text', text: '{"topic": "Digital product competitors", "competitors": [{"competitor": "Etsy Seller X", "source": ["https://real.example/etsy-seller-x"' },
+        ],
+      },
+    });
+    try {
+      await withApiKeyConfigured(async () => {
+        const outcome = await runWebCompetitorResearchTool({ objective: 'Research my top competitors for my digital PNG/SVG bundles business.' });
+        assert.strictEqual(outcome.status, 'failed');
+        assert.strictEqual(outcome.result, null);
+        assert.strictEqual(outcome.stopReason, 'max_tokens');
+        assert.ok(/cut off/.test(outcome.error), `expected an actionable "cut off" message, got: ${outcome.error}`);
+        assert.ok(/MAX_TOKENS_PER_CALL/.test(outcome.error));
       });
     } finally {
       claudeClient.sendMessage = originalSendMessage;
@@ -278,11 +320,66 @@ test('exports the expected function', () => {
         assert.strictEqual(outcome.tokensUsed, 300);
         assert.strictEqual(outcome.inputTokens, 100);
         assert.strictEqual(outcome.outputTokens, 200);
+        assert.strictEqual(outcome.stopReason, 'end_turn');
 
         // The web_search tool was actually requested, and the objective (not some
         // structured research_params shape) was sent as the user message.
         assert.strictEqual(receivedRequest.tools[0].name, 'web_search');
         assert.strictEqual(receivedRequest.messages[0].content, 'Research my top competitors for handmade candles.');
+      });
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+    }
+  });
+
+  await testAsync('MOCKED: still parses the real competitor JSON when the model also emitted an earlier narration text block before its final answer', async () => {
+    // Reproduces a real live_competitor_research failure: a multi-round web_search
+    // reply commonly includes an earlier "I'll search for..." text block BEFORE the
+    // search runs, in addition to the model's real structured-JSON final answer.
+    // claudeClient.extractText() (used elsewhere for plain chat replies) joins every
+    // text block together - hunting for the outermost {...} span across that whole
+    // joined string is what previously broke on a response shaped exactly like this
+    // one. This tool must extract JSON from the model's LAST text block only.
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => {
+      const replyJson = {
+        topic: 'Handmade candle competitors',
+        competitors: [
+          {
+            competitor: 'Acme Candles',
+            strengths: ['strong Instagram following'],
+            source: ['https://real-search-result.example/acme-candles'],
+          },
+        ],
+      };
+      const joinedText = `I'll search for real, currently-operating competitors in this market.\n${JSON.stringify(replyJson)}`;
+      return {
+        text: joinedText,
+        model: 'claude-sonnet-5',
+        stopReason: 'end_turn',
+        usage: { input_tokens: 150, output_tokens: 250 },
+        raw: {
+          content: [
+            { type: 'text', text: "I'll search for real, currently-operating competitors in this market." },
+            { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search', input: { query: 'q' } },
+            {
+              type: 'web_search_tool_result',
+              tool_use_id: 'srvtoolu_1',
+              content: [{ type: 'web_search_result', url: 'https://real-search-result.example/acme-candles', title: 'Acme' }],
+            },
+            // The model's REAL final answer - the only block this tool should parse.
+            { type: 'text', text: JSON.stringify(replyJson), citations: [] },
+          ],
+        },
+      };
+    };
+    try {
+      await withApiKeyConfigured(async () => {
+        const outcome = await runWebCompetitorResearchTool({ objective: 'Research my top competitors for handmade candles.' });
+        assert.strictEqual(outcome.status, 'success');
+        assert.strictEqual(outcome.error, null);
+        assert.ok(outcome.result, 'expected a real result, not a false "failed to parse" outcome');
+        assert.strictEqual(outcome.result.specialized_records[0].competitor, 'Acme Candles');
       });
     } finally {
       claudeClient.sendMessage = originalSendMessage;

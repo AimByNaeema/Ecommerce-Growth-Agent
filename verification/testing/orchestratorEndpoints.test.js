@@ -18,9 +18,19 @@
 
 const assert = require('node:assert');
 const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const orchestratorExecutionContract = require('../../agent/core/orchestratorExecutionContract');
 const { createApprovalRequest } = require('../../approvals/approvalWorkflow');
+
+// /orchestrate and /orchestrate/approve now also save/update a run-history record
+// (see agent/core/runHistoryStore.js) - redirected to a throwaway directory so this
+// suite never writes real files into this project's own memory/state/runs/. Read at
+// call time, not module load, so setting it before createApp() below is sufficient.
+process.env.RUN_HISTORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrator-endpoints-test-run-history-'));
+
 const { createApp } = require('../../server');
 
 let passed = 0;
@@ -442,6 +452,100 @@ async function main() {
           // Not a generic "done" message - it names the real missing fields.
           assert.ok(!/completed this request successfully/i.test(step.summary));
           assert.ok(/marketRow, productIdentity/.test(step.summary));
+        });
+      }
+    );
+  });
+
+  await testAsync('POST /orchestrate saves a run-history record, retrievable via GET /history and GET /history/:runId', async () => {
+    await withMockedOrchestratorFns(
+      {
+        runOrchestratorContract: async (objective) => ({
+          objective,
+          routing: { status: 'planned', plan: [buildStep({ outputs: { status: 'success', result: { ok: true } } })] },
+          needs_more_information: false,
+          verification_status: 'passed',
+          pending_approvals: [],
+        }),
+      },
+      async () => {
+        await withServer(async (port) => {
+          const orchestrateRes = await request(port, {
+            method: 'POST',
+            path: '/orchestrate',
+            body: { objective: 'Analyze store performance and suggest one growth idea.' },
+          });
+          const runId = JSON.parse(orchestrateRes.raw).run_id;
+
+          const listRes = await request(port, { method: 'GET', path: '/history' });
+          assert.strictEqual(listRes.status, 200);
+          const entry = JSON.parse(listRes.raw).runs.find((r) => r.run_id === runId);
+          assert.ok(entry, 'the saved orchestrator run must appear in the history list');
+          assert.strictEqual(entry.kind, 'orchestrate');
+          assert.strictEqual(entry.objective, 'Analyze store performance and suggest one growth idea.');
+          assert.strictEqual(entry.status, 'success');
+
+          const detailRes = await request(port, { method: 'GET', path: '/history/' + runId });
+          assert.strictEqual(detailRes.status, 200);
+          const detail = JSON.parse(detailRes.raw);
+          assert.strictEqual(detail.result.verification_status, 'passed');
+        });
+      }
+    );
+  });
+
+  await testAsync('APPROVE flow re-saves the run-history record under the same run_id, reflecting the resolved outcome', async () => {
+    const realApprovalRequest = createApprovalRequest({
+      id: 'apr-1',
+      classification: 'externally_executable',
+      specialistId: 'analytics_optimization',
+      toolId: 'analytics_data_retrieval',
+      executionRequest: { objective: 'Analyze store performance.', tool_id: 'analytics_data_retrieval' },
+      reason: 'Executing this tool requires explicit approval before it can proceed.',
+    });
+    const gatedStep = buildStep({
+      approvals: [{ classification: 'externally_executable', status: 'required', approval_request_id: 'apr-1' }],
+      completion_state: 'blocked',
+      outputs: null,
+    });
+
+    await withMockedOrchestratorFns(
+      {
+        runOrchestratorContract: async () => ({
+          objective: 'Analyze store performance.',
+          routing: { status: 'planned', plan: [gatedStep] },
+          pending_approvals: [realApprovalRequest],
+        }),
+        resumeApprovedExecution: async () => ({
+          status: 'success',
+          data: { status: 'success', result: { ok: true } },
+          error: null,
+          classification: 'externally_executable',
+        }),
+      },
+      async () => {
+        await withServer(async (port) => {
+          const orchestrateRes = await request(port, {
+            method: 'POST',
+            path: '/orchestrate',
+            body: { objective: 'Analyze store performance.' },
+          });
+          const runId = JSON.parse(orchestrateRes.raw).run_id;
+
+          // Before the approval, the saved record still reflects the blocked step.
+          const beforeDetail = JSON.parse((await request(port, { method: 'GET', path: '/history/' + runId })).raw);
+          assert.strictEqual(beforeDetail.result.routing.plan[0].completion_state, 'blocked');
+
+          await request(port, {
+            method: 'POST',
+            path: '/orchestrate/approve',
+            body: { runId, approvalId: 'apr-1', decision: 'approved', decidedBy: 'naeema' },
+          });
+
+          const afterDetail = JSON.parse((await request(port, { method: 'GET', path: '/history/' + runId })).raw);
+          assert.strictEqual(afterDetail.result.routing.plan[0].completion_state, 'complete');
+          assert.strictEqual(afterDetail.status, 'success');
+          assert.strictEqual(afterDetail.objective, 'Analyze store performance.', 'the original objective must be preserved across the re-save');
         });
       }
     );

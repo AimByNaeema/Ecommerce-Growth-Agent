@@ -145,7 +145,7 @@ const TOOL_REGISTRY = [
     id: 'competitor_research',
     title: 'Competitor research',
     description:
-      "Produce competitor research records conforming to agent/core/competitorResearchModel.js via agent/core/researchAgent.js's runCompetitorResearch() - see tools/competitorResearchTool.js.",
+      "Produce competitor research records - covering a business's known competitors - conforming to agent/core/competitorResearchModel.js via agent/core/researchAgent.js's runCompetitorResearch() - see tools/competitorResearchTool.js.",
     category: 'research',
     operation: 'read',
     status: 'implemented',

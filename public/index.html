@@ -685,6 +685,10 @@
         Approval Center
         <span class="nav-badge" id="approvalNavBadge" hidden>0</span>
       </button>
+      <button class="nav-item" id="navHistory" role="tab" aria-current="false" type="button">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="7.25" stroke="currentColor" stroke-width="1.5"/><path d="M10 6v4l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        History
+      </button>
     </nav>
 
     <div class="sidebar-foot">
@@ -816,6 +820,16 @@
 
       <div id="approvalListArea"></div>
     </section>
+
+    <!-- ============ HISTORY PAGE ============ -->
+    <section class="page" id="pageHistory">
+      <div class="page-intro">
+        <p>Every real run from "Run a Specialist" and "Chief Orchestrator" is saved here automatically on the server, so it survives a page refresh or a server restart - unlike the rest of this dashboard's session-only state. Nothing here is sample data, and a run from before this page existed simply won't appear.</p>
+      </div>
+
+      <div id="historyListArea"></div>
+      <div id="historyDetailArea" style="margin-top:20px;"></div>
+    </section>
   </div>
 </div>
 
@@ -833,6 +847,7 @@
     specialists: { nav: 'navSpecialists', page: 'pageSpecialists', title: 'Run a Specialist', subtitle: 'Run one specialist directly against a specific objective you write.' },
     orchestrator: { nav: 'navOrchestrator', page: 'pageOrchestrator', title: 'Chief Orchestrator', subtitle: 'Give the Chief a goal — it decides which specialist(s) to use.' },
     approvals: { nav: 'navApprovals', page: 'pageApprovals', title: 'Approval Center', subtitle: 'Every human sign-off the Chief has requested this session.' },
+    history: { nav: 'navHistory', page: 'pageHistory', title: 'History', subtitle: 'Saved results from past runs, stored on the server - these survive a refresh.' },
   };
 
   const pageTitleEl = document.getElementById('pageTitle');
@@ -849,6 +864,7 @@
     pageTitleEl.textContent = entry.title;
     pageSubtitleEl.textContent = entry.subtitle;
     if (name === 'approvals') renderApprovalList();
+    if (name === 'history') renderHistoryList();
   }
 
   Object.keys(PAGE_MAP).forEach((key) => {
@@ -1703,6 +1719,146 @@
   }
 
   refreshApprovalBadges();
+
+  /* ---------- History page (past runs saved server-side - see server.js's
+     GET /history and GET /history/:runId, backed by agent/core/runHistoryStore.js) ---------- */
+
+  // Same three-way vocabulary as .result-status's own CSS (success/partial/error) -
+  // a saved run's real status may also be "needs_clarification" or "failed" (see
+  // server.js's status computations), mapped down to whichever of those three colors
+  // is closest so History reuses the existing style instead of inventing a new one.
+  function historyStatusClass(status) {
+    if (status === 'success') return 'success';
+    if (status === 'error' || status === 'failed') return 'error';
+    return 'partial';
+  }
+
+  async function renderHistoryList() {
+    const listArea = document.getElementById('historyListArea');
+    const detailArea = document.getElementById('historyDetailArea');
+    listArea.innerHTML = '<p class="empty-result">Loading saved runs…</p>';
+    detailArea.innerHTML = '';
+
+    try {
+      const res = await fetch('/history');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        listArea.innerHTML = '<p class="empty-result">' + escapeHtml(data.error || 'Could not load saved runs.') + '</p>';
+        return;
+      }
+
+      const runs = Array.isArray(data.runs) ? data.runs : [];
+      listArea.innerHTML = '';
+
+      if (runs.length === 0) {
+        listArea.innerHTML = '<p class="empty-result">No saved runs yet - run a specialist or ask the Chief something, and it will appear here automatically.</p>';
+        return;
+      }
+
+      runs.forEach((entry) => {
+        const row = document.createElement('div');
+        row.className = 'approval-row';
+        row.style.cursor = 'pointer';
+        row.tabIndex = 0;
+        row.setAttribute('role', 'button');
+
+        const kindLabel = entry.kind === 'orchestrate' ? 'Chief Orchestrator' : 'Specialist: ' + (entry.specialist_name || entry.specialist_id || '');
+        const when = entry.created_at ? new Date(entry.created_at).toLocaleString() : '';
+
+        row.innerHTML =
+          '<div class="approval-row-head">' +
+          '<div><div class="approval-row-title">' + escapeHtml(entry.objective || '(no objective recorded)') + '</div>' +
+          '<div class="approval-row-meta">' + escapeHtml(kindLabel) + ' · ' + escapeHtml(when) + '</div></div>' +
+          '<span class="approval-row-status ' + historyStatusClass(entry.status) + '">' + escapeHtml(entry.status || 'unknown') + '</span>' +
+          '</div>';
+
+        const open = () => loadHistoryDetail(entry.run_id);
+        row.addEventListener('click', open);
+        row.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+        });
+
+        listArea.appendChild(row);
+      });
+    } catch (err) {
+      listArea.innerHTML = '<p class="empty-result">Could not reach the server. Check that it is running.</p>';
+    }
+  }
+
+  async function loadHistoryDetail(runId) {
+    const detailArea = document.getElementById('historyDetailArea');
+    detailArea.innerHTML = '<p class="empty-result">Loading…</p>';
+
+    try {
+      const res = await fetch('/history/' + encodeURIComponent(runId));
+      const record = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        detailArea.innerHTML = '<p class="empty-result">' + escapeHtml(record.error || 'Could not load this saved run.') + '</p>';
+        return;
+      }
+      renderStoredRecordDetail(record, detailArea);
+    } catch (err) {
+      detailArea.innerHTML = '<p class="empty-result">Could not reach the server. Check that it is running.</p>';
+    }
+  }
+
+  // Read-only detail view for one saved run record. Deliberately simpler than
+  // renderPlanStep/renderChiefPlan above (no approval panels are attached here) - an
+  // approval saved from a past, possibly server-restarted run has no live
+  // approvals/approvalWorkflow.js request behind it anymore to act on, so offering
+  // Approve/Reject buttons here would be misleading. The full technical detail (every
+  // step, every field) is still fully visible via the same "Technical details"
+  // pattern used everywhere else in this dashboard - nothing is hidden, only the
+  // (no-longer-actionable) approval controls are omitted.
+  function renderStoredRecordDetail(record, container) {
+    container.innerHTML = '';
+
+    const card = document.createElement('div');
+    card.className = 'result-card';
+
+    const title = record.kind === 'orchestrate' ? 'Chief Orchestrator' : (record.specialist_name || record.specialist_id || 'Specialist');
+    const statusClass = historyStatusClass(record.status);
+
+    const header = document.createElement('div');
+    header.className = 'result-header';
+    header.innerHTML =
+      '<span class="result-title">' + escapeHtml(title) + '</span>' +
+      '<span class="result-status ' + statusClass + '">' + escapeHtml(record.status || 'unknown') + '</span>';
+    card.appendChild(header);
+
+    const summaryLine = document.createElement('p');
+    summaryLine.className = 'result-summary';
+    summaryLine.textContent = record.summary || 'No summary was saved for this run.';
+    card.appendChild(summaryLine);
+
+    const meta = document.createElement('p');
+    meta.className = 'approval-row-meta';
+    meta.style.padding = '0 16px 12px';
+    const when = record.created_at ? new Date(record.created_at).toLocaleString() : 'unknown time';
+    meta.textContent = 'Objective: "' + (record.objective || '') + '" · Saved ' + when;
+    card.appendChild(meta);
+
+    const details = document.createElement('details');
+    details.className = 'result-details';
+    const detailsLabel = document.createElement('summary');
+    detailsLabel.textContent = 'Technical details';
+    details.appendChild(detailsLabel);
+    const body = document.createElement('pre');
+    body.className = 'result-body';
+    body.innerHTML = highlightJson(record.result);
+    details.appendChild(body);
+    card.appendChild(details);
+
+    const chartData = extractChartPoints(record.result);
+    if (chartData) {
+      const chartWrap = document.createElement('div');
+      chartWrap.className = 'result-chart-wrap';
+      renderMetricChart(chartWrap, chartData, 'Real data from this saved run');
+      card.appendChild(chartWrap);
+    }
+
+    container.appendChild(card);
+  }
 </script>
 
 </body>

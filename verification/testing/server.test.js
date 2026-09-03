@@ -2,9 +2,21 @@
 
 const assert = require('node:assert');
 const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const aiProviderSelector = require('../../agent/core/aiProviderSelector');
 const orchestratorExecutionContract = require('../../agent/core/orchestratorExecutionContract');
+
+// Every /run and /orchestrate call in this file now also saves a run-history record
+// (see agent/core/runHistoryStore.js) - redirected to a throwaway directory so this
+// test suite never writes real files into this project's own memory/state/runs/, and
+// never depends on real ones being there. Read at call time, not module load (see
+// runHistoryStore.getDefaultStoreDir), so setting it before createApp() is called
+// below is sufficient.
+process.env.RUN_HISTORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-run-history-'));
+
 const { createApp } = require('../../server');
 
 // This test never makes a real network/API call. Instead of mocking global.fetch
@@ -283,6 +295,72 @@ async function main() {
         });
       }
     );
+  });
+
+  await testAsync('POST /run saves a run-history record, retrievable via GET /history and GET /history/:runId', async () => {
+    const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-run-history-single-'));
+    const savedDir = process.env.RUN_HISTORY_STORE_DIR;
+    process.env.RUN_HISTORY_STORE_DIR = freshDir;
+    try {
+      await withMockedBuildPlanStep(
+        async () => ({
+          request: 'test objective',
+          current_task: 'test objective',
+          selected_specialist: { type: 'specialist', id: 'research', title: 'research' },
+          inputs: { category: 'test', tool_id: 'test_tool', capability_id: null, input_contract: null },
+          required_context: [],
+          outputs: { summary: 'mocked specialist output' },
+          evidence: [{ tool_id: 'test_tool', status: 'success' }],
+          confidence: 'high',
+          tool_calls: ['test_tool'],
+          approvals: [],
+          errors: [],
+          completion_state: 'complete',
+        }),
+        async () => {
+          await withServer(async (port) => {
+            const runRes = await request(port, {
+              method: 'POST',
+              path: '/run',
+              body: { specialist: 'research', objective: 'Persist me please.' },
+            });
+            assert.strictEqual(runRes.status, 200);
+            const runParsed = JSON.parse(runRes.raw);
+            assert.strictEqual(typeof runParsed.run_id, 'string');
+            assert.ok(runParsed.run_id.length > 0);
+
+            const listRes = await request(port, { method: 'GET', path: '/history' });
+            assert.strictEqual(listRes.status, 200);
+            const listParsed = JSON.parse(listRes.raw);
+            assert.ok(Array.isArray(listParsed.runs));
+            const entry = listParsed.runs.find((r) => r.run_id === runParsed.run_id);
+            assert.ok(entry, 'the saved run must appear in the history list');
+            assert.strictEqual(entry.objective, 'Persist me please.');
+            assert.strictEqual(entry.status, 'success');
+            assert.strictEqual(entry.kind, 'run');
+
+            const detailRes = await request(port, { method: 'GET', path: '/history/' + runParsed.run_id });
+            assert.strictEqual(detailRes.status, 200);
+            const detailParsed = JSON.parse(detailRes.raw);
+            assert.strictEqual(detailParsed.objective, 'Persist me please.');
+            assert.strictEqual(detailParsed.result.completion_state, 'complete');
+          });
+        }
+      );
+    } finally {
+      if (savedDir === undefined) delete process.env.RUN_HISTORY_STORE_DIR;
+      else process.env.RUN_HISTORY_STORE_DIR = savedDir;
+    }
+  });
+
+  await testAsync('GET /history/:runId returns a clear 404 (never a fabricated result) for an id that was never saved', async () => {
+    await withServer(async (port) => {
+      const res = await request(port, { method: 'GET', path: '/history/never-existed-12345' });
+      assert.strictEqual(res.status, 404);
+      const parsed = JSON.parse(res.raw);
+      assert.strictEqual(typeof parsed.error, 'string');
+      assert.ok(parsed.error.length > 0);
+    });
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

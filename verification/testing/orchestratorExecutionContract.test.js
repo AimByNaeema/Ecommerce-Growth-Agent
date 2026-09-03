@@ -934,19 +934,20 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     const savedKey = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
     const originalSendMessage = claudeClient.sendMessage;
+    const replyJson = {
+      topic: 'Top competitor',
+      competitors: [
+        {
+          competitor: 'Acme Candles',
+          market: 'United States',
+          strengths: ['strong Instagram following'],
+          source: ['https://real-search-result.example/acme-candles'],
+        },
+      ],
+      recommendations: ['Undercut their subscription gap.'],
+    };
     claudeClient.sendMessage = async () => ({
-      text: JSON.stringify({
-        topic: 'Top competitor',
-        competitors: [
-          {
-            competitor: 'Acme Candles',
-            market: 'United States',
-            strengths: ['strong Instagram following'],
-            source: ['https://real-search-result.example/acme-candles'],
-          },
-        ],
-        recommendations: ['Undercut their subscription gap.'],
-      }),
+      text: JSON.stringify(replyJson),
       model: 'claude-sonnet-5',
       stopReason: 'end_turn',
       usage: { input_tokens: 50, output_tokens: 60 },
@@ -957,7 +958,11 @@ test('planRouting requires clarification for a fully unmatched task', () => {
             tool_use_id: 'srvtoolu_1',
             content: [{ type: 'web_search_result', url: 'https://real-search-result.example/acme-candles' }],
           },
-          { type: 'text', text: 'ok' },
+          // The model's real final text block - webCompetitorResearchTool.js parses
+          // only this LAST text block (agent/core/claudeClient.js's own extractText()
+          // always derives the top-level `text` field from these same content blocks,
+          // so a realistic mock keeps both in agreement rather than diverging).
+          { type: 'text', text: JSON.stringify(replyJson) },
         ],
       },
     });
@@ -1021,6 +1026,101 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     } finally {
       claudeClient.sendMessage = originalSendMessage;
     }
+  });
+
+  await testAsync('REGRESSION: a plural "competitors" objective routes to competitor_research (live_competitor_research), not market_research - the natural, most common way to phrase this tied 3-3 with market_research (both tools\' text says "research" 3x, and only "competitor" - singular - appeared in competitor_research\'s own text) before tools/toolRegistry.js\'s competitor_research description was worded to also say "competitors"', async () => {
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => ({
+      text: JSON.stringify({ competitors: [] }),
+      model: 'claude-sonnet-5',
+      stopReason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 5 },
+      raw: { content: [{ type: 'text', text: 'ok' }] },
+    });
+    try {
+      const response = await runOrchestratorContract('Research my top competitors for my digital PNG bundle products.');
+      assert.strictEqual(response.routing.plan.length, 1);
+      const step = response.routing.plan[0];
+      assert.strictEqual(step.selected_specialist.id, 'research');
+      assert.strictEqual(step.inputs.capability_id, 'competitor_research');
+      assert.strictEqual(step.inputs.tool_id, 'live_competitor_research');
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = savedKey;
+    }
+  });
+
+  await testAsync('REGRESSION: "PNG and SVG bundle products" no longer splits into a spurious second Product clause - CLAUSE_SPLIT_REGEX has no grammar awareness, so a real client listing their own file formats with "and" (or a comma) must not be torn into an unrelated, unimplemented step; protectFileFormatLists() fuses a run of recognized file-format tokens before splitting happens', async () => {
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => ({
+      text: JSON.stringify({ competitors: [] }),
+      model: 'claude-sonnet-5',
+      stopReason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 5 },
+      raw: { content: [{ type: 'text', text: 'ok' }] },
+    });
+    try {
+      const withAnd = await runOrchestratorContract(
+        'Research my top competitors for my digital PNG and SVG bundle products.'
+      );
+      assert.strictEqual(withAnd.routing.plan.length, 1);
+      assert.strictEqual(withAnd.routing.plan[0].selected_specialist.id, 'research');
+      assert.strictEqual(withAnd.routing.plan[0].inputs.capability_id, 'competitor_research');
+      assert.strictEqual(withAnd.routing.plan[0].inputs.tool_id, 'live_competitor_research');
+
+      const withComma = await runOrchestratorContract(
+        'Research my top competitors for my digital PNG ,SVG bundle products.'
+      );
+      assert.strictEqual(withComma.routing.plan.length, 1);
+      assert.strictEqual(withComma.routing.plan[0].selected_specialist.id, 'research');
+      assert.strictEqual(withComma.routing.plan[0].inputs.capability_id, 'competitor_research');
+      assert.strictEqual(withComma.routing.plan[0].inputs.tool_id, 'live_competitor_research');
+
+      const threeItemOxford = await runOrchestratorContract(
+        'Research my top competitors for my digital PNG, SVG, and JPG bundle products.'
+      );
+      assert.strictEqual(threeItemOxford.routing.plan.length, 1);
+      assert.strictEqual(threeItemOxford.routing.plan[0].inputs.capability_id, 'competitor_research');
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = savedKey;
+    }
+  });
+
+  await test('REGRESSION: protectFileFormatLists never touches a genuine two-task objective - "business"/"identify"/"research"/"social" are not file-format tokens, so legitimate multi-clause splitting is completely unaffected', () => {
+    assert.deepStrictEqual(
+      splitIntoClauses('market competitor research and social media advertising'),
+      ['market competitor research', 'social media advertising']
+    );
+    assert.deepStrictEqual(
+      splitIntoClauses('analyze my business and identify the biggest sales opportunity'),
+      ['analyze my business', 'identify the biggest sales opportunity']
+    );
+    assert.deepStrictEqual(
+      splitIntoClauses('show me my product data and improve my listing content'),
+      ['show me my product data', 'improve my listing content']
+    );
+  });
+
+  await test('REGRESSION: splitIntoClauses fuses a pure file-format list joined by "and"/comma into one clause, with or without an Oxford comma', () => {
+    assert.deepStrictEqual(
+      splitIntoClauses('Research my top competitors for my digital PNG and SVG bundle products.'),
+      ['Research my top competitors for my digital PNG-SVG bundle products.']
+    );
+    assert.deepStrictEqual(
+      splitIntoClauses('Research my top competitors for my digital PNG ,SVG bundle products.'),
+      ['Research my top competitors for my digital PNG-SVG bundle products.']
+    );
+    assert.deepStrictEqual(
+      splitIntoClauses('Research my top competitors for my digital PNG, SVG, and JPG bundle products.'),
+      ['Research my top competitors for my digital PNG-SVG-JPG bundle products.']
+    );
   });
 
   await testAsync('runOrchestratorContract: researchParams passthrough routes to market_research and executes it for real', async () => {
