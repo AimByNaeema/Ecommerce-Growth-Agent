@@ -744,7 +744,19 @@ test('planRouting requires clarification for a fully unmatched task', () => {
   });
 
   await testAsync('Marketing -> Social & Advertising: a real campaign_planning result feeds content_calendar\'s campaignContext for real, in one plan', async () => {
-    const response = await runOrchestratorContract('plan my campaign and schedule a social calendar entry', {
+    // "...for my campaign" (not just "schedule a social calendar entry") - now that
+    // buildPlanStep's tool/capability word-overlap scoring is correctly scoped to this
+    // step's OWN clause (see the cross-clause-isolation fix/regression test below), the
+    // bare clause genuinely ties 3-3 between social_content_planning and
+    // content_calendar_generation on its own wording alone ("social"/"calendar" appear
+    // in both tools' text) - it no longer wins on "campaign" leaking in from the
+    // earlier, unrelated Marketing clause. Same house convention already used by the
+    // SEO -> Listing test above ("refresh my listing benefits", not just "refresh my
+    // listing"): add one real, distinguishing word this clause's own intended target
+    // actually declares (content_calendar_generation's description says "campaign";
+    // social_content_planning's does not) so the match is resolved by genuine signal,
+    // not an incidental tie-break or borrowed vocabulary.
+    const response = await runOrchestratorContract('plan my campaign and schedule a social calendar entry for my campaign', {
       researchParams: {
         campaignReference: 'Winter Launch',
         objective: 'Drive awareness',
@@ -761,6 +773,63 @@ test('planRouting requires clarification for a fully unmatched task', () => {
     assert.strictEqual(socialStep.inputs.capability_id, 'content_calendar');
     const calendarEntry = socialStep.outputs.result.specialized_records[0];
     assert.strictEqual(calendarEntry.campaign, 'Winter Launch');
+  });
+
+  // ---------------------------------------------------------------------------------
+  // REGRESSION: cross-clause vocabulary isolation (live-production bug report).
+  //
+  // buildPlanStep's tool/capability word-overlap scoring used to be computed from the
+  // FULL, possibly multi-clause `objective` (tokenize(objective)) instead of this
+  // step's own routed clause (`currentTask`). Confirmed via the deployed dashboard:
+  // "Analyze our product catalog for the best opportunity, and suggest a marketing
+  // campaign angle for it." split correctly into a Product clause and a Marketing
+  // clause, and the Marketing clause ("suggest a marketing campaign angle for it.")
+  // - which contains no word "opportunity" anywhere - was still routed to the
+  // marketing_opportunity_ranking capability (whose title/description repeat
+  // "opportunity" heavily), hijacked purely by the EARLIER, unrelated Product clause's
+  // wording ("...for the best opportunity"). That capability requires a caller-supplied
+  // `candidates` array nothing in this flow ever supplies, so the step failed on a
+  // misleading "missing data" clarification instead of ever attempting the correct
+  // capability (marketing_strategy, matching "campaign angle").
+  //
+  // Fixed by scoring against currentTask (this step's own clause) instead of the full
+  // objective - see buildPlanStep's objectiveWords computation.
+  // ---------------------------------------------------------------------------------
+
+  await testAsync('REGRESSION: an earlier, unrelated clause\'s vocabulary ("opportunity") no longer hijacks a later clause\'s own specialist\'s capability match', async () => {
+    const response = await runOrchestratorContract(
+      "Analyze our product catalog for the best opportunity, and suggest a marketing campaign angle for it."
+    );
+    const marketingStep = response.routing.plan.find(
+      (step) => step.selected_specialist && step.selected_specialist.id === 'marketing'
+    );
+    assert.ok(marketingStep, 'expected a marketing step');
+    assert.strictEqual(marketingStep.current_task, 'suggest a marketing campaign angle for it.');
+    // The real bug: this used to resolve to 'marketing_opportunity_ranking', hijacked
+    // by the Product clause's "opportunity" wording, never even attempting the
+    // semantically correct capability for "campaign angle".
+    assert.notStrictEqual(marketingStep.inputs.capability_id, 'marketing_opportunity_ranking');
+    assert.strictEqual(marketingStep.inputs.capability_id, 'marketing_strategy');
+    assert.strictEqual(marketingStep.inputs.tool_id, 'marketing_analysis');
+  });
+
+  await testAsync('REGRESSION: removing/changing the unrelated Product clause\'s wording does not change the Marketing clause\'s own capability choice - proving the two are properly isolated', async () => {
+    const withUnrelatedClause = await runOrchestratorContract(
+      "Analyze our product catalog for the best opportunity, and suggest a marketing campaign angle for it."
+    );
+    const alone = await runOrchestratorContract('suggest a marketing campaign angle for it.');
+
+    const stepWithClause = withUnrelatedClause.routing.plan.find(
+      (step) => step.selected_specialist && step.selected_specialist.id === 'marketing'
+    );
+    const stepAlone = alone.routing.plan.find(
+      (step) => step.selected_specialist && step.selected_specialist.id === 'marketing'
+    );
+    assert.ok(stepWithClause);
+    assert.ok(stepAlone);
+    assert.strictEqual(stepWithClause.inputs.capability_id, stepAlone.inputs.capability_id);
+    assert.strictEqual(stepWithClause.inputs.tool_id, stepAlone.inputs.tool_id);
+    assert.strictEqual(stepAlone.inputs.capability_id, 'marketing_strategy');
   });
 
   await testAsync('All -> Analytics + Analytics -> Optimization: a real Marketing retention result feeds Analytics\' growth_opportunities and the growth_opportunity_drafts response field, in one plan', async () => {

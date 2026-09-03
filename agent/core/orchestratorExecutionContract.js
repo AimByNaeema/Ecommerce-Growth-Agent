@@ -1281,7 +1281,27 @@ async function buildPlanStep(
       ? getToolsByCategory(target.id).map((tool) => tool.id)
       : [];
 
-  const objectiveWords = new Set(tokenize(objective));
+  // Tool/capability word-overlap scoring is deliberately based on this step's OWN
+  // clause (currentTask) rather than the full, possibly multi-clause `objective`.
+  // planRouting/routeClause already split a multi-clause objective and routed each
+  // clause to its own target; `currentTask` is that clause's own text (see
+  // runOrchestratorContract's buildPlanStep call site, which passes
+  // routingResult.segments[i] - the specific clause matched to this target - while
+  // `objective` stays the full original text purely so executionRequest.objective/
+  // the tools that read it as free-text instruction - ai_reasoning_completion,
+  // live_competitor_research - still see the caller's complete original wording).
+  // Scoring against the full objective let vocabulary from an EARLIER clause routed
+  // to a DIFFERENT specialist leak into THIS step's tool/capability match (e.g. an
+  // unrelated Product clause's "opportunity" hijacking a Marketing clause's
+  // capability pick toward marketing_opportunity_ranking - see this file's own git
+  // history/verification/testing/orchestratorExecutionContract.test.js's
+  // cross-clause-isolation regression test). Every existing caller of buildPlanStep
+  // besides runOrchestratorContract's multi-clause loop (server.js's single-objective
+  // /run, agent/core/growthWorkflowOrchestrator.js, agent/core/
+  // optimizationCycleOrchestrator.js) already passes the SAME string for both
+  // `objective` and `currentTask`, so this is a no-op for all of them - only the
+  // multi-clause routing path's per-step scoring actually changes.
+  const objectiveWords = new Set(tokenize(currentTask));
   let toolMatch = null;
 
   if (forcedSelection && forcedSelection.toolId && candidateToolIds.includes(forcedSelection.toolId)) {

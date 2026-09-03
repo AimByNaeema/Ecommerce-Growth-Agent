@@ -176,7 +176,18 @@ const BUSINESS_B = {
   token: 'shpat_biz-b-fake-not-real',
 };
 
-const ANALYTICS_OBJECTIVE = 'analyze store performance growth metrics and sales analytics data';
+// Deliberately a single clause (no "and"/comma) - see
+// orchestratorExecutionContract.js's buildPlanStep header comment on cross-clause
+// vocabulary isolation: planRouting dedupes multiple clauses that route to the SAME
+// target by keeping only the first clause's text as that step's current_task (a
+// separate, pre-existing, out-of-scope limitation - see that file's own notes), so a
+// two-clause phrasing here ("...growth metrics and sales analytics data") would
+// silently discard the "sales analytics data" clause's own words once buildPlanStep's
+// tool/capability scoring was correctly narrowed to just the step's own clause,
+// changing which Analytics capability this objective resolves to. This business-
+// isolation suite only needs *a* real, live-dispatchable Analytics objective - not to
+// exercise multi-clause dedup - so it stays single-clause instead.
+const ANALYTICS_OBJECTIVE = 'analyze store sales performance growth metrics';
 
 (async () => {
   // --- 1. CONFIGURATION / CREDENTIALS ----------------------------------------------
