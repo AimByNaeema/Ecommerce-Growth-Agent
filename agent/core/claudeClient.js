@@ -87,6 +87,49 @@ function extractText(content) {
     .join('\n');
 }
 
+// Extracts every REAL URL Anthropic's own server-side tools (e.g. the web_search
+// tool - see tools/webCompetitorResearchTool.js) actually retrieved for one call -
+// never what the model itself claims. This is the ground truth of what a
+// `web_search_tool_result` content block reports finding, so a caller can verify a
+// model's own citations/claims against something the API itself returned, rather
+// than trusting the model's text. Returns unique URLs in first-seen order; never
+// invents or guesses a URL.
+function extractWebSearchResultUrls(content) {
+  if (!Array.isArray(content)) return [];
+  const urls = [];
+  const seen = new Set();
+  for (const block of content) {
+    if (!block || block.type !== 'web_search_tool_result' || !Array.isArray(block.content)) continue;
+    for (const item of block.content) {
+      if (item && item.type === 'web_search_result' && typeof item.url === 'string' && !seen.has(item.url)) {
+        seen.add(item.url);
+        urls.push(item.url);
+      }
+    }
+  }
+  return urls;
+}
+
+// Extracts every citation a `text` content block actually carries (the Messages
+// API's own `citations` shape, e.g. `web_search_result_location` entries produced by
+// the web_search tool) - read only from what the API returned, never inferred or
+// invented here. Returns unique { url, title } pairs in first-seen order.
+function extractCitations(content) {
+  if (!Array.isArray(content)) return [];
+  const citations = [];
+  const seen = new Set();
+  for (const block of content) {
+    if (!block || block.type !== 'text' || !Array.isArray(block.citations)) continue;
+    for (const citation of block.citations) {
+      if (citation && typeof citation.url === 'string' && !seen.has(citation.url)) {
+        seen.add(citation.url);
+        citations.push({ url: citation.url, title: typeof citation.title === 'string' ? citation.title : '' });
+      }
+    }
+  }
+  return citations;
+}
+
 // Sends one message to Claude and returns its reply.
 //
 // options:
@@ -94,11 +137,16 @@ function extractText(content) {
 //   system    - optional system prompt string
 //   model     - optional model id (defaults to ANTHROPIC_MODEL env var, then DEFAULT_MODEL)
 //   maxTokens - optional max output tokens (defaults to ANTHROPIC_MAX_TOKENS env var, then DEFAULT_MAX_TOKENS)
+//   tools     - optional array of Messages API tool definitions (e.g. the hosted
+//               web_search tool - see tools/webCompetitorResearchTool.js). Passed
+//               through to the API verbatim; omitted entirely from the request body
+//               when not supplied, so every existing caller (ai_reasoning_completion,
+//               etc.) is completely unaffected - this is additive only.
 //
 // Returns: { text, model, stopReason, usage, raw }
 // Throws: if messages is invalid, the API key is missing, the request fails, or the
 // API responds with a non-success status. Never returns a fabricated reply.
-async function sendMessage({ messages, system, model, maxTokens, businessId = null } = {}) {
+async function sendMessage({ messages, system, model, maxTokens, businessId = null, tools } = {}) {
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new Error('sendMessage requires a non-empty `messages` array.');
   }
@@ -119,6 +167,7 @@ async function sendMessage({ messages, system, model, maxTokens, businessId = nu
 
   const body = { model: resolvedModel, max_tokens: resolvedMaxTokens, messages };
   if (system) body.system = system;
+  if (Array.isArray(tools) && tools.length > 0) body.tools = tools;
 
   // CONTROLLED RETRIES (agent/core/networkRetry.js): same policy as
   // integrations/adapters/shopifyClient.js's runAdminGraphqlQuery - only a thrown
@@ -182,6 +231,8 @@ module.exports = {
   loadEnvOnce,
   resolveCredentials,
   extractText,
+  extractWebSearchResultUrls,
+  extractCitations,
   DEFAULT_MODEL,
   DEFAULT_MAX_TOKENS,
 };

@@ -11,20 +11,21 @@
 // keyword_research, seo_analysis, listing_content_generation, marketing_analysis,
 // social_content_planning, paid_advertising_planning, social_media_strategy_generation,
 // platform_content_generation, content_calendar_generation,
-// advertising_strategy_planning, advertising_performance_analysis, analytics, and
-// analytics_data_retrieval are the twenty-two entries actually implemented (see
-// tools/businessConfigurationRetrieval.js, tools/aiReasoningCompletion.js,
-// tools/marketResearchTool.js, tools/customerResearchTool.js,
-// tools/globalMarketOpportunityTool.js, tools/competitorResearchTool.js,
-// tools/productDataRetrievalTool.js, tools/collectionDataRetrievalTool.js,
-// tools/marketProductOpportunityTool.js, tools/keywordResearchTool.js,
-// tools/seoAnalysisTool.js, tools/listingContentTool.js, tools/marketingAnalysisTool.js,
-// tools/socialContentTool.js, tools/paidAdvertisingTool.js,
-// tools/socialMediaStrategyTool.js, tools/platformContentTool.js,
-// tools/contentCalendarTool.js, tools/advertisingStrategyTool.js,
-// tools/advertisingPerformanceTool.js, tools/analyticsTool.js, and
-// tools/analyticsDataTool.js) - the other 3 tools (product_research, memory_retrieval,
-// verification) remain 'not_implemented'.
+// advertising_strategy_planning, advertising_performance_analysis, analytics,
+// analytics_data_retrieval, and live_competitor_research are the twenty-three entries
+// actually implemented (see tools/businessConfigurationRetrieval.js,
+// tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
+// tools/customerResearchTool.js, tools/globalMarketOpportunityTool.js,
+// tools/competitorResearchTool.js, tools/productDataRetrievalTool.js,
+// tools/collectionDataRetrievalTool.js, tools/marketProductOpportunityTool.js,
+// tools/keywordResearchTool.js, tools/seoAnalysisTool.js, tools/listingContentTool.js,
+// tools/marketingAnalysisTool.js, tools/socialContentTool.js,
+// tools/paidAdvertisingTool.js, tools/socialMediaStrategyTool.js,
+// tools/platformContentTool.js, tools/contentCalendarTool.js,
+// tools/advertisingStrategyTool.js, tools/advertisingPerformanceTool.js,
+// tools/analyticsTool.js, tools/analyticsDataTool.js, and
+// tools/webCompetitorResearchTool.js) - the other 3 tools (product_research,
+// memory_retrieval, verification) remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -292,6 +293,15 @@ const TOOL_REGISTRY = [
     category: 'verification',
     operation: 'read',
     status: 'not_implemented',
+  },
+  {
+    id: 'live_competitor_research',
+    title: 'Live web competitor research',
+    description:
+      "Find real, currently-operating competitors via Anthropic's hosted web_search tool (agent/core/claudeClient.js's sendMessage `tools` passthrough), verify every claimed competitor against the search results actually returned, and compose the result via agent/core/researchAgent.js's runCompetitorResearch() - see tools/webCompetitorResearchTool.js. The Research specialist's live counterpart to competitor_research, dispatched only when a free-text objective supplies no structured research_params. No writes; never reports an unverified competitor as real.",
+    category: 'research',
+    operation: 'read',
+    status: 'implemented',
   },
 ];
 

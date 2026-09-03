@@ -85,6 +85,7 @@ const businessConfigurationRetrieval = require('../../tools/businessConfiguratio
 const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
 const competitorResearchTool = require('../../tools/competitorResearchTool');
+const webCompetitorResearchTool = require('../../tools/webCompetitorResearchTool');
 const customerResearchTool = require('../../tools/customerResearchTool');
 const globalMarketOpportunityTool = require('../../tools/globalMarketOpportunityTool');
 const marketProductOpportunityTool = require('../../tools/marketProductOpportunityTool');
@@ -137,6 +138,18 @@ const TOOL_EXECUTORS = {
     marketResearchTool.runMarketResearchTool(executionRequest.research_params),
   competitor_research: (executionRequest) =>
     competitorResearchTool.runCompetitorResearchTool(executionRequest.research_params),
+  // The Research specialist's LIVE counterpart to competitor_research (see
+  // agent/core/specialistCapabilityRegistry.js's competitor_research task and the
+  // "LIVE WEB COMPETITOR RESEARCH" block in buildPlanStep below) - reads the free-text
+  // objective itself (a real Claude + web_search call), not research_params, the same
+  // way ai_reasoning_completion does above - including sharing this run's token
+  // budget via runTokenTracker.
+  live_competitor_research: (executionRequest, runTokenTracker) =>
+    webCompetitorResearchTool.runWebCompetitorResearchTool({
+      objective: executionRequest.objective,
+      businessId: executionRequest.business_id,
+      tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
+    }),
   customer_research: (executionRequest) =>
     customerResearchTool.runCustomerResearchTool(executionRequest.research_params),
   global_market_opportunity_analysis: (executionRequest) =>
@@ -301,8 +314,10 @@ function gatherMinimumContext(executionRequest) {
 // TOOL_EXECUTORS (a real Claude call) - its output is not a pure function of its
 // input the way every other tool's is, even though it could technically be keyed by
 // the objective text it receives. An explicit exclusion here is more honest and
-// auditable than relying on incidental key uniqueness.
-const NEVER_CACHED_TOOL_IDS = new Set(['ai_reasoning_completion']);
+// auditable than relying on incidental key uniqueness. live_competitor_research is the
+// same shape for the same reason (a real Claude + web_search call keyed by objective
+// text, not research_params).
+const NEVER_CACHED_TOOL_IDS = new Set(['ai_reasoning_completion', 'live_competitor_research']);
 
 // Shared executor-invocation tail for both executeSelectedCapability (first attempt)
 // and resumeApprovedExecution (post-approval retry) - the only two places TOOL_EXECUTORS
@@ -749,20 +764,36 @@ function validateResult(outcome) {
 // agent/core/specialistRegistry.js's real title/description (see
 // verification/testing/orchestratorExecutionContract.test.js's regression cases added
 // alongside this change).
+// PHASE 1 REGRESSION (real-world testing): "Write new titles for our existing product
+// listings." misrouted to Product (score 6) over Listing (score 3). "product" is a
+// generic e-commerce noun that appears as an incidental modifier in objectives
+// belonging to many other specialists ("product listings", "product pricing",
+// "product marketing"), yet it was in GOAL_ROUTING_WORDS (weight 2) - combined with its
+// structural 3x repetition in Product's own id/title/description, that let it
+// single-handedly outscore Listing's real action vocabulary. Reclassified into
+// GENERIC_ROUTING_WORDS below (weight 0.5, same bucket "business" already occupies for
+// the identical reason - see that set's own comment) rather than removed from routing
+// entirely: it still helps Product win a genuine tie, it just can no longer overpower
+// another specialist's real intent signal on its own. Product's own
+// id/title/description/ROUTING_SYNONYMS.product are completely unchanged - only its
+// weight classification moved.
 const ROUTING_SYNONYMS = {
   analytics_optimization: ['analyze', 'analysis', 'business', 'ecommerce', 'commerce', 'orders'],
   product: ['shopify', 'products'],
   seo: ['keywords'],
-  listing: ['listings'],
+  listing: ['listings', 'titles'],
 };
 
 // Generic words a user naturally types that, on their own, do not indicate which
 // specialist or shared-infrastructure tool is actually meant (e.g. "business" also
 // appears in tools/businessConfigurationRetrieval.js's own title, "analyze" says
-// nothing about which domain to analyze). Scored at a reduced weight below instead of
-// being ignored outright, so they can still help resolve a genuine tie without being
-// able to single-handedly decide a route the way a real intent signal can.
-const GENERIC_ROUTING_WORDS = new Set(['business', 'analyze', 'information', 'help', 'check', 'data']);
+// nothing about which domain to analyze; "product" is the same shape of problem - it
+// is a generic e-commerce noun that shows up as an incidental modifier in objectives
+// belonging to Listing, Marketing, SEO, etc., not just Product - see this block's own
+// PHASE 1 REGRESSION comment above). Scored at a reduced weight below instead of being
+// ignored outright, so they can still help resolve a genuine tie without being able to
+// single-handedly decide a route the way a real intent signal can.
+const GENERIC_ROUTING_WORDS = new Set(['business', 'analyze', 'information', 'help', 'check', 'data', 'product']);
 const GENERIC_ROUTING_WORD_WEIGHT = 0.5;
 
 // Concrete goal/action vocabulary that reliably signals which specialist a request
@@ -770,7 +801,7 @@ const GENERIC_ROUTING_WORD_WEIGHT = 0.5;
 // outweighs an incidental word overlap elsewhere (e.g. a shared-infrastructure tool's
 // own file-path/description text happening to contain "shopify" or "retrieval").
 const GOAL_ROUTING_WORDS = new Set([
-  'sales', 'revenue', 'growth', 'performance', 'conversion', 'product', 'seo',
+  'sales', 'revenue', 'growth', 'performance', 'conversion', 'seo',
   'marketing', 'advertising', 'social', 'media', 'research',
 ]);
 const GOAL_ROUTING_WORD_WEIGHT = 2;
@@ -1172,9 +1203,24 @@ async function buildPlanStep(
     toolMatch = getToolById(forcedSelection.toolId) || null;
   }
 
+  // live_competitor_research is deliberately EXCLUDED from this word-overlap
+  // competition (never a candidate here, only via forcedSelection above or the "LIVE
+  // WEB COMPETITOR RESEARCH" block below): its own title/description inevitably
+  // repeat "competitor"/"research" (the same vocabulary competitor_research and
+  // market_research already compete on), and empirically it can outscore both of them
+  // on real objective wording purely from that repetition, hijacking matchedCapability
+  // away from an unrelated capability (verified directly - this would have changed
+  // verification/testing/orchestratorExecutionContract.test.js's pinned "market
+  // competitor research" -> tool_id 'market_research' outcome before this exclusion
+  // was added). Calibrating its wording to always score lower is fragile and would
+  // need re-verifying against every future objective; excluding it from scoring
+  // entirely is robust by construction. It still gets picked, but only through the
+  // narrow, capability-gated swap below - never by winning this word-overlap contest.
+  const scorableToolIds = candidateToolIds.filter((toolId) => toolId !== 'live_competitor_research');
+
   if (!toolMatch) {
     let bestScore = 0;
-    for (const toolId of candidateToolIds) {
+    for (const toolId of scorableToolIds) {
       const tool = getToolById(toolId);
       if (!tool) continue;
       const score = scoreWordOverlap(`${tool.id} ${tool.title} ${tool.description} ${tool.category}`, objectiveWords);
@@ -1188,8 +1234,8 @@ async function buildPlanStep(
   // No tool scored against the objective's own wording, but at least one candidate
   // exists for this target - fall back to the first one so execution can still report
   // an honest, specific status (e.g. not_available) instead of a generic "no tool".
-  if (!toolMatch && candidateToolIds.length > 0) {
-    toolMatch = getToolById(candidateToolIds[0]) || null;
+  if (!toolMatch && scorableToolIds.length > 0) {
+    toolMatch = getToolById(scorableToolIds[0]) || null;
   }
 
   const matchedCategory = toolMatch ? toolMatch.category : null;
@@ -1305,6 +1351,35 @@ async function buildPlanStep(
     }
   }
 
+  // LIVE WEB COMPETITOR RESEARCH: a narrow, explicitly-scoped special case -
+  // deliberately NOT expressed via the generic live_data_tool_id/CROSS-CAPABILITY
+  // LIVE-DATA FALLBACK mechanism above (see
+  // agent/core/specialistCapabilityRegistry.js's competitor_research task, which
+  // leaves live_data_tool_id null on purpose). Reusing that generic mechanism here
+  // would also make live_competitor_research a fallback donor for every OTHER Research
+  // capability with no live source of its own (market_research, customer_research,
+  // ...) via the block just above - wrongly substituting real competitor data for an
+  // unrelated research type just because it happens to be the only live source in this
+  // specialist's tool set (this would have broken
+  // verification/testing/orchestratorExecutionContract.test.js's pinned "market
+  // competitor research" -> tool_id 'market_research' tests - verified directly against
+  // them before choosing this narrower shape instead). This block only ever swaps to
+  // live_competitor_research once routing has already resolved specifically to the
+  // competitor_research capability itself, exactly like tools/webCompetitorResearchTool.js's
+  // own header explains. Never fabricates data either way: live_competitor_research
+  // reports its own honest 'failed'/'empty' status when it can't actually verify a real
+  // competitor, exactly like every other tool in TOOL_EXECUTORS.
+  const isCompetitorLiveDispatch =
+    Boolean(toolMatch) &&
+    Boolean(matchedCapability) &&
+    matchedCapability.id === 'competitor_research' &&
+    candidateToolIds.includes('live_competitor_research') &&
+    !hasCallerResearchParams &&
+    !(forcedSelection && forcedSelection.toolId);
+  if (isCompetitorLiveDispatch && toolMatch.id !== 'live_competitor_research') {
+    toolMatch = getToolById('live_competitor_research') || toolMatch;
+  }
+
   // STRUCTURED CROSS-AGENT CONTEXT PASSING (see agent/core/crossAgentContext.js): now
   // that this step's real capability is known, derive only the fields it actually
   // declares needing from whichever earlier steps in this same plan produced
@@ -1349,8 +1424,14 @@ async function buildPlanStep(
   // tools/analyticsDataTool.js, tools/productDataRetrievalTool.js's
   // runProductDataRetrievalTool), so the capability's own input_contract.required list
   // (written for the CALLER-SUPPLIED-evidence path) does not apply here.
+  // Also true for the LIVE WEB COMPETITOR RESEARCH swap above: live_competitor_research
+  // retrieves everything it needs itself (the objective text - see
+  // tools/webCompetitorResearchTool.js), so competitor_research's own
+  // input_contract.required (written for the caller-supplied-competitors path) does
+  // not apply once that swap has actually happened.
   const isSelfSufficientLiveDispatch =
-    Boolean(matchedCapability && matchedCapability.live_data_tool_id && toolMatch && toolMatch.id === matchedCapability.live_data_tool_id);
+    Boolean(matchedCapability && matchedCapability.live_data_tool_id && toolMatch && toolMatch.id === matchedCapability.live_data_tool_id) ||
+    Boolean(isCompetitorLiveDispatch && toolMatch && toolMatch.id === 'live_competitor_research');
 
   // STOP AND ASK INSTEAD OF DISPATCHING WITH MISSING EVIDENCE: once effectiveResearchParams
   // reflects everything real that could be gathered (caller input, cross-agent relay from

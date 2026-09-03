@@ -320,6 +320,28 @@ test('routeClause routes "how many orders have we had recently" to Analytics & O
   assert.strictEqual(result.target.id, 'analytics_optimization');
 });
 
+// PHASE 1 REGRESSION (real-world testing): "Write new titles for our existing product
+// listings." used to score Product 6 vs Listing 3 - the generic noun "product"
+// (weighted as a GOAL_ROUTING_WORD, x2) appears 3x in Product's own
+// id/title/description by construction, so it single-handedly outscored Listing's real
+// intent signal. "product" was reclassified into GENERIC_ROUTING_WORDS (weight 0.5,
+// the same bucket as "business" - see that set's own comment) and 'titles' was added
+// to Listing's routing vocabulary. See ROUTING_SYNONYMS's own comment above for the
+// full investigation and the confirmed scoring math (Listing 2.5 vs Product 1.5).
+test('routeClause routes "write new titles for our existing product listings" to Listing, not Product', () => {
+  const result = routeClause('Write new titles for our existing product listings.');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.type, 'specialist');
+  assert.strictEqual(result.target.id, 'listing');
+});
+
+test('routeClause still routes a genuine Product objective ("what products do we currently have in our Shopify store") to Product after the "product" reweighting', () => {
+  const result = routeClause('What products do we currently have in our Shopify store?');
+  assert.strictEqual(result.status, 'matched');
+  assert.strictEqual(result.target.type, 'specialist');
+  assert.strictEqual(result.target.id, 'product');
+});
+
 // --- Structured routing: planRouting -----------------------------------------------
 
 test('planRouting produces a single-target plan for a single-capability task', () => {
@@ -630,7 +652,14 @@ test('planRouting requires clarification for a fully unmatched task', () => {
   });
 
   await testAsync('runOrchestratorContract: a matched tool with zero connected capabilities (Product) honestly reports capability_id null, never guessed', async () => {
-    const response = await runOrchestratorContract('run product research on my catalog');
+    // Wording updated for the "product" GENERIC_ROUTING_WORDS reclassification above:
+    // the original phrasing ("run product research on my catalog") also contained
+    // "research", which - now that "product" no longer outscores it - legitimately
+    // routes to the Research specialist instead (Research's own id/title/description
+    // repeats "research" 3x, same structural pattern "product" had). Dropping
+    // "research" keeps this test's real target (Product's own product_research tool,
+    // which has zero connected capabilities) unambiguous without it.
+    const response = await runOrchestratorContract('Run product catalog pipeline.');
     const step = response.routing.plan[0];
     assert.strictEqual(step.selected_specialist.id, 'product');
     assert.strictEqual(step.inputs.tool_id, 'product_research');
@@ -892,6 +921,105 @@ test('planRouting requires clarification for a fully unmatched task', () => {
       claudeClient.sendMessage = originalSendMessage;
       if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = savedKey;
+    }
+  });
+
+  // --- LIVE WEB COMPETITOR RESEARCH: the Research specialist's live counterpart to
+  // competitor_research for a free-text objective with no supplied competitors - see
+  // agent/core/specialistCapabilityRegistry.js's competitor_research task and
+  // buildPlanStep's "LIVE WEB COMPETITOR RESEARCH" block. claudeClient.sendMessage is
+  // mocked exactly like the ai_reasoning_completion tests just above.
+
+  await testAsync('MOCKED: an objective that resolves to competitor_research with no researchParams dispatches live_competitor_research instead, and returns a real, verified result', async () => {
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => ({
+      text: JSON.stringify({
+        topic: 'Top competitor',
+        competitors: [
+          {
+            competitor: 'Acme Candles',
+            market: 'United States',
+            strengths: ['strong Instagram following'],
+            source: ['https://real-search-result.example/acme-candles'],
+          },
+        ],
+        recommendations: ['Undercut their subscription gap.'],
+      }),
+      model: 'claude-sonnet-5',
+      stopReason: 'end_turn',
+      usage: { input_tokens: 50, output_tokens: 60 },
+      raw: {
+        content: [
+          {
+            type: 'web_search_tool_result',
+            tool_use_id: 'srvtoolu_1',
+            content: [{ type: 'web_search_result', url: 'https://real-search-result.example/acme-candles' }],
+          },
+          { type: 'text', text: 'ok' },
+        ],
+      },
+    });
+
+    try {
+      const response = await runOrchestratorContract('Analyze my top competitor.');
+      assert.strictEqual(response.routing.plan.length, 1);
+      const step = response.routing.plan[0];
+      assert.strictEqual(step.selected_specialist.id, 'research');
+      assert.strictEqual(step.inputs.capability_id, 'competitor_research');
+      assert.strictEqual(step.inputs.tool_id, 'live_competitor_research');
+      assert.strictEqual(step.errors.length, 0);
+      assert.ok(step.outputs, 'expected a dispatched outcome, not a clarification_required stop');
+      assert.strictEqual(step.outputs.result.research_type, 'competitor_research');
+      assert.strictEqual(step.outputs.result.specialized_records[0].competitor, 'Acme Candles');
+      assert.strictEqual(step.outputs.result.verification_status, 'verified');
+      // Real web_search usage was actually recorded, not skipped.
+      assert.strictEqual(response.tokens_used, 110);
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = savedKey;
+    }
+  });
+
+  await testAsync('MOCKED: live_competitor_research honestly reports "empty" (never fabricates) when nothing could be verified, and never fabricates through the full orchestrator pipeline', async () => {
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => ({
+      text: JSON.stringify({ competitors: [] }),
+      model: 'claude-sonnet-5',
+      stopReason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 5 },
+      raw: { content: [{ type: 'text', text: 'ok' }] },
+    });
+
+    try {
+      const response = await runOrchestratorContract('Analyze my top competitor.');
+      const step = response.routing.plan[0];
+      assert.strictEqual(step.inputs.tool_id, 'live_competitor_research');
+      assert.strictEqual(step.outputs.status, 'empty');
+      assert.strictEqual(step.outputs.result, null);
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = savedKey;
+    }
+  });
+
+  await testAsync('REGRESSION: live_competitor_research never hijacks an unrelated Research capability - "market competitor research" still dispatches market_research, exactly as before this feature existed', async () => {
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => {
+      throw new Error('sendMessage/web_search must never be reached for a market_research dispatch');
+    };
+    try {
+      const response = await runOrchestratorContract('market competitor research and social media advertising');
+      const [researchStep] = response.routing.plan;
+      assert.strictEqual(researchStep.inputs.tool_id, 'market_research');
+      assert.strictEqual(researchStep.inputs.capability_id, 'market_research');
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
     }
   });
 

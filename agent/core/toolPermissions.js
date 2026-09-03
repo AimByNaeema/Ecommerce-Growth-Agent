@@ -100,6 +100,10 @@ const TOOL_CLASSIFICATIONS = {
   advertising_performance_analysis: 'analysis_only',
   analytics: 'analysis_only',
   analytics_data_retrieval: 'analysis_only',
+  // A real web search + a Claude completion, but exactly like competitor_research
+  // above, it only ever retrieves/composes a research record for a human to read -
+  // never publishes, sends, or changes anything by itself.
+  live_competitor_research: 'analysis_only',
 };
 
 // Which tools/toolRegistry.js `operation` types ('read'/'write'/'execute') each of

@@ -262,8 +262,8 @@ const RESEARCH_TASKS = [
     id: 'competitor_research',
     title: 'Competitor research',
     description:
-      "Produce one competitor research record per caller-supplied competitor via researchAgent.js's runCompetitorResearch().",
-    toolIds: ['competitor_research'],
+      "Produce one competitor research record per caller-supplied competitor via researchAgent.js's runCompetitorResearch(). live_competitor_research (tools/webCompetitorResearchTool.js) is this task's own live counterpart for a free-text objective with no caller-supplied competitors - deliberately NOT expressed via live_data_tool_id below (left null on purpose): that generic mechanism also makes a declared live source a fallback for every OTHER Research task with no live source of its own (see agent/core/orchestratorExecutionContract.js's CROSS-CAPABILITY LIVE-DATA FALLBACK), which would wrongly substitute real competitor data for an unrelated research type (e.g. market_research) just because it is the only live source in this specialist's tool set. Instead, agent/core/orchestratorExecutionContract.js's buildPlanStep has its own narrow, explicitly-scoped 'LIVE WEB COMPETITOR RESEARCH' block that only ever swaps to live_competitor_research once routing has already resolved specifically to this competitor_research task.",
+    toolIds: ['competitor_research', 'live_competitor_research'],
     required: ['competitors', 'competitors[].competitor'],
     // No top-level `market` - runCompetitorResearch() never reads params.market
     // (only each entry's own competitors[].market), verified against source.
