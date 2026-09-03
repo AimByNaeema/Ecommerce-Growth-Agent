@@ -187,7 +187,7 @@ test('Research -> Product: a research type with no findings contributes nothing'
 
 // --- Flow 2: Product -> Listing ------------------------------------------------------
 
-test('Product -> Listing: product_opportunity_analysis feeds productInfo.description and market', () => {
+test('Product -> Listing: product_opportunity_analysis feeds productReference (its required field), productInfo.description and market', () => {
   const priorStep = step({
     specialistId: 'product',
     capabilityId: 'product_opportunity_analysis',
@@ -203,12 +203,13 @@ test('Product -> Listing: product_opportunity_analysis feeds productInfo.descrip
     toCapabilityId: 'listing_content',
   });
   assert.deepStrictEqual(result, {
+    productReference: 'Insulated Jacket',
     productInfo: { description: 'A warm, sustainable jacket.' },
     market: 'European Union',
   });
 });
 
-test('Product -> Listing: marketplace_format has no productInfo/market in its input_contract, so nothing is injected', () => {
+test('Product -> Listing: marketplace_format has no productInfo/market in its input_contract, but DOES require productReference, so only that is injected', () => {
   const priorStep = step({
     specialistId: 'product',
     capabilityId: 'product_opportunity_analysis',
@@ -223,7 +224,7 @@ test('Product -> Listing: marketplace_format has no productInfo/market in its in
     toSpecialistId: 'listing',
     toCapabilityId: 'marketplace_format',
   });
-  assert.deepStrictEqual(result, {});
+  assert.deepStrictEqual(result, { productReference: 'Insulated Jacket' });
 });
 
 // --- Flow 3: SEO -> Listing ----------------------------------------------------------

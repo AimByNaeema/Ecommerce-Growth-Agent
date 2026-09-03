@@ -138,11 +138,17 @@ const PRODUCT_OPPORTUNITY_CAPABILITY_IDS = ['product_opportunity_analysis', 'mar
 // ---------------------------------------------------------------------------------
 // 2. Product -> Listing
 //
-// Listing's listing_content capability reads productInfo.description (fallback for
-// the listing description) and market/targetMarket (see
-// agent/core/listingAgent.js's resolveListingSources) - both real fields on either
-// Product opportunity capability's own specialized_records.product_record and
-// top-level market field.
+// Listing's listing_content capability REQUIRES productReference (see
+// agent/core/listingAgent.js's generateListingContent, which throws via
+// requireNonEmptyString before resolveListingSources ever runs) - a plain identifier
+// string, not part of resolveListingSources' own productInfo/targetMarket/
+// customerSegment/seoRecommendations/brandInfo relay set. Product's own
+// product_identity (the same field extractProductToMarketing already relays as
+// 'retention''s productReference below) is the direct, verified source. Beyond that
+// required field, listing_content also reads productInfo.description (fallback for
+// the listing description) and market/targetMarket (see resolveListingSources) - both
+// real fields on either Product opportunity capability's own
+// specialized_records.product_record and top-level market field.
 // ---------------------------------------------------------------------------------
 
 function extractProductToListing(fromCapabilityId, _toCapabilityId, fromOutput) {
@@ -150,6 +156,9 @@ function extractProductToListing(fromCapabilityId, _toCapabilityId, fromOutput) 
   const productRecord = fromOutput.specialized_records && fromOutput.specialized_records.product_record;
 
   const context = {};
+  if (isNonEmptyString(fromOutput.product_identity)) {
+    context.productReference = fromOutput.product_identity;
+  }
   if (productRecord && isNonEmptyString(productRecord.description)) {
     context.productInfo = { description: productRecord.description };
   }
@@ -490,9 +499,14 @@ function gatherGrowthOpportunityDrafts(completedSteps) {
 function adaptSingleLiveProductForRelay(fromOutput) {
   if (!Array.isArray(fromOutput) || fromOutput.length !== 1) return null;
   const [record] = fromOutput;
-  if (!record || !isNonEmptyString(record.productIdentity)) return null;
+  // agent/core/productModel.js's real field is the snake_case `product_identity` (see
+  // createEmptyProductRecord) - the same name productAgent.js's live product_discovery
+  // records actually carry, and the same name extractProductToListing/
+  // extractProductToMarketing already read on fromOutput.product_identity below. There
+  // is no camelCase `productIdentity` field anywhere on this record.
+  if (!record || !isNonEmptyString(record.product_identity)) return null;
   return {
-    product_identity: record.productIdentity,
+    product_identity: record.product_identity,
     market: '',
     source: Array.isArray(record.source) ? [...record.source] : [],
     specialized_records: { product_record: { description: record.description || '' } },

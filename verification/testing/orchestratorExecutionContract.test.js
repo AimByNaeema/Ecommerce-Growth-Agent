@@ -195,6 +195,20 @@ test('splitIntoClauses does not split inside a word ("brand" is not "and")', () 
   assert.deepStrictEqual(splitIntoClauses('grow my brand'), ['grow my brand']);
 });
 
+test('REGRESSION: splitIntoClauses does not split a comma used as a thousands separator inside a number/product name', () => {
+  assert.deepStrictEqual(
+    splitIntoClauses("Look up the '1,000 Funny T-Shirt SVG Bundle' product and write an optimized listing for it."),
+    ["Look up the '1,000 Funny T-Shirt SVG Bundle' product", 'write an optimized listing for it.']
+  );
+});
+
+test('splitIntoClauses still splits on a real clause-separating comma next to a number ("...$2,500 budget, and suggest a marketing angle")', () => {
+  assert.deepStrictEqual(
+    splitIntoClauses('Plan a $2,500 budget, and suggest a marketing angle'),
+    ['Plan a $2,500 budget', 'suggest a marketing angle']
+  );
+});
+
 // --- Structured routing: routeClause -----------------------------------------------
 
 test('routeClause cleanly matches a single specialist (SEO)', () => {
@@ -2028,12 +2042,25 @@ test('planRouting requires clarification for a fully unmatched task', () => {
       assert.strictEqual(productStep.selected_specialist.id, 'product');
       assert.strictEqual(productStep.completion_state, 'complete');
       assert.strictEqual(listingStep.selected_specialist.id, 'listing');
-      // productReference is still not supplied (the real gap this task's declared
-      // input_contract names), but productInfo.description WAS derived from the one
-      // real product Product just retrieved live - real evidence relayed, not
-      // fabricated, and not enough alone to satisfy the required field.
+      // productReference (listing_content's one required field) is now derived from
+      // the one real product Product just retrieved live (its real product_identity -
+      // via extractProductToListing/adaptSingleLiveProductForRelay in
+      // agent/core/crossAgentContext.js, which previously checked a camelCase
+      // `productIdentity` field that live product records never actually have - see
+      // agent/core/productModel.js's real snake_case product_identity field) - real
+      // evidence relayed, not fabricated, and now sufficient to actually dispatch
+      // instead of stopping BEFORE dispatch on a missing required field every time.
+      assert.strictEqual(
+        listingStep.outputs.result.specialized_records[0].product_reference,
+        'Insulated Jacket'
+      );
+      // Still 'blocked' (tool status 'empty') - but now for a real, separate,
+      // unrelated reason: tools/productDataRetrievalTool.js's live Shopify query does
+      // not request a product's description, so listing_content still has nothing to
+      // derive a title/description/CTA from. That is a live-query scope gap, not a
+      // cross-agent-context bug - not fabricated here, and not what this test covers.
       assert.strictEqual(listingStep.completion_state, 'blocked');
-      assert.ok(listingStep.errors[0].includes('productReference'));
+      assert.ok(listingStep.outputs.result.limitations.some((l) => l.includes('No description could be derived')));
     } finally {
       global.fetch = savedFetch;
       if (savedDomain === undefined) delete process.env.SHOPIFY_STORE_DOMAIN;

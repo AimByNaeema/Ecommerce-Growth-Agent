@@ -871,7 +871,15 @@ function scoreRoutingTargets(text) {
 // Splits an objective into independent clauses on common conjunctions/list
 // separators, so a multi-part request ("research X and optimize Y") can be routed to
 // more than one target instead of forcing a single pick.
-const CLAUSE_SPLIT_REGEX = /\s*(?:,|;|\band\b|\balso\b|\bas well as\b|\bthen\b|\bplus\b)\s*/i;
+// REGRESSION (real-world testing): a bare `,` also matches the thousands separator
+// inside a plain number/product name ("1,000 Funny T-Shirt SVG Bundle", "$2,500
+// budget"), tearing it in half ("Look up the '1" / "000 Funny T-Shirt SVG Bundle'...")
+// and leaving the first fragment unmatchable to any real capability. The comma
+// alternative below only fires when it is NOT immediately flanked by a digit on both
+// sides, which a genuine clause-separating comma (always followed by a space or the
+// start of a new word, never by a digit) still satisfies unchanged - this narrows
+// comma-splitting only for the specific digit-comma-digit case, never anything else.
+const CLAUSE_SPLIT_REGEX = /\s*(?:(?<!\d),(?!\d)|;|\band\b|\balso\b|\bas well as\b|\bthen\b|\bplus\b)\s*/i;
 
 // PHASE 2 REGRESSION (real-world testing): CLAUSE_SPLIT_REGEX has no grammar
 // awareness, so it splits "research my top competitors for my digital PNG and SVG
