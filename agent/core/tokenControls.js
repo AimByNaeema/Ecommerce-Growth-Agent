@@ -32,12 +32,38 @@ function getMaxTokensPerRun() {
   return envOverride > 0 ? envOverride : getMaxTokensPerCall() * 4;
 }
 
-// Sums a Claude Messages API usage object ({ input_tokens, output_tokens }) into one
-// total. Never guesses - missing/malformed usage counts as 0, not fabricated.
+// Reduces either provider's own usage object to one { input, output } pair.
+//
+// The two clients report usage under different field names, because each simply passes
+// its API's own response through (see agent/core/claudeClient.js and
+// agent/core/geminiClient.js, neither of which is changed):
+//   - Claude: { input_tokens, output_tokens }            (raw.usage)
+//   - Gemini: { promptTokenCount, candidatesTokenCount } (raw.usageMetadata)
+//
+// This lives here rather than in agent/core/aiProviderSelector.js (which is a
+// deliberate pure pass-through) or in either client, so neither provider's own
+// behavior changes - this module already owns every "how many tokens did that cost"
+// decision, so it is the one place that has to understand both vocabularies.
+//
+// WHY IT MATTERS: tools/aiReasoningCompletion.js runs under whichever provider
+// AI_PROVIDER selects, and its reported tokensUsed is what
+// agent/core/orchestratorExecutionContract.js adds to runTokenTracker.tokensUsedThisRun.
+// Reading only Claude's field names meant a real Gemini call reported 0 tokens, so the
+// per-run budget never accumulated and checkTokenBudget below could never trip - the
+// token controls were silently inert under Gemini. Never guesses: unknown/missing/
+// malformed usage still counts as 0 rather than a fabricated number.
+function normalizeUsage(usage) {
+  if (!usage || typeof usage !== 'object') return { input: 0, output: 0 };
+  return {
+    input: Number(usage.input_tokens) || Number(usage.promptTokenCount) || 0,
+    output: Number(usage.output_tokens) || Number(usage.candidatesTokenCount) || 0,
+  };
+}
+
+// Sums either provider's usage object into one total (see normalizeUsage above).
+// Never guesses - missing/malformed usage counts as 0, not fabricated.
 function totalTokensFromUsage(usage) {
-  if (!usage || typeof usage !== 'object') return 0;
-  const input = Number(usage.input_tokens) || 0;
-  const output = Number(usage.output_tokens) || 0;
+  const { input, output } = normalizeUsage(usage);
   return input + output;
 }
 
@@ -67,6 +93,7 @@ function checkTokenBudget({ requestedMaxTokens, tokensUsedThisRun = 0 } = {}) {
 module.exports = {
   getMaxTokensPerCall,
   getMaxTokensPerRun,
+  normalizeUsage,
   totalTokensFromUsage,
   checkTokenBudget,
 };

@@ -1,25 +1,42 @@
 'use strict';
 
 // The ai_reasoning_completion tool (tools/toolRegistry.js): the Chief/Orchestrator's
-// only path to calling Claude. Thin wrapper around agent/core/claudeClient.js's
-// sendMessage() - reuses it directly (no new HTTP logic, no second Claude client, no
-// SDK). Structured input/output only: callers pass a compact
-// { instruction, context, maxTokens } request, never a raw Anthropic messages array;
+// only path to a language model. Thin wrapper around agent/core/aiProviderSelector.js's
+// sendMessage() - reuses it directly (no new HTTP logic, no second client, no SDK).
+// Structured input/output only: callers pass a compact
+// { instruction, context, maxTokens } request, never a raw provider messages array;
 // callers receive a compact { text, model, stopReason, tokensUsed, inputTokens,
 // outputTokens } result, never the raw API envelope.
+//
+// PROVIDER SELECTION: which model actually answers is decided by AI_PROVIDER (see
+// agent/core/aiProviderSelector.js - "claude" or "gemini", defaulting to gemini), never
+// hardcoded here and never chosen by a caller. This tool previously required
+// agent/core/claudeClient.js directly, which meant a project configured for Gemini
+// silently got Claude for every orchestrated reasoning call. Going through the selector
+// is the whole fix: both clients already expose the same
+// sendMessage({ messages, maxTokens, businessId }) shape, so nothing else here changes,
+// and neither client's own behavior is touched.
+//
+// Deliberately NOT changed alongside this: tools/webCompetitorResearchTool.js still
+// uses agent/core/claudeClient.js directly, because it passes a Claude-native
+// `web_search` tool that agent/core/geminiClient.js has no equivalent for and would
+// silently ignore. Routing that through the selector would quietly disable live web
+// research whenever AI_PROVIDER is gemini - a separate, explicitly-scoped decision.
 //
 // Token controls (agent/core/tokenControls.js) are enforced here, before
 // claudeClient.js is ever called: a request that would exceed the run's remaining
 // token budget is refused outright (sendMessage is never reached), and a request
 // asking for more than the per-call ceiling is capped, never trusted as-is.
 //
-// claudeClient is required as a module object (not destructured) and called via
-// property access (claudeClient.sendMessage(...)) so tests can substitute a mocked
+// aiProviderSelector is required as a module object (not destructured) and called via
+// property access (aiProviderSelector.sendMessage(...)) so tests can substitute a mocked
 // implementation without a mocking framework - see
-// verification/testing/aiReasoningCompletion.test.js.
+// verification/testing/aiReasoningCompletion.test.js. The selector resolves the active
+// client per call, so a test can equally mock the underlying claudeClient/geminiClient
+// (see verification/testing/aiReasoningProviderSelection.test.js).
 
-const claudeClient = require('../agent/core/claudeClient');
-const { checkTokenBudget, totalTokensFromUsage } = require('../agent/core/tokenControls');
+const aiProviderSelector = require('../agent/core/aiProviderSelector');
+const { checkTokenBudget, totalTokensFromUsage, normalizeUsage } = require('../agent/core/tokenControls');
 
 // Runs one structured Claude completion.
 //
@@ -49,7 +66,7 @@ async function runReasoningCompletion({ instruction, context, maxTokens, tokensU
 
   const userContent = context ? `${instruction}\n\nContext:\n${context}` : instruction;
 
-  const result = await claudeClient.sendMessage({
+  const result = await aiProviderSelector.sendMessage({
     messages: [{ role: 'user', content: userContent }],
     maxTokens: budget.capped_max_tokens,
     businessId,
@@ -65,8 +82,14 @@ async function runReasoningCompletion({ instruction, context, maxTokens, tokensU
     // (see agent/core/orchestratorExecutionContract.js's runExecutor). tokensUsed
     // itself is unchanged, so every existing consumer of this return value is
     // unaffected.
-    inputTokens: Number(result.usage && result.usage.input_tokens) || 0,
-    outputTokens: Number(result.usage && result.usage.output_tokens) || 0,
+    //
+    // Read through tokenControls.normalizeUsage rather than off Claude's own field
+    // names: Gemini reports { promptTokenCount, candidatesTokenCount } instead, so
+    // reading input_tokens/output_tokens directly reported 0 for every real Gemini
+    // call - which would have left the run's token budget permanently at 0 and the
+    // usage ledger understating real spend.
+    inputTokens: normalizeUsage(result.usage).input,
+    outputTokens: normalizeUsage(result.usage).output,
   };
 }
 

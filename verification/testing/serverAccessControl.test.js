@@ -16,10 +16,20 @@ const os = require('node:os');
 const path = require('node:path');
 
 // /ask runs through the shared execution stack (buildPlanStep -> TOOL_EXECUTORS ->
-// tools/aiReasoningCompletion.js), so the one real outbound call to mock is
-// claudeClient.sendMessage - not a provider selector. See
-// verification/testing/askOrchestrationRouting.test.js for that routing's own tests;
-// this suite only needs a working /ask to prove the auth boundary lets it through.
+// tools/aiReasoningCompletion.js), which resolves its client via aiProviderSelector.
+// This suite only needs a working /ask to prove the auth boundary lets it through, so
+// it pins the provider and mocks that one client. See
+// verification/testing/askOrchestrationRouting.test.js for the routing's own tests and
+// verification/testing/aiReasoningProviderSelection.test.js for provider selection.
+//
+// MUST be set before any request runs: tools/aiReasoningCompletion.js resolves its
+// client through agent/core/aiProviderSelector.js at call time, and this suite mocks
+// claudeClient. Without pinning, the selector would follow the local .env - which sets
+// AI_PROVIDER=gemini with a real key - and these tests would make REAL, billable Gemini
+// API calls instead of using the mock. Provider selection itself is covered by
+// verification/testing/aiReasoningProviderSelection.test.js.
+process.env.AI_PROVIDER = 'claude';
+
 const claudeClient = require('../../agent/core/claudeClient');
 const orchestratorExecutionContract = require('../../agent/core/orchestratorExecutionContract');
 

@@ -22,8 +22,15 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// MUST be set before any request runs: tools/aiReasoningCompletion.js resolves its
+// client through agent/core/aiProviderSelector.js at call time, and this suite mocks
+// claudeClient. Without pinning, the selector would follow the local .env - which sets
+// AI_PROVIDER=gemini with a real key - and these tests would make REAL, billable Gemini
+// API calls instead of using the mock. Provider selection itself is covered by
+// verification/testing/aiReasoningProviderSelection.test.js.
+process.env.AI_PROVIDER = 'claude';
+
 const claudeClient = require('../../agent/core/claudeClient');
-const aiProviderSelector = require('../../agent/core/aiProviderSelector');
 const orchestratorExecutionContract = require('../../agent/core/orchestratorExecutionContract');
 const toolPermissions = require('../../agent/core/toolPermissions');
 
@@ -134,30 +141,31 @@ async function run() {
 
   // --- 2/3. No direct model-client call; the shared stack is what runs ---
 
-  await testAsync('/ask no longer calls aiProviderSelector.sendMessage directly', async () => {
-    let providerCalled = false;
-    const savedProvider = aiProviderSelector.sendMessage;
-    aiProviderSelector.sendMessage = async () => {
-      providerCalled = true;
-      return { text: 'this must never be used' };
-    };
-    try {
-      await withMockedClaude(successfulClaudeReply(), async () => {
-        await withServer(async (port) => {
-          const res = await request(port, {
-            method: 'POST',
-            path: '/ask',
-            body: { message: 'how are sales doing' },
-            headers: authHeaders,
-          });
-          assert.strictEqual(res.status, 200);
-          assert.strictEqual(JSON.parse(res.raw).reply, 'a real mocked reply');
-        });
-      });
-    } finally {
-      aiProviderSelector.sendMessage = savedProvider;
+  await testAsync('server.js never reaches a model client or provider selector directly', async () => {
+    // A STATIC check, deliberately. This used to stub aiProviderSelector.sendMessage and
+    // assert it was never hit - but tools/aiReasoningCompletion.js now legitimately
+    // calls the selector to honor AI_PROVIDER, so a runtime stub can no longer tell a
+    // forbidden direct call from the correct one made two layers down. The invariant
+    // being protected is specifically that server.js does not reach a model itself, and
+    // reading its source proves exactly that with nothing left to interpret.
+    const serverSource = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+    for (const forbidden of ['aiProviderSelector', 'claudeClient', 'geminiClient']) {
+      const requiresIt = new RegExp(`require\\([^)]*${forbidden}`, 'i').test(serverSource);
+      assert.strictEqual(requiresIt, false, `server.js must not require ${forbidden} - /ask goes through the shared stack`);
     }
-    assert.strictEqual(providerCalled, false, '/ask must not reach aiProviderSelector any more');
+    // And the endpoint still genuinely works through that stack.
+    await withMockedClaude(successfulClaudeReply(), async () => {
+      await withServer(async (port) => {
+        const res = await request(port, {
+          method: 'POST',
+          path: '/ask',
+          body: { message: 'how are sales doing' },
+          headers: authHeaders,
+        });
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(JSON.parse(res.raw).reply, 'a real mocked reply');
+      });
+    });
   });
 
   await testAsync('/ask dispatches through buildPlanStep with the pinned ai_reasoning tool', async () => {

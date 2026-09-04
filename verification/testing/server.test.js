@@ -6,6 +6,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// MUST be set before any request runs: tools/aiReasoningCompletion.js resolves its
+// client through agent/core/aiProviderSelector.js at call time, and this suite mocks
+// claudeClient. Without pinning, the selector would follow the local .env - which sets
+// AI_PROVIDER=gemini with a real key - and these tests would make REAL, billable Gemini
+// API calls instead of using the mock. Provider selection itself is covered by
+// verification/testing/aiReasoningProviderSelection.test.js.
+process.env.AI_PROVIDER = 'claude';
+
 const claudeClient = require('../../agent/core/claudeClient');
 const orchestratorExecutionContract = require('../../agent/core/orchestratorExecutionContract');
 

@@ -1,15 +1,25 @@
 'use strict';
 
 const assert = require('node:assert');
+
+// MUST be set before anything calls runReasoningCompletion: that tool now resolves its
+// client through agent/core/aiProviderSelector.js at call time, and this suite is
+// specifically about the Claude path (it mocks claudeClient and asserts Claude's own
+// not-configured message). Without pinning, the selector would follow the local .env -
+// which sets AI_PROVIDER=gemini with a real key - and these tests would make REAL,
+// billable Gemini API calls instead of using the mocks below. Provider selection itself
+// is covered by verification/testing/aiReasoningProviderSelection.test.js.
+process.env.AI_PROVIDER = 'claude';
+
 const { runReasoningCompletion } = require('../../tools/aiReasoningCompletion');
 const claudeClient = require('../../agent/core/claudeClient');
 const { getMaxTokensPerRun } = require('../../agent/core/tokenControls');
 
-// aiReasoningCompletion.js calls claudeClient.sendMessage(...) via the required
-// module object (not a destructured binding), which is what makes it possible to
-// substitute a mocked implementation here without a mocking framework - see that
-// file's header comment. Every mock is installed and restored within a single test's
-// try/finally so no mock ever leaks into another test.
+// aiReasoningCompletion.js reaches claudeClient.sendMessage(...) through
+// aiProviderSelector, which resolves to this same required module object (not a
+// destructured binding) - which is what makes it possible to substitute a mocked
+// implementation here without a mocking framework. Every mock is installed and restored
+// within a single test's try/finally so no mock ever leaks into another test.
 
 let passed = 0;
 let failed = 0;

@@ -68,6 +68,7 @@ const TEST_FILES = [
   'usageLimits.test.js',
   'usageTracker.test.js',
   'aiReasoningCompletion.test.js',
+  'aiReasoningProviderSelection.test.js',
   'executionState.test.js',
   'crossAgentContext.test.js',
   'orchestratorExecutionContract.test.js',
