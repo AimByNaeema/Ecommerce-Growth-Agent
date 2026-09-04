@@ -14,6 +14,21 @@ const { getSpecialistById } = require('./agent/core/specialistRegistry');
 // unchanged below for the Chief Orchestrator's own free-text routing + approval flow
 // (see /orchestrate and /orchestrate/approve).
 const orchestratorExecutionContract = require('./agent/core/orchestratorExecutionContract');
+// The two already-built, already-tested orchestrators this file exposes over HTTP (see
+// /growth-workflow and /optimization-cycle below). Required as whole module objects for
+// the same reason orchestratorExecutionContract is above - a test monkey-patches these
+// functions on the shared, cached module instance. NOTHING about either orchestrator's
+// logic is reimplemented, copied, or wrapped here: these endpoints only validate input,
+// hold a paused run's in-memory state between calls, and hand the real functions their
+// own documented arguments. There is no second orchestration layer.
+const growthWorkflowOrchestrator = require('./agent/core/growthWorkflowOrchestrator');
+const optimizationCycleOrchestrator = require('./agent/core/optimizationCycleOrchestrator');
+// The project's existing least-privilege gate (agent/core/toolPermissions.js). Used
+// below purely as a deterministic PRE-check at the HTTP boundary, so a caller-supplied
+// optimization-cycle target that its specialist does not actually own is refused before
+// any tool or model budget is spent. It is the same function buildPlanStep already calls
+// internally - never a second, parallel permission system.
+const { checkToolAccess } = require('./agent/core/toolPermissions');
 // One honest, human-readable sentence per execution state (agent/core/executionState.js
 // shape) - so a run's primary, user-facing answer is never just the raw internal JSON
 // (see /run, /orchestrate, /orchestrate/approve below and public/index.html's
@@ -117,6 +132,136 @@ function validateResearchParams(value) {
   return { ok: true, value };
 }
 
+// ---------------------------------------------------------------------------
+// Shared helpers for the two orchestrator surfaces below (/growth-workflow and
+// /optimization-cycle). Input validation and response shaping only - no workflow,
+// stage, iteration, or approval logic lives here; all of that stays in
+// agent/core/growthWorkflowOrchestrator.js and agent/core/optimizationCycleOrchestrator.js.
+// ---------------------------------------------------------------------------
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Both orchestrators hand back a `_resumeState` carrying their LIVE, in-memory run
+// trackers. It must never reach an HTTP client, for two independent reasons:
+//
+//  1. It is not serializable. agent/core/toolResultCache.js's createToolResultCache()
+//     returns `{ entries: new Map() }`, and JSON.stringify turns a Map into `{}` - so a
+//     client would receive a `_resumeState` that LOOKS resumable but has a silently
+//     gutted cache.
+//  2. Accepting one back would destroy this endpoint's cost controls. It carries
+//     runTokenTracker/runUsageTracker/runApprovalTracker, so a caller who could post
+//     their own could reset `tokensUsedThisRun` to 0 on every resume and run an
+//     unbounded cycle, or hand in a forged already-approved approval request.
+//
+// So the resume state is kept SERVER-side (see the two Maps in createApp) and the
+// client only ever sends back a run id - exactly the discipline orchestratorRuns
+// already uses for /orchestrate -> /orchestrate/approve. Everything else the
+// orchestrator returned (status, stop_reason, plan/iterations, audit_trail,
+// usage_ledger, usage_summary, growth_opportunity_drafts, ...) is passed through
+// unchanged, so each orchestrator's own result semantics are preserved.
+function withoutResumeState(result) {
+  if (!isPlainObject(result)) return result;
+  const { _resumeState, ...publicResult } = result;
+  return publicResult;
+}
+
+// Stores a paused run's resume state under its own run id, or forgets the run entirely
+// once it reaches a terminal status (no `_resumeState` means 'completed'/'stopped' -
+// there is nothing left to resume, so holding its trackers would only leak memory).
+function retainRunState(store, runId, result) {
+  if (!runId) return;
+  if (isPlainObject(result) && isPlainObject(result._resumeState)) {
+    store.set(runId, result._resumeState);
+  } else {
+    store.delete(runId);
+  }
+}
+
+// The deterministic least-privilege pre-check for a caller-supplied optimization-cycle
+// target. No LLM is involved: agent/core/toolPermissions.js's checkToolAccess() decides
+// this from the tool registry and the specialist's own declared categories/operations.
+//
+// This matters concretely rather than defensively. buildPlanStep only honors a
+// forcedSelection.toolId when that tool is ALREADY a candidate for the target specialist
+// (see its `candidateToolIds.includes(...)` guard); otherwise it silently falls through
+// to word-overlap scoring and runs a DIFFERENT tool. Over HTTP that would mean a caller
+// asking for a tool their specialist does not own gets some other tool's result back
+// with no error at all. Checking here turns that into an honest 403 - and does so before
+// any tool call or model token is spent. buildPlanStep itself is unchanged and still
+// performs its own identical check internally; this never replaces it.
+function validateCycleTarget(target, fieldName) {
+  if (!isPlainObject(target) || typeof target.specialistId !== 'string' || !target.specialistId.trim()) {
+    return { ok: false, status: 400, error: `"${fieldName}" must be an object with a non-empty "specialistId" string.` };
+  }
+  const forced = target.forcedSelection;
+  if (!isPlainObject(forced) || typeof forced.toolId !== 'string' || !forced.toolId.trim()) {
+    return {
+      ok: false,
+      status: 400,
+      error: `"${fieldName}.forcedSelection.toolId" is required - this cycle never guesses which tool a stage should run.`,
+    };
+  }
+
+  const access = checkToolAccess({ specialistId: target.specialistId, toolId: forced.toolId });
+  if (access.decision === 'denied' || access.decision === 'unavailable') {
+    // checkToolAccess's own `reason` is a static, already-safe sentence about tool
+    // ownership/roles - it names no secret, credential, path, or store data.
+    return { ok: false, status: 403, error: access.reason };
+  }
+  return { ok: true };
+}
+
+// Looks up a paused run the caller is trying to continue. An unknown id is an honest
+// 400 (the run never existed, already finished, or the server restarted) - never a
+// fabricated or silently-restarted run.
+function requireRunState(store, runId) {
+  if (typeof runId !== 'string' || !runId.trim() || !store.has(runId)) {
+    return { ok: false, error: 'Unrecognized or expired run id.' };
+  }
+  return { ok: true, state: store.get(runId) };
+}
+
+// Records a human decision against a paused run's OWN approval tracker - the array the
+// orchestrator itself will read when it resumes - using approvals/approvalWorkflow.js's
+// real decideApprovalRequest(). Identical in kind to what /orchestrate/approve already
+// does; reused, never reimplemented. decideApprovalRequest returns a new array, so it is
+// assigned back onto the tracker the resume path will actually consult.
+function decideRunApproval(state, { approvalId, decision, decidedBy, notes }) {
+  const tracker = state.runApprovalTracker;
+  if (!tracker || !Array.isArray(tracker.requests)) {
+    return { ok: false, error: 'This run has no approval request to decide.' };
+  }
+  try {
+    tracker.requests = decideApprovalRequest(tracker.requests, approvalId, {
+      decision,
+      decidedBy: decidedBy.trim(),
+      notes: typeof notes === 'string' && notes.trim() ? notes.trim() : null,
+    });
+    return { ok: true, decidedRequest: getApprovalRequestById(tracker.requests, approvalId) };
+  } catch (err) {
+    // Already specific and safe (e.g. "already 'approved', not 'pending'") - surfaced
+    // directly, exactly as /orchestrate/approve already surfaces them.
+    return { ok: false, error: err.message };
+  }
+}
+
+// The four fields every approve endpoint below requires, validated identically so a
+// caller gets the same errors from both orchestrators.
+function validateApprovalDecisionBody({ approvalId, decision, decidedBy }) {
+  if (typeof approvalId !== 'string' || !approvalId.trim()) {
+    return { ok: false, error: 'A non-empty "approvalId" string is required.' };
+  }
+  if (decision !== 'approved' && decision !== 'rejected') {
+    return { ok: false, error: 'A "decision" of "approved" or "rejected" is required.' };
+  }
+  if (typeof decidedBy !== 'string' || !decidedBy.trim()) {
+    return { ok: false, error: 'A non-empty "decidedBy" string is required so every decision is accountable.' };
+  }
+  return { ok: true };
+}
+
 function buildBusinessContext(config) {
   const lines = [
     `Business: ${config.business_name || 'unknown'}`,
@@ -157,6 +302,21 @@ function createApp() {
   // /orchestrate/approve decision, so the run is lost on server restart, never
   // silently reused across different objectives.
   const orchestratorRuns = new Map();
+
+  // The same "caller holds the run's state across calls" discipline as orchestratorRuns
+  // above, applied to the two orchestrators exposed below - each keeps ONE paused run's
+  // `_resumeState` (its live plan/iterations plus its token, usage, approval, audit and
+  // cache trackers) between the call that paused it and the call that continues it.
+  //
+  // Keeping this server-side is what makes the cost controls real across a multi-step
+  // run: a resumed stage keeps accumulating into the SAME runTokenTracker/runUsageTracker
+  // the earlier stages already spent from, and a caller cannot reset either by editing a
+  // request body (see withoutResumeState's own comment). Entries are deleted as soon as a
+  // run reaches a terminal status. In memory only, per process, lost on restart - the
+  // identical, deliberate stance orchestratorRuns documents above; choosing a persistence
+  // engine remains an unscoped decision (CLAUDE.md rule 15).
+  const growthWorkflowRuns = new Map();
+  const optimizationCycleRuns = new Map();
 
   // A plain conversational question, executed through the SAME shared stack as every
   // other tool call in this project. This endpoint used to call a model client
@@ -482,6 +642,257 @@ function createApp() {
       });
     } catch (err) {
       res.status(502).json({ error: 'The approved action could not be executed right now. Please try again shortly.' });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // The complete controlled growth workflow (agent/core/growthWorkflowOrchestrator.js's
+  // fixed 8-stage Research -> Product -> Listing -> SEO -> Marketing -> Social &
+  // Advertising -> Analytics -> Optimization pipeline), reachable over HTTP for the
+  // first time. It was already complete and tested
+  // (verification/testing/growthWorkflowOrchestrator.test.js) but had no product
+  // surface - only a require() or its own demo block could reach it.
+  //
+  // This endpoint adds NO orchestration of its own. The stage list, their order, the
+  // stage-to-stage data flow, and the approval pause all remain entirely inside that
+  // module, which runs every stage through the same buildPlanStep() the rest of this
+  // file uses - so checkToolAccess(), TOOL_EXECUTORS, tokenControls, usageLimits, the
+  // tool-result cache, approvals/approvalArchitecture.js's gate, and audit/auditTrail.js
+  // all apply here exactly as they do to /run and /orchestrate. `protect` gives it the
+  // same authentication + rate limiting as every other budget-spending endpoint.
+  //
+  // The caller supplies only genuine business decisions (which markets, which product,
+  // which calendar date) as per-stage `stage_inputs` - never which tool runs.
+  app.post('/growth-workflow', protect, async (req, res) => {
+    const { business_id: businessId, stage_inputs: stageInputsInput } = req.body || {};
+
+    if (businessId !== undefined && businessId !== null && typeof businessId !== 'string') {
+      res.status(400).json({ error: 'If provided, "business_id" must be a string.' });
+      return;
+    }
+    if (stageInputsInput !== undefined && stageInputsInput !== null && !isPlainObject(stageInputsInput)) {
+      res.status(400).json({ error: 'If provided, "stage_inputs" must be a plain object.' });
+      return;
+    }
+    // Rejected up front rather than silently ignored: a typo'd stage key would otherwise
+    // drop that stage's real caller-supplied input and let the workflow run on defaults,
+    // producing a confident result built from input the caller never actually gave.
+    // STAGE_KEYS is the orchestrator's own exported list, never a copy maintained here.
+    const stageInputs = stageInputsInput || {};
+    const unknownStageKeys = Object.keys(stageInputs).filter(
+      (key) => !growthWorkflowOrchestrator.STAGE_KEYS.includes(key)
+    );
+    if (unknownStageKeys.length > 0) {
+      res.status(400).json({
+        error: `Unrecognized "stage_inputs" key(s): ${unknownStageKeys.join(', ')}. Accepted stages: ${growthWorkflowOrchestrator.STAGE_KEYS.join(', ')}.`,
+      });
+      return;
+    }
+
+    try {
+      const result = await growthWorkflowOrchestrator.runGrowthWorkflow(businessId || null, stageInputs);
+      retainRunState(growthWorkflowRuns, result && result.run_id, result);
+      res.json(withoutResumeState(result));
+    } catch (err) {
+      console.error('POST /growth-workflow failed:', err.message);
+      res.status(502).json({ error: 'The growth workflow could not complete right now. Please try again shortly.' });
+    }
+  });
+
+  // The human-in-the-loop decision point for a growth workflow paused at a gated stage
+  // (status 'workflow_paused'). CLAUDE.md rule 7 requires this: an approval_required/
+  // externally_executable stage never executes on its own.
+  //
+  // This deliberately does NOT reuse /orchestrate/approve above. That endpoint calls
+  // resumeApprovedExecution + reviseStepAfterResume directly, which would execute the
+  // one gated stage and stop - the workflow's remaining stages would never run. Only
+  // resumeGrowthWorkflow() continues the pipeline, so it is what this calls.
+  app.post('/growth-workflow/approve', protect, async (req, res) => {
+    const { run_id: runId, approvalId, decision, decidedBy, notes } = req.body || {};
+
+    const bodyCheck = validateApprovalDecisionBody({ approvalId, decision, decidedBy });
+    if (!bodyCheck.ok) {
+      res.status(400).json({ error: bodyCheck.error });
+      return;
+    }
+    const runLookup = requireRunState(growthWorkflowRuns, runId);
+    if (!runLookup.ok) {
+      res.status(400).json({ error: runLookup.error });
+      return;
+    }
+
+    const decisionResult = decideRunApproval(runLookup.state, { approvalId, decision, decidedBy, notes });
+    if (!decisionResult.ok) {
+      res.status(400).json({ error: decisionResult.error });
+      return;
+    }
+
+    try {
+      // The server-held state is passed through unchanged - never a client-supplied one -
+      // so this run's accumulated token/usage budget and audit trail carry forward.
+      const result = await growthWorkflowOrchestrator.resumeGrowthWorkflow(
+        decisionResult.decidedRequest,
+        runLookup.state
+      );
+      retainRunState(growthWorkflowRuns, runId, result);
+      res.json(withoutResumeState(result));
+    } catch (err) {
+      console.error('POST /growth-workflow/approve failed:', err.message);
+      res.status(502).json({ error: 'The approved stage could not be executed right now. Please try again shortly.' });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // The controlled optimization cycle (agent/core/optimizationCycleOrchestrator.js:
+  // Research -> Recommendation -> Approval -> Action -> Measurement -> Analysis ->
+  // Learning -> New Recommendation), likewise already complete and tested
+  // (verification/testing/optimizationCycleOrchestrator.test.js) but previously
+  // unreachable from the product surface.
+  //
+  // That module deliberately exposes FOUR checkpointed entry points rather than one
+  // self-driving loop - a human decision is required between each - so this surface
+  // mirrors them one-for-one below. Collapsing them into a single endpoint would change
+  // the cycle's contract and remove exactly the checkpoints that keep it non-autonomous.
+  // Its iteration ceiling, token budget and tool-call budget (its own STOP_REASONS)
+  // stay entirely inside that module; nothing here re-decides them.
+  app.post('/optimization-cycle', protect, async (req, res) => {
+    const { business_id: businessId, researchTarget, researchParams, experiment, actionTarget, actionParams } = req.body || {};
+
+    if (businessId !== undefined && businessId !== null && typeof businessId !== 'string') {
+      res.status(400).json({ error: 'If provided, "business_id" must be a string.' });
+      return;
+    }
+    const researchCheck = validateCycleTarget(researchTarget, 'researchTarget');
+    if (!researchCheck.ok) {
+      res.status(researchCheck.status).json({ error: researchCheck.error });
+      return;
+    }
+    const actionCheck = validateCycleTarget(actionTarget, 'actionTarget');
+    if (!actionCheck.ok) {
+      res.status(actionCheck.status).json({ error: actionCheck.error });
+      return;
+    }
+
+    try {
+      // `experiment` is passed through untouched: agent/core/experimentModel.js's
+      // createExperiment() already validates it thoroughly (hypothesis, control,
+      // variant, success criteria and their evidence), and duplicating that validation
+      // here would be a second, drifting copy of the same rules.
+      const result = await optimizationCycleOrchestrator.startOptimizationCycle({
+        businessId: businessId || null,
+        researchTarget,
+        researchParams,
+        experiment,
+        actionTarget,
+        actionParams,
+      });
+      retainRunState(optimizationCycleRuns, result && result.run_id, result);
+      res.json(withoutResumeState(result));
+    } catch (err) {
+      console.error('POST /optimization-cycle failed:', err.message);
+      res.status(502).json({ error: 'The optimization cycle could not start right now. Please try again shortly.' });
+    }
+  });
+
+  // Checkpoint 2 of 4: the real, accountable Action approval decision. Only an
+  // 'approved' decision can execute a once-gated Action, and only through the
+  // orchestrator's own resumeAfterApproval().
+  app.post('/optimization-cycle/approve', protect, async (req, res) => {
+    const { run_id: runId, approvalId, decision, decidedBy, notes } = req.body || {};
+
+    const bodyCheck = validateApprovalDecisionBody({ approvalId, decision, decidedBy });
+    if (!bodyCheck.ok) {
+      res.status(400).json({ error: bodyCheck.error });
+      return;
+    }
+    const runLookup = requireRunState(optimizationCycleRuns, runId);
+    if (!runLookup.ok) {
+      res.status(400).json({ error: runLookup.error });
+      return;
+    }
+
+    const decisionResult = decideRunApproval(runLookup.state, { approvalId, decision, decidedBy, notes });
+    if (!decisionResult.ok) {
+      res.status(400).json({ error: decisionResult.error });
+      return;
+    }
+
+    try {
+      const result = await optimizationCycleOrchestrator.resumeAfterApproval(
+        decisionResult.decidedRequest,
+        runLookup.state
+      );
+      retainRunState(optimizationCycleRuns, runId, result);
+      res.json(withoutResumeState(result));
+    } catch (err) {
+      console.error('POST /optimization-cycle/approve failed:', err.message);
+      res.status(502).json({ error: 'The approved action could not be executed right now. Please try again shortly.' });
+    }
+  });
+
+  // Checkpoint 3 of 4: Measurement -> Analysis -> Learning. `measurement`, `analysis`
+  // and `lesson` are real, caller-supplied facts and a real, accountable human decision -
+  // agent/core/experimentEngine.js validates and honesty-guards all three, so they are
+  // passed straight through rather than re-validated (or worse, inferred) here.
+  app.post('/optimization-cycle/measure', protect, async (req, res) => {
+    const { run_id: runId, measurement, analysis, lesson } = req.body || {};
+
+    const runLookup = requireRunState(optimizationCycleRuns, runId);
+    if (!runLookup.ok) {
+      res.status(400).json({ error: runLookup.error });
+      return;
+    }
+
+    try {
+      const result = await optimizationCycleOrchestrator.recordMeasurementAndAnalyze(runLookup.state, {
+        measurement,
+        analysis,
+        lesson,
+      });
+      retainRunState(optimizationCycleRuns, runId, result);
+      res.json(withoutResumeState(result));
+    } catch (err) {
+      console.error('POST /optimization-cycle/measure failed:', err.message);
+      res.status(502).json({ error: 'This measurement could not be recorded right now. Please try again shortly.' });
+    }
+  });
+
+  // Checkpoint 4 of 4: the separate, deliberate call required to actually begin
+  // iteration N+1. Nothing in this codebase ever calls it automatically - a cycle only
+  // continues because a human asked it to, and only after a decided outcome of
+  // 'iterate' left the run in status 'iteration_ready'.
+  app.post('/optimization-cycle/next', protect, async (req, res) => {
+    const { run_id: runId, researchTarget, researchParams, experiment, actionTarget, actionParams } = req.body || {};
+
+    const runLookup = requireRunState(optimizationCycleRuns, runId);
+    if (!runLookup.ok) {
+      res.status(400).json({ error: runLookup.error });
+      return;
+    }
+    const researchCheck = validateCycleTarget(researchTarget, 'researchTarget');
+    if (!researchCheck.ok) {
+      res.status(researchCheck.status).json({ error: researchCheck.error });
+      return;
+    }
+    const actionCheck = validateCycleTarget(actionTarget, 'actionTarget');
+    if (!actionCheck.ok) {
+      res.status(actionCheck.status).json({ error: actionCheck.error });
+      return;
+    }
+
+    try {
+      const result = await optimizationCycleOrchestrator.startNextIteration(runLookup.state, {
+        researchTarget,
+        researchParams,
+        experiment,
+        actionTarget,
+        actionParams,
+      });
+      retainRunState(optimizationCycleRuns, runId, result);
+      res.json(withoutResumeState(result));
+    } catch (err) {
+      console.error('POST /optimization-cycle/next failed:', err.message);
+      res.status(502).json({ error: 'The next iteration could not be started right now. Please try again shortly.' });
     }
   });
 

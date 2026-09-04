@@ -158,6 +158,7 @@ const TEST_FILES = [
   'askOrchestrationRouting.test.js',
   'server.test.js',
   'orchestratorEndpoints.test.js',
+  'workflowOrchestratorEndpoints.test.js',
   'serverResearchParams.test.js',
   'resultSummary.test.js',
   'webCompetitorResearchTool.test.js',
