@@ -17,6 +17,15 @@ const orchestratorExecutionContract = require('../../agent/core/orchestratorExec
 // below is sufficient.
 process.env.RUN_HISTORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'server-test-run-history-'));
 
+// security/serverAccessControl.js fails closed: with no AGENT_API_KEY set, every
+// endpoint below would return 503 instead of running. Set before createApp() is
+// called, exactly like RUN_HISTORY_STORE_DIR above. The rate limit is raised well
+// above what any single test needs so these suites test their own behavior, never
+// the limiter (that is serverAccessControl.test.js's job).
+const TEST_API_KEY = 'test-agent-api-key-do-not-use-in-production';
+process.env.AGENT_API_KEY = TEST_API_KEY;
+process.env.RATE_LIMIT_MAX_REQUESTS = '10000';
+
 const { createApp } = require('../../server');
 
 // This test never makes a real network/API call. Instead of mocking global.fetch
@@ -84,9 +93,17 @@ function request(port, { method, path: reqPath, body }) {
         port,
         path: reqPath,
         method,
-        headers: payload
-          ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-          : {},
+        // Every endpoint these suites exercise now sits behind
+        // security/serverAccessControl.js's shared-secret check, so each request
+        // presents the TEST_API_KEY set at the top of this file. Authentication
+        // itself is covered by verification/testing/serverAccessControl.test.js -
+        // these suites authenticate only so they can keep testing their own concern.
+        headers: Object.assign(
+          payload
+            ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+            : {},
+          { Authorization: 'Bearer ' + TEST_API_KEY }
+        ),
       },
       (res) => {
         let raw = '';

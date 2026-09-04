@@ -871,6 +871,65 @@
     document.getElementById(PAGE_MAP[key].nav).addEventListener('click', () => selectPage(key));
   });
 
+  /* ---------- API access key (see security/serverAccessControl.js) ----------
+     Every server endpoint this page calls requires an "Authorization: Bearer <key>"
+     header. The key is NOT baked into this page - that would put it in the hands of
+     anyone who can load the page, which is exactly the boundary the server added. It
+     is asked for once and kept in sessionStorage, so it lives only in this browser
+     tab's session and is gone when the tab closes.
+
+     apiFetch is the single place that header is attached; every call below goes
+     through it rather than calling fetch directly. A 401 clears the stored key and
+     asks again on the next call, so a wrong or rotated key self-corrects instead of
+     failing silently forever. */
+  const API_KEY_STORAGE_KEY = 'agentApiKey';
+
+  function readStoredApiKey() {
+    try {
+      return sessionStorage.getItem(API_KEY_STORAGE_KEY) || '';
+    } catch (err) {
+      // Private-browsing / blocked storage: fall back to asking every time rather
+      // than breaking the page outright.
+      return '';
+    }
+  }
+
+  function storeApiKey(key) {
+    try {
+      sessionStorage.setItem(API_KEY_STORAGE_KEY, key);
+    } catch (err) {
+      /* Not fatal - the key is still used for this call, just not remembered. */
+    }
+  }
+
+  function clearStoredApiKey() {
+    try {
+      sessionStorage.removeItem(API_KEY_STORAGE_KEY);
+    } catch (err) {
+      /* Nothing to clear. */
+    }
+  }
+
+  function ensureApiKey() {
+    let key = readStoredApiKey();
+    if (!key) {
+      key = (window.prompt('Enter the API key for this agent server (AGENT_API_KEY):') || '').trim();
+      if (key) storeApiKey(key);
+    }
+    return key;
+  }
+
+  async function apiFetch(url, options) {
+    const opts = options || {};
+    const key = ensureApiKey();
+    const headers = Object.assign({}, opts.headers || {});
+    if (key) headers.Authorization = 'Bearer ' + key;
+
+    const res = await fetch(url, Object.assign({}, opts, { headers }));
+    if (res.status === 401) clearStoredApiKey();
+    return res;
+  }
+
   /* ---------- Shared helpers (escaping, JSON highlighting) ---------- */
   function escapeHtml(str) {
     return String(str).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -1065,7 +1124,7 @@
     addThinking();
 
     try {
-      const res = await fetch('/ask', {
+      const res = await apiFetch('/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: question }),
@@ -1176,7 +1235,7 @@
   // page's Run button and each Overview agent card's own Run button, so there is
   // exactly one code path that ever calls this endpoint.
   async function runSpecialist(specialistId, objectiveText) {
-    const res = await fetch('/run', {
+    const res = await apiFetch('/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ specialist: specialistId, objective: objectiveText }),
@@ -1401,7 +1460,7 @@
       approveBtn.disabled = true;
       rejectBtn.disabled = true;
       try {
-        const res = await fetch('/orchestrate/approve', {
+        const res = await apiFetch('/orchestrate/approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1576,7 +1635,7 @@
     chiefResultArea.innerHTML = '<p class="empty-result">The Chief is deciding how to route this…</p>';
 
     try {
-      const res = await fetch('/orchestrate', {
+      const res = await apiFetch('/orchestrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ objective: goal }),
@@ -1622,7 +1681,7 @@
     rejectBtn.disabled = true;
 
     try {
-      const res = await fetch('/orchestrate/approve', {
+      const res = await apiFetch('/orchestrate/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1740,7 +1799,7 @@
     detailArea.innerHTML = '';
 
     try {
-      const res = await fetch('/history');
+      const res = await apiFetch('/history');
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         listArea.innerHTML = '<p class="empty-result">' + escapeHtml(data.error || 'Could not load saved runs.') + '</p>';
@@ -1790,7 +1849,7 @@
     detailArea.innerHTML = '<p class="empty-result">Loading…</p>';
 
     try {
-      const res = await fetch('/history/' + encodeURIComponent(runId));
+      const res = await apiFetch('/history/' + encodeURIComponent(runId));
       const record = await res.json().catch(() => ({}));
       if (!res.ok) {
         detailArea.innerHTML = '<p class="empty-result">' + escapeHtml(record.error || 'Could not load this saved run.') + '</p>';

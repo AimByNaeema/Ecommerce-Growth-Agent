@@ -31,6 +31,12 @@ const { decideApprovalRequest, getApprovalRequestById } = require('./approvals/a
 // requires the live approvals/approvalWorkflow.js request object, not just its saved
 // JSON shape - see that Map's own comment above for why that part stays unpersisted).
 const runHistoryStore = require('./agent/core/runHistoryStore');
+// The HTTP boundary's authentication + rate limiting (CLAUDE.md section 3's
+// "Security"). Every endpoint below that can reach real store data, call an external
+// service, or spend model/API budget goes through both - see security/
+// serverAccessControl.js's own header for why a shared secret was chosen and why it
+// fails closed when AGENT_API_KEY is unset.
+const { requireApiKey, createRateLimiter } = require('./security/serverAccessControl');
 
 const BUSINESS_CONFIG_PATH = path.join(__dirname, 'configuration', 'business.yaml');
 
@@ -119,7 +125,17 @@ function createApp() {
 
   const app = express();
   app.use(express.json());
+  // The dashboard itself stays publicly servable - it is static markup and carries no
+  // business data or credential of its own. It obtains the API key from whoever opens
+  // it and sends it as an Authorization header on every call below (see
+  // public/index.html), so the real boundary is on the endpoints, never on the page.
   app.use(express.static(path.join(__dirname, 'public')));
+
+  // Applied to every endpoint that can reach real store data, call an external
+  // service, or spend model/API budget. Rate limiting runs BEFORE authentication on
+  // purpose: an unauthenticated caller trying to guess AGENT_API_KEY is throttled by
+  // the same counter, so the key cannot be brute-forced at full speed.
+  const protect = [createRateLimiter(), requireApiKey];
 
   // Per-app-instance store for Chief Orchestrator runs that produced at least one
   // pending approval (see /orchestrate below) - keyed by a server-generated run id,
@@ -133,7 +149,7 @@ function createApp() {
   // silently reused across different objectives.
   const orchestratorRuns = new Map();
 
-  app.post('/ask', async (req, res) => {
+  app.post('/ask', protect, async (req, res) => {
     const { message } = req.body || {};
     if (typeof message !== 'string' || !message.trim()) {
       res.status(400).json({ error: 'A non-empty "message" string is required.' });
@@ -155,7 +171,7 @@ function createApp() {
     }
   });
 
-  app.post('/run', async (req, res) => {
+  app.post('/run', protect, async (req, res) => {
     const { specialist, objective, research_params: researchParamsInput } = req.body || {};
     const internalSpecialistId = SPECIALIST_ID_MAP[specialist];
     if (!internalSpecialistId || !getSpecialistById(internalSpecialistId)) {
@@ -229,7 +245,7 @@ function createApp() {
   // execute - this endpoint hands the Chief a raw objective and lets its own
   // planRouting()/runOrchestratorContract() decide routing, exactly as CLAUDE.md
   // describes, never pre-selected by the caller.
-  app.post('/orchestrate', async (req, res) => {
+  app.post('/orchestrate', protect, async (req, res) => {
     const { objective, research_params: researchParamsInput } = req.body || {};
     if (typeof objective !== 'string' || !objective.trim()) {
       res.status(400).json({ error: 'A non-empty "objective" string is required.' });
@@ -303,7 +319,7 @@ function createApp() {
   // can then actually run the gated tool call - both reused here unchanged, never
   // reimplemented. A rejected decision is recorded exactly the same way; it simply
   // never reaches the tool executor (resumeApprovedExecution refuses on its own).
-  app.post('/orchestrate/approve', async (req, res) => {
+  app.post('/orchestrate/approve', protect, async (req, res) => {
     const { runId, approvalId, decision, decidedBy, notes } = req.body || {};
 
     if (typeof runId !== 'string' || !runId.trim() || !orchestratorRuns.has(runId)) {
@@ -409,7 +425,7 @@ function createApp() {
   // "Run a Specialist"/"Chief Orchestrator" results survive a page refresh or server
   // restart (public/index.html's History page). Never executes anything; a bad/unknown
   // id is an honest 404, never a fabricated result.
-  app.get('/history', (req, res) => {
+  app.get('/history', protect, (req, res) => {
     try {
       res.json({ runs: runHistoryStore.listRunRecordSummaries({ limit: 50 }) });
     } catch (err) {
@@ -417,7 +433,7 @@ function createApp() {
     }
   });
 
-  app.get('/history/:runId', (req, res) => {
+  app.get('/history/:runId', protect, (req, res) => {
     let record;
     try {
       record = runHistoryStore.getRunRecordById(req.params.runId);
