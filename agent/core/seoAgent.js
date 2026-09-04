@@ -1,9 +1,9 @@
 'use strict';
 
 // The SEO Agent (CLAUDE.md section 2, specialist #3: "Search visibility analysis and
-// keyword research"). Supports 7 capabilities: keyword research, search intent
-// analysis, product SEO, collection SEO, content SEO, on-page SEO, and SEO opportunity
-// analysis.
+// keyword research"). Supports 8 capabilities: keyword research, search intent
+// analysis, product SEO, collection SEO, content SEO, on-page SEO, SEO opportunity
+// analysis, and information gap analysis (real-question gap detection).
 //
 // Deterministic only - no AI API call, no external fetch, no live keyword-research API
 // (none is configured or called anywhere in this project). Callers supply
@@ -67,6 +67,11 @@ const {
   validateSeoAgentResultShape,
 } = require('./seoAgentResultModel');
 const { retrieveResearchData, deriveRecommendations } = require('./researchAgent');
+// Real-question gap detection (see analyzeInformationGaps below). All of its
+// normalization/clustering/coverage/gap/scoring logic lives in that engine; this file
+// only composes its records into the shared seoAgentResultModel.js envelope, exactly as
+// every other capability here composes its own schema's records.
+const { findInformationGaps } = require('./informationGapEngine');
 
 function requireNonEmptyString(value, fieldName, fnName) {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -499,6 +504,53 @@ function analyzeSeoOpportunities(params = {}) {
   });
 }
 
+// Real-question gap detection: which questions people actually ask, how well competitors
+// and our own site answer them, what specifically is missing, and a deterministic,
+// explainable priority score - agent/core/informationGapEngine.js's own pipeline,
+// composed here into the shared result envelope. This function adds NO gap logic of its
+// own; it validates that questions were supplied, delegates, and relays.
+//
+// findings deliberately carry each record's status, score and gap type rather than a
+// verdict of this file's making, so the honest provenance the engine computed (observed
+// vs inferred vs model_generated) survives into the envelope a human or another
+// capability reads. Nothing here upgrades a 'review' record into an assertion.
+function analyzeInformationGaps(params = {}) {
+  const { questions, topic, market = '' } = params;
+  requireNonEmptyArray(questions, 'questions', 'analyzeInformationGaps');
+
+  const { records, limitations } = findInformationGaps(params);
+
+  const findings = records.map(
+    (record) =>
+      `[${record.status}] ${record.opportunity_score}/100 - "${record.question}" (evidence: ${record.evidence_strength}; gap: ${record.gap_type || 'none identified'})`
+  );
+  // Only real, caller-supplied references count as evidence/source here - the engine
+  // never manufactures one, so an unevidenced question contributes nothing and the
+  // composeResult() honesty guard below can still downgrade an unsupported 'verified'
+  // claim exactly as it does for every other capability.
+  const evidence = records.flatMap((record) =>
+    record.evidence_sources.map((entry) => `${entry.signal_kind}: ${entry.reference}`)
+  );
+  const source = records.flatMap((record) =>
+    record.evidence_sources.map((entry) => entry.reference).filter(Boolean)
+  );
+
+  return composeResult({
+    capability: 'information_gap_analysis',
+    topic: topic || `Information gap analysis: ${records.length} question opportunity(ies)`,
+    market,
+    findings,
+    evidence,
+    source,
+    confidence: params.confidence,
+    limitations,
+    recommendations: params.recommendations,
+    verificationStatus: params.verificationStatus,
+    researchDate: params.researchDate || todayIsoDate(),
+    specializedRecords: records,
+  });
+}
+
 const SEO_CAPABILITY_HANDLERS = {
   keyword_research: runKeywordResearch,
   search_intent_analysis: analyzeSearchIntent,
@@ -507,6 +559,7 @@ const SEO_CAPABILITY_HANDLERS = {
   content_seo: analyzeContentSeo,
   on_page_seo: analyzeOnPageSeo,
   seo_opportunity_analysis: analyzeSeoOpportunities,
+  information_gap_analysis: analyzeInformationGaps,
 };
 
 // The single entry point: dispatches by capability to the matching function above.
@@ -527,6 +580,7 @@ module.exports = {
   analyzeContentSeo,
   analyzeOnPageSeo,
   analyzeSeoOpportunities,
+  analyzeInformationGaps,
   runSeoAgent,
   retrieveSeoData,
 };

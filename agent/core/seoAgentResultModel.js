@@ -29,6 +29,11 @@ const SEO_CAPABILITIES = [
   'content_seo',
   'on_page_seo',
   'seo_opportunity_analysis',
+  // Real-question gap detection: which questions people actually ask that competitors
+  // answer poorly or not at all (agent/core/informationGapEngine.js). Composes
+  // agent/core/informationGapModel.js records into this same envelope, the same way the
+  // 7 above compose their own per-capability schemas.
+  'information_gap_analysis',
 ];
 
 const SEO_AGENT_RESULT_FIELDS = [

@@ -16,8 +16,10 @@
 //
 // researchParams.seoCapability selects which capability to run - one of
 // 'product_seo' (default when omitted), 'collection_seo', 'content_seo',
-// 'on_page_seo', or 'seo_opportunity_analysis'. One tool id covering 5 capabilities
-// keeps tools/toolRegistry.js's existing, already-reserved shape intact.
+// 'on_page_seo', 'seo_opportunity_analysis', or 'information_gap_analysis'. One tool id
+// covering 6 capabilities keeps tools/toolRegistry.js's existing, already-reserved shape
+// intact - the Information Gap Finder deliberately reuses this entry rather than adding
+// a second SEO tool for what is another mode of the same SEO analysis.
 //
 // Returns { status, result, error } - never throws:
 //   status 'failed'  - no researchParams supplied, an unknown seoCapability, or a
@@ -32,6 +34,7 @@ const {
   analyzeContentSeo,
   analyzeOnPageSeo,
   analyzeSeoOpportunities,
+  analyzeInformationGaps,
 } = require('../agent/core/seoAgent');
 
 const CAPABILITY_HANDLERS = {
@@ -40,6 +43,7 @@ const CAPABILITY_HANDLERS = {
   content_seo: analyzeContentSeo,
   on_page_seo: analyzeOnPageSeo,
   seo_opportunity_analysis: analyzeSeoOpportunities,
+  information_gap_analysis: analyzeInformationGaps,
 };
 
 function deriveStatus(result) {
