@@ -146,6 +146,11 @@ function createApp() {
       });
       res.json({ reply: result.text });
     } catch (err) {
+      // Logged (not just swallowed) so the real cause - a bad AI_PROVIDER value, a
+      // missing/invalid API key, a network/API failure - is visible in the deployment's
+      // logs instead of only the deliberately generic message the client receives below
+      // (CLAUDE.md rule 13: no silent failure at a system boundary).
+      console.error('POST /ask failed:', err.message);
       res.status(502).json({ error: 'The assistant is unavailable right now. Please try again shortly.' });
     }
   });
