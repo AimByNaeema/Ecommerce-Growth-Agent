@@ -87,6 +87,21 @@ const SPECIALIST_ID_MAP = {
   analytics: 'analytics_optimization',
 };
 
+// Validates an optional `research_params` request-body field shared by /run and
+// /orchestrate below. This is purely a wiring fix: orchestratorExecutionContract.js's
+// buildPlanStep/runOrchestratorContract already accept a real `researchParams` object
+// (see crossAgentContext.js's merge into effectiveResearchParams) - neither endpoint
+// ever threaded a caller-supplied one through. Absent/null is today's exact existing
+// behavior (both functions already default researchParams to null); anything else
+// that isn't a plain object (a string, an array, a number, etc.) is rejected outright
+// rather than silently coerced, so a caller's mistake surfaces as a clear 400 instead
+// of an obscure failure deeper in the pipeline.
+function validateResearchParams(value) {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (typeof value !== 'object' || Array.isArray(value)) return { ok: false, value: null };
+  return { ok: true, value };
+}
+
 function buildBusinessContext(config) {
   const lines = [
     `Business: ${config.business_name || 'unknown'}`,
@@ -136,7 +151,7 @@ function createApp() {
   });
 
   app.post('/run', async (req, res) => {
-    const { specialist, objective } = req.body || {};
+    const { specialist, objective, research_params: researchParamsInput } = req.body || {};
     const internalSpecialistId = SPECIALIST_ID_MAP[specialist];
     if (!internalSpecialistId || !getSpecialistById(internalSpecialistId)) {
       res.status(400).json({ error: `Unrecognized specialist id: "${specialist}".` });
@@ -146,11 +161,26 @@ function createApp() {
       res.status(400).json({ error: 'A non-empty "objective" string is required.' });
       return;
     }
+    const researchParamsCheck = validateResearchParams(researchParamsInput);
+    if (!researchParamsCheck.ok) {
+      res.status(400).json({ error: 'If provided, "research_params" must be a plain object.' });
+      return;
+    }
 
     try {
       const target = orchestratorExecutionContract.buildSpecialistTarget(internalSpecialistId);
       const trimmedObjective = objective.trim();
-      const step = await orchestratorExecutionContract.buildPlanStep(target, trimmedObjective, trimmedObjective);
+      // 4th positional argument (runTokenTracker) is deliberately left `undefined` so
+      // buildPlanStep's own default (`{ tokensUsedThisRun: 0 }`) still applies exactly
+      // as it did before this endpoint knew about research_params - only the 5th
+      // (researchParams) argument is new here.
+      const step = await orchestratorExecutionContract.buildPlanStep(
+        target,
+        trimmedObjective,
+        trimmedObjective,
+        undefined,
+        researchParamsCheck.value
+      );
       // 'complete' -> success, 'failed' -> error (a real failure, not just "not done
       // yet"), everything else ('blocked'/'not_started') -> partial. Previously any
       // non-complete state - including a genuine failure - was reported as "partial",
@@ -195,14 +225,24 @@ function createApp() {
   // planRouting()/runOrchestratorContract() decide routing, exactly as CLAUDE.md
   // describes, never pre-selected by the caller.
   app.post('/orchestrate', async (req, res) => {
-    const { objective } = req.body || {};
+    const { objective, research_params: researchParamsInput } = req.body || {};
     if (typeof objective !== 'string' || !objective.trim()) {
       res.status(400).json({ error: 'A non-empty "objective" string is required.' });
       return;
     }
+    const researchParamsCheck = validateResearchParams(researchParamsInput);
+    if (!researchParamsCheck.ok) {
+      res.status(400).json({ error: 'If provided, "research_params" must be a plain object.' });
+      return;
+    }
 
     try {
-      const result = await orchestratorExecutionContract.runOrchestratorContract(objective.trim());
+      // businessId is intentionally omitted here, same as before this change - this
+      // endpoint has never accepted/passed one, and runOrchestratorContract's own
+      // default (null) reproduces its exact existing behavior.
+      const result = await orchestratorExecutionContract.runOrchestratorContract(objective.trim(), {
+        researchParams: researchParamsCheck.value,
+      });
       const runId = `orch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       orchestratorRuns.set(runId, {
         pendingApprovals: result.pending_approvals || [],
