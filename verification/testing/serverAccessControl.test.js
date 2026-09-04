@@ -15,7 +15,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const aiProviderSelector = require('../../agent/core/aiProviderSelector');
+// /ask runs through the shared execution stack (buildPlanStep -> TOOL_EXECUTORS ->
+// tools/aiReasoningCompletion.js), so the one real outbound call to mock is
+// claudeClient.sendMessage - not a provider selector. See
+// verification/testing/askOrchestrationRouting.test.js for that routing's own tests;
+// this suite only needs a working /ask to prove the auth boundary lets it through.
+const claudeClient = require('../../agent/core/claudeClient');
 const orchestratorExecutionContract = require('../../agent/core/orchestratorExecutionContract');
 
 process.env.RUN_HISTORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'server-auth-test-run-history-'));
@@ -91,12 +96,12 @@ async function withServer(fn, { apiKey = VALID_KEY, env = {} } = {}) {
 }
 
 function withMockedSendMessage(mockImpl, fn) {
-  const saved = aiProviderSelector.sendMessage;
-  aiProviderSelector.sendMessage = mockImpl;
+  const saved = claudeClient.sendMessage;
+  claudeClient.sendMessage = mockImpl;
   return Promise.resolve()
     .then(fn)
     .finally(() => {
-      aiProviderSelector.sendMessage = saved;
+      claudeClient.sendMessage = saved;
     });
 }
 

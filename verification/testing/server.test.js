@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const aiProviderSelector = require('../../agent/core/aiProviderSelector');
+const claudeClient = require('../../agent/core/claudeClient');
 const orchestratorExecutionContract = require('../../agent/core/orchestratorExecutionContract');
 
 // Every /run and /orchestrate call in this file now also saves a run-history record
@@ -30,11 +30,12 @@ const { createApp } = require('../../server');
 
 // This test never makes a real network/API call. Instead of mocking global.fetch
 // (this repo's usual convention - see aiProviderSelector.test.js), it monkey-patches
-// aiProviderSelector.sendMessage directly: Node caches required modules by resolved
-// path, so server.js's own require('../agent/core/aiProviderSelector') returns this
-// same object, meaning the patch is what the running server actually calls. That
-// avoids a collision that mocking global.fetch would cause here, since the test's own
-// HTTP requests to the locally started server would go through the same global.
+// claudeClient.sendMessage directly: Node caches required modules by resolved path, so
+// the copy tools/aiReasoningCompletion.js requires (reached from /ask via the shared
+// execution stack) is this same object, meaning the patch is what the running server
+// actually ends up calling. That avoids a collision that mocking global.fetch would
+// cause here, since the test's own HTTP requests to the locally started server would
+// go through the same global.
 //
 // /run tests mock orchestratorExecutionContract.buildPlanStep the same way - never
 // invoking the real tool/Shopify pipeline underneath it.
@@ -54,13 +55,20 @@ async function testAsync(name, fn) {
   }
 }
 
+// /ask no longer calls agent/core/aiProviderSelector.js directly - it now runs through
+// orchestratorExecutionContract.buildPlanStep -> TOOL_EXECUTORS ->
+// tools/aiReasoningCompletion.js, which calls agent/core/claudeClient.js. So the one
+// real outbound call to mock is claudeClient.sendMessage; everything between the
+// handler and it is the project's real shared stack. See
+// verification/testing/askOrchestrationRouting.test.js for the tests that assert that
+// routing itself - these three only need /ask's own HTTP contract to keep working.
 function withMockedSendMessage(mockImpl, fn) {
-  const saved = aiProviderSelector.sendMessage;
-  aiProviderSelector.sendMessage = mockImpl;
+  const saved = claudeClient.sendMessage;
+  claudeClient.sendMessage = mockImpl;
   return Promise.resolve()
     .then(fn)
     .finally(() => {
-      aiProviderSelector.sendMessage = saved;
+      claudeClient.sendMessage = saved;
     });
 }
 

@@ -3,12 +3,13 @@
 const path = require('path');
 const express = require('express');
 const { loadBusinessConfig } = require('./tools/configValidator');
-const aiProviderSelector = require('./agent/core/aiProviderSelector');
 const { getSpecialistById } = require('./agent/core/specialistRegistry');
 // Required as the whole module object (not destructured) so a test can monkey-patch
-// orchestratorExecutionContract.buildPlanStep on the shared, cached module instance -
-// the same convention verification/testing/server.test.js already uses for
-// aiProviderSelector.sendMessage. The same object also exposes runOrchestratorContract,
+// orchestratorExecutionContract.buildPlanStep on the shared, cached module instance.
+// No model client is required here any more: /ask used to call
+// agent/core/aiProviderSelector.js directly, which is exactly the shared-infrastructure
+// side channel CLAUDE.md section 2 forbids - it now goes through buildPlanStep like
+// every other execution path. The same object also exposes runOrchestratorContract,
 // resumeApprovedExecution, reviseStepAfterResume, and aggregatePlanState - reused
 // unchanged below for the Chief Orchestrator's own free-text routing + approval flow
 // (see /orchestrate and /orchestrate/approve).
@@ -37,6 +38,14 @@ const runHistoryStore = require('./agent/core/runHistoryStore');
 // serverAccessControl.js's own header for why a shared secret was chosen and why it
 // fails closed when AGENT_API_KEY is unset.
 const { requireApiKey, createRateLimiter } = require('./security/serverAccessControl');
+// The per-run tracker factories /ask threads into buildPlanStep, so a conversational
+// question is audited, metered, and budget-limited exactly like every other execution
+// path (see /ask below). Reused unchanged from the shared infrastructure - never
+// reimplemented here.
+const { createAuditTracker } = require('./audit/auditTrail');
+const { createUsageLedger } = require('./usage/usageTracker');
+const { createToolResultCache } = require('./agent/core/toolResultCache');
+const { createUsageTracker } = require('./agent/core/usageLimits');
 
 const BUSINESS_CONFIG_PATH = path.join(__dirname, 'configuration', 'business.yaml');
 
@@ -149,6 +158,21 @@ function createApp() {
   // silently reused across different objectives.
   const orchestratorRuns = new Map();
 
+  // A plain conversational question, executed through the SAME shared stack as every
+  // other tool call in this project. This endpoint used to call a model client
+  // directly, which meant it was the one path that bypassed permissions, token/usage
+  // budgets, and the audit trail (CLAUDE.md section 2 forbids exactly that side
+  // channel). It now goes through orchestratorExecutionContract.buildPlanStep - the
+  // same function /run already uses - so checkToolAccess(), TOOL_EXECUTORS,
+  // tokenControls, usageLimits, approvals/approvalArchitecture.js's classification
+  // gate, and audit/auditTrail.js all apply here exactly as they do everywhere else.
+  //
+  // The 'ai_reasoning' shared-infrastructure category is pinned deliberately rather
+  // than clause-routed: /orchestrate already owns free-text routing to specialists,
+  // and this endpoint's contract is a direct conversational reply, not a plan. Pinning
+  // via forcedSelection is the same mechanism agent/core/growthWorkflowOrchestrator.js
+  // uses, and it cannot reach a tool outside the target's own real ownership (see
+  // buildPlanStep's own forcedSelection check).
   app.post('/ask', protect, async (req, res) => {
     const { message } = req.body || {};
     if (typeof message !== 'string' || !message.trim()) {
@@ -156,11 +180,51 @@ function createApp() {
       return;
     }
 
+    const trimmedMessage = message.trim();
+    // One tracker set per request, exactly like every other entry point in this
+    // project (see agent/core/growthWorkflowOrchestrator.js) - caller-held, never
+    // module-level, so two concurrent questions can never share a budget or a trail.
+    const runId = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const runAuditTracker = createAuditTracker(runId, null);
+    const runUsageLedger = createUsageLedger(runId, null);
+
     try {
-      const result = await aiProviderSelector.sendMessage({
-        messages: [{ role: 'user', content: `${context}\n\n${message}` }],
-      });
-      res.json({ reply: result.text });
+      const step = await orchestratorExecutionContract.buildPlanStep(
+        orchestratorExecutionContract.buildSharedInfrastructureTarget('ai_reasoning'),
+        // `objective` is what the tool sends the model verbatim, so the business
+        // context stays attached to it exactly as before this endpoint was rerouted -
+        // the reply is unchanged in kind. `currentTask` is the clean question, which
+        // is what the audit trail and usage ledger record, so neither is polluted with
+        // the whole context blob on every turn.
+        `${context}\n\n${trimmedMessage}`,
+        trimmedMessage,
+        { tokensUsedThisRun: 0 },
+        null,
+        [],
+        { requests: [] },
+        runAuditTracker,
+        createToolResultCache(),
+        createUsageTracker(),
+        null,
+        runUsageLedger,
+        { toolId: 'ai_reasoning_completion', capabilityId: null }
+      );
+
+      // Only a genuinely completed step yields a reply. Anything else - a denied
+      // permission, an exhausted token/usage budget, a gated classification awaiting
+      // approval, a model failure - falls through to the honest error below rather
+      // than fabricating an answer or reporting a non-answer as success.
+      const reply = step.completion_state === 'complete' && step.outputs ? step.outputs.text : null;
+      if (typeof reply !== 'string' || reply.trim() === '') {
+        const reason = orchestratorExecutionContract.isGatedForApproval(step)
+          ? 'the step is gated awaiting human approval'
+          : summarizeExecutionState(step);
+        console.error(`POST /ask did not complete (${runId}): ${reason}`);
+        res.status(502).json({ error: 'The assistant is unavailable right now. Please try again shortly.' });
+        return;
+      }
+
+      res.json({ reply });
     } catch (err) {
       // Logged (not just swallowed) so the real cause - a bad AI_PROVIDER value, a
       // missing/invalid API key, a network/API failure - is visible in the deployment's

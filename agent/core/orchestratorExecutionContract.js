@@ -1814,6 +1814,32 @@ function buildSpecialistTarget(specialistId) {
   };
 }
 
+// The shared-infrastructure counterpart to buildSpecialistTarget above: the
+// buildPlanStep() target for one of toolPermissions.js's
+// SHARED_INFRASTRUCTURE_CATEGORIES ('configuration', 'ai_reasoning', 'memory',
+// 'verification') - the categories no specialist owns and the orchestrator itself
+// reaches directly (specialist_id null). Returns the already-built entry from
+// ROUTING_TARGETS rather than composing a second target shape, so a caller can never
+// hand buildPlanStep a target the router itself would not produce. Throws on an
+// unknown/non-shared category instead of returning a target that would silently fail
+// permission checks deeper in the pipeline.
+//
+// Used by server.js's /ask, which pins the 'ai_reasoning' category so a plain
+// conversational question runs through the same checkToolAccess -> TOOL_EXECUTORS
+// dispatch, token/usage budget, and audit trail as every other tool call in this
+// project, instead of reaching a model client directly.
+function buildSharedInfrastructureTarget(category) {
+  const target = ROUTING_TARGETS.find(
+    (candidate) => candidate.type === 'shared_infrastructure' && candidate.id === category
+  );
+  if (!target) {
+    throw new Error(
+      `buildSharedInfrastructureTarget requires a shared-infrastructure category (one of: ${SHARED_INFRASTRUCTURE_CATEGORIES.join(', ')}), got '${category}'.`
+    );
+  }
+  return target;
+}
+
 // True when a buildPlanStep()-produced step is paused awaiting a real approval decision
 // (see executeSelectedCapability's 'approval_required' path above).
 function isGatedForApproval(step) {
@@ -2262,6 +2288,7 @@ module.exports = {
   extractJsonArray,
   buildPlanStep,
   buildSpecialistTarget,
+  buildSharedInfrastructureTarget,
   isGatedForApproval,
   reviseStepAfterResume,
   aggregatePlanState,
