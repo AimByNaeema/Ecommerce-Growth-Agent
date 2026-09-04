@@ -983,6 +983,108 @@ function routeClause(clauseText) {
   return { status: 'matched', segment: clauseText, target: tied[0].target };
 }
 
+// A closed set of referring pronouns/determiners that (in this project's domain -
+// short task instructions, never narrative prose) essentially only ever open a
+// grammatically-dependent continuation of the PRECEDING clause ("...and THEIR current
+// status", "...and ITS availability", "...and THAT information"), never a genuinely
+// new, independent top-level instruction. Deliberately excludes first/second-person
+// words (we/our/us/you/your/my) - those routinely open a real second instruction on
+// their own ("Also update our product descriptions"), so treating them as always-
+// dependent would risk silently folding a genuinely separate request into the
+// previous one. This is the eligibility gate for attemptClauseRecovery() below: an
+// unmatched clause is only ever a merge candidate when it starts with one of these
+// words, which is what keeps a genuinely-unrecognized second instruction (e.g. this
+// file's own "...and do the flibbertigibbet dance" regression test) correctly
+// surfaced for clarification instead of being silently swallowed into its neighbor.
+const DEPENDENT_FRAGMENT_STARTERS = new Set([
+  'their', 'theirs', 'them', 'themselves', 'it', 'its', 'itself',
+  'this', 'that', 'these', 'those', 'he', 'him', 'his', 'himself',
+  'she', 'her', 'hers', 'herself',
+]);
+
+// True when `text` opens with one of DEPENDENT_FRAGMENT_STARTERS - i.e. it reads as a
+// continuation of whatever came before it, not a standalone instruction. Only the
+// first word matters; matched case-insensitively against tokenize()'s own word
+// boundaries so leading punctuation ("Their current status.") never defeats it.
+function looksLikeDependentFragment(text) {
+  const words = tokenize(text);
+  return words.length > 0 && DEPENDENT_FRAGMENT_STARTERS.has(words[0]);
+}
+
+// REAL-WORLD REGRESSION (reported live by the store owner): CLAUSE_SPLIT_REGEX's own
+// header already documents that it cannot tell a genuine second instruction apart from
+// one instruction that merely contains "and"/comma internally - protectFileFormatLists()
+// above narrows that for the one case it can recognize safely (a bare list of file-
+// format names). It cannot help a plain-English trailing phrase: "Also discover our
+// real active products and their current status." splits (correctly, per the regex's
+// own rules) into "discover our real active products" (matches Product's
+// product_discovery) and "their current status." - a fragment with zero words in
+// common with any capability, so routeClause() reports it 'unmatched' and the ENTIRE
+// request stops for clarification, even though a person reading the original sentence
+// never intended two separate instructions. A store owner - or, eventually, this
+// project's own end customers per CLAUDE.md section 1's SaaS goal - cannot be expected
+// to know which of their own words are "safe" split points; per this project's
+// standard (see CLAUSE_SPLIT_REGEX's header) they should never have to.
+//
+// attemptClauseRecovery() is the fix, applied AFTER every clause has already been
+// routed independently (so it never changes behavior for an objective that already
+// worked - it only ever fires on a clause that would otherwise dead-end the whole
+// request). For each 'unmatched' clause, it re-joins the clause's own original text
+// with an immediately adjacent clause's own original text (previous first - a trailing
+// dangling phrase, the common case demonstrated above; then next, the symmetric leading
+// case) and re-routes the COMBINED text as one clause. If that combined text resolves
+// to anything other than 'unmatched' (a clean match, or even a genuine 'ambiguous' - a
+// real two-target conflict named for the person to resolve is still strictly more
+// useful than an opaque "your 3-word fragment matches nothing"), the merge is kept: the
+// neighbor's entry is updated to the combined text/result, and the original clause is
+// marked 'absorbed' so the final pass below skips it instead of double-reporting or
+// double-counting it as its own step. Deliberately conservative: a clause is only ever
+// merged into a neighbor that is itself cleanly 'matched' at the time - never into
+// another 'unmatched' or 'ambiguous' neighbor, and never overriding a clause that
+// already matched something on its own. Runs its scan repeatedly (bounded by the
+// number of clauses, so it always terminates) so a run of 3+ fragments from the same
+// over-split sentence resolves via chained merges, not just an immediately-adjacent
+// pair - verified by this file's own test suite (see the "chain" regression test).
+function attemptClauseRecovery(routedClauses) {
+  let changedThisPass = true;
+  let passesRemaining = routedClauses.length;
+
+  while (changedThisPass && passesRemaining > 0) {
+    changedThisPass = false;
+    passesRemaining -= 1;
+
+    for (let i = 0; i < routedClauses.length; i += 1) {
+      if (routedClauses[i].result.status !== 'unmatched') continue;
+      if (!looksLikeDependentFragment(routedClauses[i].text)) continue;
+
+      const mergeWith = (neighborIndex, buildMergedText) => {
+        const neighbor = routedClauses[neighborIndex];
+        if (!neighbor || neighbor.result.status !== 'matched') return false;
+
+        const mergedText = buildMergedText(neighbor.text, routedClauses[i].text);
+        const mergedResult = routeClause(mergedText);
+        if (mergedResult.status === 'unmatched') return false;
+
+        routedClauses[neighborIndex] = { text: mergedText, result: mergedResult };
+        routedClauses[i] = { text: mergedText, result: { status: 'absorbed' } };
+        return true;
+      };
+
+      // Previous clause first (the dangling-trailing-phrase case demonstrated above),
+      // then next (the symmetric leading-phrase case), never both for the same clause.
+      if (mergeWith(i - 1, (prevText, ownText) => `${prevText} ${ownText}`)) {
+        changedThisPass = true;
+        continue;
+      }
+      if (mergeWith(i + 1, (nextText, ownText) => `${ownText} ${nextText}`)) {
+        changedThisPass = true;
+      }
+    }
+  }
+
+  return routedClauses;
+}
+
 // Routes a full objective into a controlled, ordered execution plan: splits into
 // clauses, routes each one, and combines the results. Any ambiguous or unmatched
 // clause stops the whole request and reports a clarification requirement instead of
@@ -1001,11 +1103,18 @@ function planRouting(objective) {
     };
   }
 
+  // Route every clause independently first, then give attemptClauseRecovery() a
+  // chance to fold a clause that matched nothing back into an adjacent one before any
+  // clarification decision is made - see that function's own header above.
+  const routedClauses = attemptClauseRecovery(
+    clauses.map((clause) => ({ text: clause, result: routeClause(clause) }))
+  );
+
   const orderedEntries = [];
   const seen = new Set();
 
-  for (const clause of clauses) {
-    const result = routeClause(clause);
+  for (const { result } of routedClauses) {
+    if (result.status === 'absorbed') continue;
 
     if (result.status === 'unmatched') {
       return {
@@ -1809,6 +1918,91 @@ function buildRoutingResponse({
   };
 }
 
+// Pulls the first top-level JSON array out of `text` and parses it, tolerating the
+// prose/code-fence wrapping a model reply commonly adds around the JSON it was asked
+// for (e.g. "Here you go:\n```json\n[...]\n```"). Returns null (never throws) for
+// anything that isn't parseable as an array - the caller treats that exactly like an
+// AI failure, falling back to the deterministic result.
+function extractJsonArray(text) {
+  if (typeof text !== 'string') return null;
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// AI-ASSISTED RE-SEGMENTATION FALLBACK - see this function's call site in
+// runOrchestratorContract below for why it exists and the guarantees around when it is
+// (and is not) trusted. Deliberately narrow: this asks Claude (via
+// tools/aiReasoningCompletion.js's runReasoningCompletion() - the same sanctioned,
+// budget-checked, already-tested path every other AI-backed capability in this file
+// dispatches through; never a second/ad-hoc AI client) to do ONLY phrase segmentation,
+// never capability selection - it is never told what capabilities/specialists exist, so
+// it cannot invent one, and every string it returns is re-validated through the exact
+// same deterministic routeClause() every other clause in this file goes through before
+// ever being trusted. Returns null (never throws) on any failure - a missing/invalid
+// API key, a network error, an unparseable or empty reply, or even one proposed clause
+// that does not cleanly match a real capability - so the caller can always safely fall
+// back to the original clarification_required result.
+async function attemptAiAssistedSegmentation(objective) {
+  let completion;
+  try {
+    completion = await aiReasoningCompletion.runReasoningCompletion({
+      instruction:
+        'You split a short task instruction into its independent, self-contained ' +
+        'parts. Rules: only split when the text genuinely contains more than one ' +
+        'separate instruction; never merge, omit, or add an instruction - only decide ' +
+        'where one ends and another begins, keeping each part\'s original wording as ' +
+        'close as possible (connector words like "and"/"also"/"then" between parts may ' +
+        'be dropped, but every other word must be preserved); if it is really just ONE ' +
+        'instruction, return an array containing that single instruction unchanged. ' +
+        'Respond with ONLY a JSON array of strings - no prose, no code fences, nothing ' +
+        `else.\n\nText: ${JSON.stringify(objective)}`,
+      maxTokens: 400,
+    });
+  } catch (err) {
+    return null;
+  }
+
+  const candidateClauses = extractJsonArray(completion.text);
+  if (!candidateClauses) return null;
+
+  const trimmedClauses = candidateClauses
+    .filter((clause) => typeof clause === 'string' && clause.trim().length > 0)
+    .map((clause) => clause.trim());
+  if (trimmedClauses.length === 0) return null;
+
+  // Re-route every AI-proposed clause through planRouting()'s own deterministic
+  // matcher (reused directly, never reimplemented) - accepted only if EVERY clause
+  // cleanly matches exactly one capability; a single remaining unmatched/ambiguous
+  // clause abandons the whole attempt rather than returning a partial/guessed plan.
+  const orderedEntries = [];
+  const seen = new Set();
+  for (const clause of trimmedClauses) {
+    const result = routeClause(clause);
+    if (result.status !== 'matched') return null;
+
+    const key = `${result.target.type}:${result.target.id}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      orderedEntries.push({ target: result.target, segment: result.segment });
+    }
+  }
+
+  orderedEntries.sort((a, b) => ROUTING_TARGETS.indexOf(a.target) - ROUTING_TARGETS.indexOf(b.target));
+
+  return {
+    status: 'planned',
+    targets: orderedEntries.map((entry) => entry.target),
+    segments: orderedEntries.map((entry) => entry.segment),
+  };
+}
+
 // The single entry point: normalizes the task, routes it into a controlled execution
 // plan (or a clarification requirement), executes every planned step, and returns the
 // final structured response. Never throws - all failures become structured outcomes.
@@ -1860,7 +2054,35 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
     });
   }
 
-  const routingResult = planRouting(objective);
+  let routingResult = planRouting(objective);
+
+  // AI-ASSISTED RE-SEGMENTATION FALLBACK (real-world regression, reported live by the
+  // store owner - see attemptClauseRecovery()'s own header above for the free,
+  // deterministic first line of defense and exactly why it cannot be complete on its
+  // own). Only ever attempted for clarification_type 'unmatched' - never 'ambiguous'
+  // (a genuine two-target tie, not a segmentation problem) - and only ever ACCEPTED if
+  // every clause it proposes then matches a real capability via the same deterministic
+  // routeClause() every other clause in this file goes through, so this can only ever
+  // turn a would-be clarification into a correctly-routed plan, never invent or guess
+  // one; a failed/unreachable/unparseable attempt silently falls back to the original,
+  // honest clarification_required result below - never worse than before this fallback
+  // existed.
+  if (routingResult.status === 'clarification_required' && routingResult.clarification_type === 'unmatched') {
+    const recovered = await attemptAiAssistedSegmentation(objective);
+    if (recovered) {
+      appendAuditEvent(runAuditTracker, {
+        // 'agent' - not a new event type - is the same category buildPlanStep() below
+        // already uses for a specialist-selection decision (see its own
+        // appendAuditEvent call); this is that same kind of routing decision, just
+        // reached via the AI-segmentation fallback instead of the direct deterministic
+        // path, so it belongs in the same category rather than inventing a new one
+        // audit/auditRecordModel.js's fixed AUDIT_EVENT_TYPES enum does not list.
+        type: 'agent',
+        summary: `AI-assisted segmentation recovered a plan after the deterministic router reported "${routingResult.reason}"`,
+      });
+      routingResult = recovered;
+    }
+  }
 
   if (routingResult.status === 'clarification_required') {
     return buildRoutingResponse({
@@ -2036,6 +2258,8 @@ module.exports = {
   splitIntoClauses,
   routeClause,
   planRouting,
+  attemptAiAssistedSegmentation,
+  extractJsonArray,
   buildPlanStep,
   buildSpecialistTarget,
   isGatedForApproval,

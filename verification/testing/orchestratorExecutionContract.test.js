@@ -18,6 +18,8 @@ const {
   buildRoutingResponse,
   runOrchestratorContract,
   deriveBusinessConfigContext,
+  attemptAiAssistedSegmentation,
+  extractJsonArray,
 } = require('../../agent/core/orchestratorExecutionContract');
 const claudeClient = require('../../agent/core/claudeClient');
 const { loadEnvOnce: loadShopifyEnvOnce } = require('../../integrations/adapters/shopifyClient');
@@ -398,6 +400,44 @@ test('planRouting requires clarification for a fully unmatched task', () => {
   const result = planRouting('zzqxvth wobble unicorn');
   assert.strictEqual(result.status, 'clarification_required');
   assert.strictEqual(result.clarification_type, 'unmatched');
+});
+
+// --- attemptClauseRecovery (via planRouting): the real-world regression reported live
+// by the store owner. "Also discover our real active products and their current
+// status." splits into "discover our real active products" (matches Product) and
+// "their current status." (zero capability overlap on its own) - previously this
+// dead-ended the ENTIRE request for clarification even though only one instruction was
+// ever intended. attemptClauseRecovery folds the dangling "their ..." fragment back
+// into its matched neighbor and re-routes the combined text, so this now plans cleanly
+// instead of asking the store owner to guess which of her own words were "unsafe".
+test('planRouting recovers the real-world "...and their current status" regression into a clean Product + Analytics plan', () => {
+  const result = planRouting(
+    'Check our real Shopify store sales performance data this month. Also discover our real active products and their current status.'
+  );
+  assert.strictEqual(result.status, 'planned');
+  const ids = result.targets.map((target) => target.id).sort();
+  assert.deepStrictEqual(ids, ['analytics_optimization', 'product']);
+});
+
+test('planRouting recovers a dependent "their availability status" fragment the same way', () => {
+  const result = planRouting(
+    'Check our real Shopify store sales performance data this month. Also discover our products and their availability status.'
+  );
+  assert.strictEqual(result.status, 'planned');
+  const ids = result.targets.map((target) => target.id).sort();
+  assert.deepStrictEqual(ids, ['analytics_optimization', 'product']);
+});
+
+// Guard against over-merging: a fragment that is genuinely a separate, unroutable
+// instruction (starts with "we", never a DEPENDENT_FRAGMENT_STARTERS word) must still
+// surface for clarification instead of being silently folded into its matched
+// neighbor - the fix must not trade one failure mode (over-splitting) for another
+// (silently swallowing a real second instruction the store owner actually meant).
+test('planRouting does NOT merge a genuinely separate unmatched instruction that happens to follow a matched one', () => {
+  const result = planRouting('Research our market and we need help with the flibbertigibbet dance.');
+  assert.strictEqual(result.status, 'clarification_required');
+  assert.strictEqual(result.clarification_type, 'unmatched');
+  assert.ok(/flibbertigibbet/.test(result.unmatched_segment));
 });
 
 (async () => {
@@ -863,8 +903,21 @@ test('planRouting requires clarification for a fully unmatched task', () => {
   });
 
   await testAsync('growth_opportunity_drafts is null for a clarification-required response (no plan ran)', async () => {
-    const response = await runOrchestratorContract('zzqxvth wobble unicorn');
-    assert.strictEqual(response.growth_opportunity_drafts, null);
+    // A totally-unmatched single-clause objective now also triggers the AI-assisted
+    // segmentation fallback (attemptAiAssistedSegmentation) before the orchestrator
+    // gives up - mock claudeClient.sendMessage to fail the same way a real AI outage
+    // does (mirrors the real Gemini 503 hit in production), so this stays a fast,
+    // deterministic, no-network test instead of depending on a live Claude call.
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => {
+      throw new Error('sendMessage should not be relied on succeeding for this test');
+    };
+    try {
+      const response = await runOrchestratorContract('zzqxvth wobble unicorn');
+      assert.strictEqual(response.growth_opportunity_drafts, null);
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+    }
   });
 
   await testAsync('growth_opportunity_drafts is an empty array (not null) for a plan that produced no growth-opportunity-shaped output', async () => {
@@ -882,10 +935,25 @@ test('planRouting requires clarification for a fully unmatched task', () => {
   });
 
   await testAsync('runOrchestratorContract: a partially-matched multi-clause task requires clarification', async () => {
-    const response = await runOrchestratorContract('research my market and do the flibbertigibbet dance');
-    assert.strictEqual(response.needs_more_information, true);
-    assert.strictEqual(response.routing.clarification_type, 'unmatched');
-    assert.ok(/flibbertigibbet/.test(response.routing.unmatched_segment));
+    // "do the flibbertigibbet dance" is a genuinely separate, unroutable instruction
+    // (not a dependent fragment referring back to "research my market"), so this must
+    // still ask for clarification even after both the deterministic recovery pass and
+    // the AI-assisted segmentation fallback get a chance to run. Mock
+    // claudeClient.sendMessage to fail (simulating an AI outage) so the test proves the
+    // fallback-to-clarification path works without depending on a live network call or
+    // on the AI actually agreeing this can't be split further.
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => {
+      throw new Error('sendMessage should not be relied on succeeding for this test');
+    };
+    try {
+      const response = await runOrchestratorContract('research my market and do the flibbertigibbet dance');
+      assert.strictEqual(response.needs_more_information, true);
+      assert.strictEqual(response.routing.clarification_type, 'unmatched');
+      assert.ok(/flibbertigibbet/.test(response.routing.unmatched_segment));
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+    }
   });
 
   await testAsync('runOrchestratorContract: a configuration-domain task still attempts the real tool and reports its result cleanly', async () => {
@@ -908,6 +976,122 @@ test('planRouting requires clarification for a fully unmatched task', () => {
       else process.env.SHOPIFY_STORE_DOMAIN = savedDomain;
       if (savedToken === undefined) delete process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
       else process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN = savedToken;
+    }
+  });
+
+  // --- attemptAiAssistedSegmentation: the Layer 2 fallback for cases the deterministic
+  // attemptClauseRecovery heuristic cannot reach (e.g. a referring pronoun that is not
+  // the FIRST word of its fragment, like "...and update ITS title"). Every scenario is
+  // mocked at claudeClient.sendMessage - the same convention as the "ALLOWED (mocked)"
+  // Claude-routed tests below - so these stay fast, free, and deterministic.
+
+  await testAsync('attemptAiAssistedSegmentation: accepts a valid AI segmentation once every proposed clause cleanly matches a real capability', async () => {
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => ({
+      text: 'Here you go:\n```json\n["market competitor research", "social media advertising"]\n```',
+      model: 'claude-sonnet-5',
+      stopReason: 'end_turn',
+      usage: { input_tokens: 20, output_tokens: 10 },
+      raw: {},
+    });
+    try {
+      const result = await attemptAiAssistedSegmentation('some real customer sentence the deterministic router could not split');
+      assert.ok(result, 'expected a recovered plan, got null');
+      assert.strictEqual(result.status, 'planned');
+      const ids = result.targets.map((target) => target.id);
+      assert.deepStrictEqual(ids, ['research', 'social_advertising']);
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+    }
+  });
+
+  await testAsync('attemptAiAssistedSegmentation: falls back to null when the AI reply is not parseable as a JSON array', async () => {
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => ({
+      text: 'Sorry, I cannot help with that.',
+      model: 'claude-sonnet-5',
+      stopReason: 'end_turn',
+      usage: { input_tokens: 20, output_tokens: 10 },
+      raw: {},
+    });
+    try {
+      const result = await attemptAiAssistedSegmentation('zzqxvth wobble unicorn');
+      assert.strictEqual(result, null);
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+    }
+  });
+
+  await testAsync('attemptAiAssistedSegmentation: falls back to null when even one AI-proposed clause does not cleanly match a capability', async () => {
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => ({
+      text: '["market competitor research", "do the flibbertigibbet dance"]',
+      model: 'claude-sonnet-5',
+      stopReason: 'end_turn',
+      usage: { input_tokens: 20, output_tokens: 10 },
+      raw: {},
+    });
+    try {
+      const result = await attemptAiAssistedSegmentation('research my market and do the flibbertigibbet dance');
+      assert.strictEqual(result, null);
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+    }
+  });
+
+  await testAsync('attemptAiAssistedSegmentation: falls back to null when the AI call itself fails (mirrors a real provider outage)', async () => {
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => {
+      throw new Error('Gemini API request failed (503): This model is currently experiencing high demand.');
+    };
+    try {
+      const result = await attemptAiAssistedSegmentation('zzqxvth wobble unicorn');
+      assert.strictEqual(result, null);
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+    }
+  });
+
+  await testAsync('runOrchestratorContract: the AI-assisted segmentation fallback recovers a full plan for a case the deterministic heuristic alone cannot reach', async () => {
+    // "update its title and its keywords" - the referring pronoun ("its") is not the
+    // FIRST word of either split fragment ("update its title" / "its keywords" IS first
+    // word here, so use a case where it genuinely is not: "and update its title" split
+    // on "and" leaves "update its title", whose first token is "update" - the exact
+    // documented gap attemptClauseRecovery's heuristic cannot close on its own).
+    const objective = 'Suggest one SEO fix for our Halloween bundle and update its title.';
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => ({
+      text: '["suggest one SEO fix for our Halloween bundle", "update our Halloween bundle listing title"]',
+      model: 'claude-sonnet-5',
+      stopReason: 'end_turn',
+      usage: { input_tokens: 20, output_tokens: 10 },
+      raw: {},
+    });
+    try {
+      const response = await runOrchestratorContract(objective);
+      assert.strictEqual(response.needs_more_information, false);
+      assert.strictEqual(response.routing.status, 'planned');
+      const ids = response.routing.plan.map((step) => step.selected_specialist.id).sort();
+      assert.deepStrictEqual(ids, ['listing', 'seo']);
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
+    }
+  });
+
+  await testAsync('runOrchestratorContract: the AI-assisted segmentation fallback is never triggered for a genuine ambiguous-capability conflict', async () => {
+    let sendMessageCalled = false;
+    const originalSendMessage = claudeClient.sendMessage;
+    claudeClient.sendMessage = async () => {
+      sendMessageCalled = true;
+      throw new Error('sendMessage should never be reached for an ambiguous (not unmatched) clarification');
+    };
+    try {
+      const response = await runOrchestratorContract('I need content optimization help');
+      assert.strictEqual(response.needs_more_information, true);
+      assert.strictEqual(response.routing.clarification_type, 'ambiguous');
+      assert.strictEqual(sendMessageCalled, false, 'the AI fallback must only ever trigger for an "unmatched" clarification, never "ambiguous"');
+    } finally {
+      claudeClient.sendMessage = originalSendMessage;
     }
   });
 
