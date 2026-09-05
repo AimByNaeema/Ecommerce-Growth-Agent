@@ -137,6 +137,7 @@
     "compliance:model": "node compliance/complianceModel.js",
     "compliance:engine": "node compliance/complianceEngine.js",
     "tools:compliance-check": "node tools/complianceCheckTool.js",
+    "approvals:compliance-gate": "node approvals/complianceApprovalGate.js",
     "test": "node verification/testing/runAllTests.js"
   },
   "dependencies": {
