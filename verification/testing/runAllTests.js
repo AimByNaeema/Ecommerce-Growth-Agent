@@ -175,6 +175,7 @@ const TEST_FILES = [
   'complianceEngine.test.js',
   'complianceCheckTool.test.js',
   'complianceApprovalGate.test.js',
+  'publishAuthorization.test.js',
 ];
 
 function runAll() {

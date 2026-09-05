@@ -59,6 +59,41 @@ decision. `isAuthorizedForPublishing(record)` is the single gate a future publis
 must call: it requires an `approved` status, a real `decided_by`, and a passing
 re-verification, all checked at the moment of asking.
 
+[`publishAuthorization.js`](publishAuthorization.js) is the final boundary:
+`Content -> Compliance -> Human Approval -> **Publish Authorization**`. It answers one
+question - *"is this content authorized for a FUTURE publishing action?"* - and it never
+publishes, imports no adapter, and makes no model call.
+
+The structural point is that **the record is looked up, never accepted**.
+`authorizePublishing({ requests, requestId, contentReference, ... })` takes the
+**server-held** array plus a lookup key and a content reference. There is no parameter
+anywhere for an approval record, an approval status, a compliance verdict, or an approver
+identity, so a client has nothing to forge with: the worst it can do is name an id that
+does not exist or content the approval was not for, and both are refused. It fails
+closed - `authorized` stays `false` unless every check passes, and the outcome names the
+exact `failed_check`:
+
+| check | refuses when |
+|---|---|
+| `request_found_in_server_state` | the id is unknown to the server |
+| `record_from_approval_workflow` | it is not a valid `approvalRequestModel.js` record |
+| `classification_actually_required_approval` | its class never needed a human at all |
+| `human_decision_is_approved` | it is `pending` or `rejected` |
+| `decision_is_accountable` | no real `decided_by`/`decided_at` |
+| `compliance_attached_and_unchanged` | compliance is missing, or the claimed verdict/reasons do not survive re-evaluation |
+| `compliance_not_block` | the content now evaluates to `BLOCK` |
+| `approval_matches_content_reference` | the approval was granted for different content |
+| `tool_permission_still_granted` | permission is no longer granted, re-checked now |
+
+Compliance is verified *before* the content-reference match, because the reference is
+read out of the compliance input - with compliance missing, a reference mismatch is a
+symptom, not the cause. Permission is re-checked at the moment of asking, exactly as
+`orchestratorExecutionContract.js`'s `resumeApprovedExecution()` does: an approval only
+ever satisfied the approval gate, never the permission one. A compliance `PASS` alone is
+refused for want of a decision; a human approval alone is refused for want of a verifiable
+verdict; a `BLOCK` is refused whatever else is true; and a `REVIEW` is authorized only by
+an ordinary human approval and is still *reported* as `REVIEW`, never rewritten to `PASS`.
+
 This adds no second state machine, no new schema, and no storage - it is pure functions
 over the same caller-held array, and nothing in `approvals/` or `compliance/` was
 modified to accommodate it. A human approval is **not** a compliance PASS: the two
