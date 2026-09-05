@@ -79,6 +79,8 @@ const TEST_FILES = [
   'chiefToApprovalIntegration.test.js',
   'businessRegistry.test.js',
   'businessIsolation.test.js',
+  'contentBriefEngine.test.js',
+  'seoContentGenerationTool.test.js',
   'questionEvidenceModel.test.js',
   'questionDiscoveryEngine.test.js',
   'marketQuestionDiscoveryTool.test.js',

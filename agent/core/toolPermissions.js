@@ -109,6 +109,12 @@ const TOOL_CLASSIFICATIONS = {
   // records about publicly-asked questions for a human (or the Information Gap Finder)
   // to read - it never publishes, sends, writes, or changes anything by itself.
   discover_market_questions: 'analysis_only',
+  // Authors a content DRAFT from an already-validated information-gap opportunity.
+  // 'analysis_only' - the smallest classification that fits - because it publishes
+  // nothing, sends nothing, and changes nothing: its output goes to Compliance and
+  // human approval before any publishing stage exists to act on it. Same footing as
+  // listing_content_generation, which likewise authors content no one has approved yet.
+  seo_content_generation: 'analysis_only',
 };
 
 // Which tools/toolRegistry.js `operation` types ('read'/'write'/'execute') each of
@@ -125,9 +131,23 @@ const SPECIALIST_ROLE_PERMISSIONS = {
   // Product: catalog/opportunity analysis and scoring - reads and evaluates existing
   // product data; authoring new listing content is Listing's role, not Product's.
   product: ['read'],
-  // SEO: keyword research and on-page SEO analysis - diagnostic only; it informs
-  // Listing's content rewrites but never edits content itself.
-  seo: ['read'],
+  // SEO: keyword research, on-page SEO analysis, and information-gap discovery
+  // ('read'), plus authoring the website content that closes an identified information
+  // gap ('write' - tools/seoContentGenerationTool.js).
+  //
+  // 'write' was added deliberately, by explicit user decision, when the Information Gap
+  // Opportunity -> SEO Content Generation stage was built. This role was previously
+  // ['read'] with the note that SEO "informs Listing's content rewrites but never edits
+  // content itself", and that remains true of PRODUCT LISTINGS: rewriting a listing is
+  // still Listing's role, and nothing here touches one. What SEO now also owns is
+  // search-oriented website content answering a real customer question - which
+  // agent/core/listingAgent.js cannot produce (it is listing-shaped and only ever
+  // relays caller-supplied text, never writes a sentence).
+  //
+  // Still a real ceiling, not a blanket: SEO holds no marketing, social, advertising or
+  // analytics category, and nothing it authors is published - seo_content_generation
+  // produces a draft for Compliance and human approval, never a live page.
+  seo: ['read', 'write'],
   // Listing: its entire role is authoring new listing content and marketplace
   // formats - a pure content-creation role with no analysis tools of its own.
   listing: ['write'],

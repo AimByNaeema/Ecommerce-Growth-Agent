@@ -40,6 +40,7 @@ const EXPECTED_ORDER = [
   'verification',
   'live_competitor_research',
   'discover_market_questions',
+  'seo_content_generation',
 ];
 
 const IMPLEMENTED_IDS = [
@@ -67,6 +68,7 @@ const IMPLEMENTED_IDS = [
   'ai_reasoning_completion',
   'live_competitor_research',
   'discover_market_questions',
+  'seo_content_generation',
 ];
 
 let passed = 0;
@@ -84,7 +86,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 27 required tools, in the requested order', () => {
+test('the registry has exactly the 28 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER
@@ -133,6 +135,9 @@ test('getToolsByOperation() filters correctly', () => {
       'social_content_planning',
       'social_media_strategy_generation',
       'advertising_strategy_planning',
+      // Authors website content answering a real customer question - the SEO
+      // specialist's one write tool. Publishes nothing.
+      'seo_content_generation',
     ].sort()
   );
 });
@@ -157,7 +162,7 @@ test('getToolById() finds a known tool and returns undefined for an unknown one'
 
 test('getToolsByCategory() filters correctly', () => {
   const seoTools = getToolsByCategory('seo');
-  assert.deepStrictEqual(seoTools.map((tool) => tool.id), ['keyword_research', 'seo_analysis', 'discover_market_questions']);
+  assert.deepStrictEqual(seoTools.map((tool) => tool.id), ['keyword_research', 'seo_analysis', 'discover_market_questions', 'seo_content_generation']);
 });
 
 test('getToolsByStatus() returns the correct counts for each status', () => {

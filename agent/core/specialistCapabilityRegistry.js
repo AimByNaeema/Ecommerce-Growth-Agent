@@ -89,6 +89,9 @@ const { SEO_CAPABILITIES, SEO_AGENT_RESULT_FIELDS } = require('./seoAgentResultM
 // result: it acquires and verifies question evidence, so its output contract is that
 // evidence record rather than the shared SEO envelope.
 const { QUESTION_EVIDENCE_FIELDS } = require('./questionEvidenceModel');
+// seo_content_generation likewise composes no seoAgent.js result - its output is the
+// content brief plus draft.
+const { CONTENT_GENERATION_RESULT_FIELDS } = require('./contentBriefModel');
 const { LISTING_CAPABILITIES, LISTING_AGENT_RESULT_FIELDS } = require('./listingAgentResultModel');
 const { MARKETING_CAPABILITIES, MARKETING_AGENT_RESULT_FIELDS } = require('./marketingAgentResultModel');
 const {
@@ -844,6 +847,17 @@ const SEO_TASKS = [
     optional: ['market', 'limit'],
     model: 'agent/core/questionEvidenceModel.js',
     fields: fieldIds(QUESTION_EVIDENCE_FIELDS),
+  }),
+  buildTask({
+    id: 'seo_content_generation',
+    title: 'SEO content generation from an information gap',
+    description:
+      "The stage AFTER information_gap_analysis: turn one validated information-gap opportunity into a structured content brief and, only where the evidence justifies it, a content draft - via tools/seoContentGenerationTool.js. Its required input is a single `opportunity` (an agent/core/informationGapModel.js record produced by that capability), so the flow is question discovery -> gap analysis -> this. Deterministic gating, brief composition and post-generation honesty checks live in agent/core/contentBriefEngine.js; the one model call reuses tools/aiReasoningCompletion.js, preserving AI_PROVIDER selection and the shared token budget. Tool-executed rather than seoAgent.js-composed, like market_question_discovery: its output is an agent/core/contentBriefModel.js result. Publishes nothing - the draft goes to Compliance and human approval, which are later stages.",
+    toolIds: ['seo_content_generation'],
+    required: ['opportunity'],
+    optional: ['opportunityId', 'searchIntent', 'differentiationPoints', 'supportedFacts', 'competitorTexts', 'businessContext'],
+    model: 'agent/core/contentBriefModel.js',
+    fields: fieldIds(CONTENT_GENERATION_RESULT_FIELDS),
   }),
 ];
 

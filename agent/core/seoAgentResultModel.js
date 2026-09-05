@@ -42,6 +42,11 @@ const SEO_CAPABILITIES = [
   // own tool, and its output is an agent/core/questionEvidenceModel.js record rather
   // than this envelope. runSeoAgent() therefore rejects it, which is correct.
   'market_question_discovery',
+  // The stage after information_gap_analysis: a validated opportunity becomes a content
+  // brief and draft (tools/seoContentGenerationTool.js). Like market_question_discovery
+  // above, it is tool-executed rather than composed by agent/core/seoAgent.js - its
+  // output is an agent/core/contentBriefModel.js result, not this envelope.
+  'seo_content_generation',
 ];
 
 const SEO_AGENT_RESULT_FIELDS = [

@@ -312,6 +312,15 @@ const TOOL_REGISTRY = [
     operation: 'read',
     status: 'implemented',
   },
+  {
+    id: 'seo_content_generation',
+    title: 'SEO content generation from an information gap',
+    description:
+      "Turn a validated information-gap opportunity (agent/core/informationGapModel.js) into a structured content brief and, only when the evidence justifies it, a content draft - see tools/seoContentGenerationTool.js. Deterministic gating/brief/post-checks live in agent/core/contentBriefEngine.js; the single model call reuses tools/aiReasoningCompletion.js, so AI_PROVIDER selection and the shared token budget apply unchanged. The one 'write' tool the SEO specialist owns: it authors website content answering a real customer question, which the listing-shaped agent/core/listingAgent.js cannot produce. Publishes nothing - its output is a draft for Compliance and human approval; an unevidenced opportunity is blocked before any model call is made.",
+    category: 'seo',
+    operation: 'write',
+    status: 'implemented',
+  },
 ];
 
 function getToolRegistry() {

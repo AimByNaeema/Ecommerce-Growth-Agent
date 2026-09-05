@@ -97,6 +97,7 @@ const marketResearchTool = require('../../tools/marketResearchTool');
 const competitorResearchTool = require('../../tools/competitorResearchTool');
 const webCompetitorResearchTool = require('../../tools/webCompetitorResearchTool');
 const marketQuestionDiscoveryTool = require('../../tools/marketQuestionDiscoveryTool');
+const seoContentGenerationTool = require('../../tools/seoContentGenerationTool');
 const customerResearchTool = require('../../tools/customerResearchTool');
 const globalMarketOpportunityTool = require('../../tools/globalMarketOpportunityTool');
 const marketProductOpportunityTool = require('../../tools/marketProductOpportunityTool');
@@ -174,6 +175,17 @@ const TOOL_EXECUTORS = {
         executionRequest.objective,
       market: (executionRequest.research_params && executionRequest.research_params.market) || '',
       limit: executionRequest.research_params && executionRequest.research_params.limit,
+      businessId: executionRequest.business_id,
+      tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
+    }),
+  // The stage after the Information Gap Finder: a validated opportunity becomes a brief
+  // and (only when the evidence justifies it) a draft. Spends model tokens through
+  // tools/aiReasoningCompletion.js, so this run's running total is threaded in exactly
+  // like every other model-calling tool - a blocked or review opportunity makes no call
+  // at all and spends nothing.
+  seo_content_generation: (executionRequest, runTokenTracker) =>
+    seoContentGenerationTool.runSeoContentGenerationTool({
+      ...(executionRequest.research_params || {}),
       businessId: executionRequest.business_id,
       tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
     }),
