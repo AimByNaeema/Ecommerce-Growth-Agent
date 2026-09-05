@@ -139,6 +139,8 @@
     "tools:compliance-check": "node tools/complianceCheckTool.js",
     "approvals:compliance-gate": "node approvals/complianceApprovalGate.js",
     "approvals:publish-authorization": "node approvals/publishAuthorization.js",
+    "integrations:etsy-client": "node integrations/adapters/etsyClient.js",
+    "integrations:etsy-publishing": "node integrations/etsyPublishing.js",
     "test": "node verification/testing/runAllTests.js"
   },
   "dependencies": {

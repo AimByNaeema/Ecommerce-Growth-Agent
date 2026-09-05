@@ -45,6 +45,12 @@ const CREDENTIAL_KEYS = [
   'GEMINI_API_KEY',
   'GEMINI_MODEL',
   'GEMINI_MAX_TOKENS',
+  // Etsy publishing (integrations/adapters/etsyClient.js). Additive: a business whose
+  // .env has none of these gets them back as '' exactly like every other absent key, so
+  // no existing business configuration changes meaning.
+  'ETSY_API_KEYSTRING',
+  'ETSY_OAUTH_ACCESS_TOKEN',
+  'ETSY_SHOP_ID',
 ];
 
 function isValidBusinessId(id) {

@@ -129,6 +129,82 @@ const ADAPTER_CONTRACT_RULES = [
   },
 ];
 
+// ---------------------------------------------------------------------------------
+// The PUBLISHING contract - additive, and deliberately separate from the read contract
+// above.
+// ---------------------------------------------------------------------------------
+//
+// ADAPTER_CONTRACT_RULES's 'read_only_only' rule states that a write/mutation capability
+// is "a separate, explicitly-scoped contract addition, not assumed here". This is that
+// addition, and it is kept apart rather than folded in for two reasons: the read
+// contract stays exactly true of every adapter that only reads (nothing about
+// integrations/adapters/shopifyClient.js changes, and it is still validated against the
+// read contract unchanged), and an adapter must OPT IN to being publish-capable rather
+// than inheriting the claim.
+//
+// A publishing adapter is checked with validatePublishingAdapterShape(), never with
+// validateAdapterShape() - the two answer different questions.
+const PUBLISHING_ADAPTER_CAPABILITIES = [
+  {
+    id: 'isConfigured',
+    description: 'Whether every credential this platform requires is present, per business. Never reports a value, only presence.',
+    normalized_shape: 'boolean',
+  },
+  {
+    id: 'canPublish',
+    description:
+      'Whether this adapter could actually perform a publish right now. Deliberately distinct from isConfigured(): credentials being present does not mean the integration is complete, and conflating the two is how an unfinished adapter ships looking finished.',
+    normalized_shape: 'boolean',
+  },
+  {
+    id: 'publishListing',
+    description:
+      "Publish one formatted marketplace listing (an agent/core/marketplaceListingFormatModel.js record) to the seller's account on this platform. Must return the platform's own result/reference, or throw - never a fabricated id, never a silent no-op, never a partial success reported as a success.",
+    normalized_shape: "the platform's own result object, relayed unchanged",
+  },
+];
+
+const PUBLISHING_CONTRACT_RULES = [
+  {
+    id: 'authorization_before_mutation',
+    description:
+      'A publishing adapter is never called except past a passing server-side publish authorization (approvals/publishAuthorization.js), re-checked immediately before the mutation. The adapter itself does not enforce this - the workflow in front of it does, and there is exactly one call site per platform.',
+  },
+  {
+    id: 'never_fabricate_a_publish_result',
+    description:
+      'A missing credential, an incomplete integration, a network failure, or a platform error must throw a clear error naming what is missing - never a fabricated listing id, and never a success-shaped result for a mutation that did not happen.',
+  },
+  {
+    id: 'credentials_never_surfaced',
+    description:
+      'Errors, audit detail and return values may name which credential KEYS are missing, never a credential value - so a publish failure can be logged and audited safely.',
+  },
+];
+
+// Structural check for a PUBLISHING adapter. Same limits as validateAdapterShape(): it
+// verifies capability presence, not real return shape, which cannot be checked without a
+// live platform.
+function validatePublishingAdapterShape(adapterModule) {
+  const errors = [];
+
+  if (typeof adapterModule !== 'object' || adapterModule === null) {
+    return { valid: false, errors: ['adapter module must be an object'] };
+  }
+
+  for (const capability of PUBLISHING_ADAPTER_CAPABILITIES) {
+    if (typeof adapterModule[capability.id] !== 'function') {
+      errors.push(`missing required publishing capability: ${capability.id} (must be a function)`);
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+function getPublishingCapabilityById(id) {
+  return PUBLISHING_ADAPTER_CAPABILITIES.find((entry) => entry.id === id);
+}
+
 function getCapabilityById(id) {
   return REQUIRED_ADAPTER_CAPABILITIES.find((entry) => entry.id === id);
 }
@@ -162,6 +238,10 @@ function validateAdapterShape(adapterModule) {
 module.exports = {
   REQUIRED_ADAPTER_CAPABILITIES,
   ADAPTER_CONTRACT_RULES,
+  PUBLISHING_ADAPTER_CAPABILITIES,
+  PUBLISHING_CONTRACT_RULES,
+  validatePublishingAdapterShape,
+  getPublishingCapabilityById,
   getCapabilityById,
   getRuleById,
   validateAdapterShape,
