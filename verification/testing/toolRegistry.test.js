@@ -41,6 +41,7 @@ const EXPECTED_ORDER = [
   'live_competitor_research',
   'discover_market_questions',
   'seo_content_generation',
+  'compliance_check',
 ];
 
 const IMPLEMENTED_IDS = [
@@ -69,6 +70,7 @@ const IMPLEMENTED_IDS = [
   'live_competitor_research',
   'discover_market_questions',
   'seo_content_generation',
+  'compliance_check',
 ];
 
 let passed = 0;

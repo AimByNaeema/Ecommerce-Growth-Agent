@@ -170,6 +170,10 @@ const TEST_FILES = [
   'serverResearchParams.test.js',
   'resultSummary.test.js',
   'webCompetitorResearchTool.test.js',
+  'compliancePolicy.test.js',
+  'complianceModel.test.js',
+  'complianceEngine.test.js',
+  'complianceCheckTool.test.js',
 ];
 
 function runAll() {

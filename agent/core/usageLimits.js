@@ -32,6 +32,11 @@ const MODEL_CALL_TOOL_IDS = new Set([
   // Generates a content draft through tools/aiReasoningCompletion.js, so it spends real
   // model tokens and must sit under the same per-run model-call ceiling.
   'seo_content_generation',
+  // Deterministic and model-free by default, but its opt-in AI-assisted ambiguity pass
+  // reaches tools/aiReasoningCompletion.js like any other model call - so the per-run
+  // model-call ceiling must be able to stop it. Counting it here can only ever be more
+  // conservative than not counting it.
+  'compliance_check',
 ]);
 
 // The tool ids that ultimately reach integrations/adapters/shopifyClient.js
@@ -49,6 +54,7 @@ const EXTERNAL_API_TOOL_IDS = new Set([
   'live_competitor_research',
   'discover_market_questions',
   'seo_content_generation',
+  'compliance_check',
 ]);
 
 // The tool ids backing the research specialist's wired tasks

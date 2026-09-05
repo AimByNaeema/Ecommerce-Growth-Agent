@@ -133,6 +133,10 @@
     "agent:experiment-engine": "node agent/core/experimentEngine.js",
     "agent:experiment-lesson-model": "node agent/core/experimentLessonModel.js",
     "agent:experiment-learning-store": "node agent/core/experimentLearningStore.js",
+    "compliance:policy": "node compliance/compliancePolicy.js",
+    "compliance:model": "node compliance/complianceModel.js",
+    "compliance:engine": "node compliance/complianceEngine.js",
+    "tools:compliance-check": "node tools/complianceCheckTool.js",
     "test": "node verification/testing/runAllTests.js"
   },
   "dependencies": {

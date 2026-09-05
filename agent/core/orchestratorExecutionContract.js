@@ -98,6 +98,7 @@ const competitorResearchTool = require('../../tools/competitorResearchTool');
 const webCompetitorResearchTool = require('../../tools/webCompetitorResearchTool');
 const marketQuestionDiscoveryTool = require('../../tools/marketQuestionDiscoveryTool');
 const seoContentGenerationTool = require('../../tools/seoContentGenerationTool');
+const complianceCheckTool = require('../../tools/complianceCheckTool');
 const customerResearchTool = require('../../tools/customerResearchTool');
 const globalMarketOpportunityTool = require('../../tools/globalMarketOpportunityTool');
 const marketProductOpportunityTool = require('../../tools/marketProductOpportunityTool');
@@ -185,6 +186,17 @@ const TOOL_EXECUTORS = {
   // at all and spends nothing.
   seo_content_generation: (executionRequest, runTokenTracker) =>
     seoContentGenerationTool.runSeoContentGenerationTool({
+      ...(executionRequest.research_params || {}),
+      businessId: executionRequest.business_id,
+      tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
+    }),
+  // The shared-core Compliance stage, between content generation and human approval.
+  // Deterministic and free by default (no model call at all); its optional AI-assisted
+  // ambiguity pass goes through tools/aiReasoningCompletion.js, so this run's running
+  // token total is threaded in exactly like every other model-capable tool. Owned by no
+  // specialist - it is only ever reachable here, under checkToolAccess().
+  compliance_check: (executionRequest, runTokenTracker) =>
+    complianceCheckTool.runComplianceCheckTool({
       ...(executionRequest.research_params || {}),
       businessId: executionRequest.business_id,
       tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,

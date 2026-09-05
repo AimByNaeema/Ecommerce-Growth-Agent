@@ -115,6 +115,13 @@ const TOOL_CLASSIFICATIONS = {
   // human approval before any publishing stage exists to act on it. Same footing as
   // listing_content_generation, which likewise authors content no one has approved yet.
   seo_content_generation: 'analysis_only',
+  // Reads one piece of content and returns a verdict. 'analysis_only' is not merely the
+  // smallest classification that fits - it is the only honest one: Compliance produces
+  // no content, changes nothing, sends nothing, and explicitly does NOT approve. It sits
+  // BEFORE the approval gate rather than being part of it, so classifying it
+  // approval_required would mean requiring approval in order to decide whether something
+  // may go to approval.
+  compliance_check: 'analysis_only',
 };
 
 // Which tools/toolRegistry.js `operation` types ('read'/'write'/'execute') each of

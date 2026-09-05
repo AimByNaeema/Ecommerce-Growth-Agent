@@ -45,6 +45,13 @@ const TOOL_CATEGORIES = [
   'ai_reasoning',
   'memory',
   'verification',
+  // Shared infrastructure, owned by no specialist - like 'configuration', 'memory' and
+  // 'verification', it is absent from agent/core/toolPermissions.js's
+  // CATEGORY_TO_SPECIALIST, so that module derives it into
+  // SHARED_INFRASTRUCTURE_CATEGORIES automatically. Compliance gates content on every
+  // specialist's behalf; giving any one of them ownership of it would be exactly the
+  // side channel CLAUDE.md section 2 forbids.
+  'compliance',
 ];
 
 const TOOL_STATUSES = ['not_implemented', 'implemented'];
@@ -319,6 +326,23 @@ const TOOL_REGISTRY = [
       "Turn a validated information-gap opportunity (agent/core/informationGapModel.js) into a structured content brief and, only when the evidence justifies it, a content draft - see tools/seoContentGenerationTool.js. Deterministic gating/brief/post-checks live in agent/core/contentBriefEngine.js; the single model call reuses tools/aiReasoningCompletion.js, so AI_PROVIDER selection and the shared token budget apply unchanged. The one 'write' tool the SEO specialist owns: it authors website content answering a real customer question, which the listing-shaped agent/core/listingAgent.js cannot produce. Publishes nothing - its output is a draft for Compliance and human approval; an unevidenced opportunity is blocked before any model call is made.",
     category: 'seo',
     operation: 'write',
+    status: 'implemented',
+  },
+  {
+    id: 'compliance_check',
+    title: 'Compliance check',
+    // WORDING NOTE: this description is also routing-target text - see
+    // agent/core/orchestratorExecutionContract.js's buildRoutingTargets(), which scores a
+    // free-text objective against every tool's id/title/description. tokenize() there
+    // only strips its own STOPWORDS list, so incidental filler ("its", "one", "your")
+    // becomes a real scoring token and can win a clause outright on a single weak match.
+    // An earlier draft of this description contained "its" and thereby captured the
+    // fragment "update its title" - a Listing clause - away from the clause-recovery
+    // path that is supposed to handle it. Domain nouns only, deliberately.
+    description:
+      "Evaluate already-generated content against compliance/complianceEngine.js's deterministic pre-action checks - provenance, unsupported claims, similarity against supplied reference material, intellectual-property indicators, structured platform-policy rules, and explicitly prohibited content - returning a PASS/REVIEW/BLOCK verdict plus a governance record. See tools/complianceCheckTool.js. Shared infrastructure owned by no specialist; read-only validation that authors nothing, approves nothing, and publishes nothing, so a verdict never becomes an approval.",
+    category: 'compliance',
+    operation: 'read',
     status: 'implemented',
   },
 ];
