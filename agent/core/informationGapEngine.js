@@ -76,6 +76,18 @@ const OBSERVED_SIGNAL_KINDS = [
   'community_forum',
   'first_party_site_search',
   'first_party_customer_question',
+  // Added for the upstream Real Question Discovery layer
+  // (agent/core/questionDiscoveryEngine.js), which reaches public pages through the
+  // project's existing web_search capability and can therefore only ever attest to
+  // page-level question evidence. PURELY ADDITIVE and backward-compatible: every kind
+  // above still classifies exactly as it did, and no clustering, gap-detection, or
+  // scoring logic in this file changed. These exist because discovery cannot honestly
+  // claim a question came from a SERP feature it never saw - see that module's own
+  // UNSUPPORTED_EVIDENCE_KINDS.
+  'public_qa',
+  'public_forum_question',
+  'competitor_question',
+  'other_observed',
 ];
 
 // Signal kinds that support a question INDIRECTLY - real, referenced evidence that this

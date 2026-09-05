@@ -34,6 +34,14 @@ const SEO_CAPABILITIES = [
   // agent/core/informationGapModel.js records into this same envelope, the same way the
   // 7 above compose their own per-capability schemas.
   'information_gap_analysis',
+  // The evidence-ACQUISITION capability upstream of information_gap_analysis
+  // (tools/marketQuestionDiscoveryTool.js). Listed here because it is a real capability
+  // of the SEO specialist - agent/core/specialistCapabilityRegistry.js's SEO task list
+  // is kept exactly in step with this enum - but note it is the one SEO capability
+  // agent/core/seoAgent.js does NOT run: acquisition is an I/O concern executed by its
+  // own tool, and its output is an agent/core/questionEvidenceModel.js record rather
+  // than this envelope. runSeoAgent() therefore rejects it, which is correct.
+  'market_question_discovery',
 ];
 
 const SEO_AGENT_RESULT_FIELDS = [

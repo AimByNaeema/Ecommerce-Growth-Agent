@@ -39,6 +39,7 @@ const EXPECTED_ORDER = [
   'memory_retrieval',
   'verification',
   'live_competitor_research',
+  'discover_market_questions',
 ];
 
 const IMPLEMENTED_IDS = [
@@ -65,6 +66,7 @@ const IMPLEMENTED_IDS = [
   'analytics_data_retrieval',
   'ai_reasoning_completion',
   'live_competitor_research',
+  'discover_market_questions',
 ];
 
 let passed = 0;
@@ -82,7 +84,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 26 required tools, in the requested order', () => {
+test('the registry has exactly the 27 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER
@@ -155,7 +157,7 @@ test('getToolById() finds a known tool and returns undefined for an unknown one'
 
 test('getToolsByCategory() filters correctly', () => {
   const seoTools = getToolsByCategory('seo');
-  assert.deepStrictEqual(seoTools.map((tool) => tool.id), ['keyword_research', 'seo_analysis']);
+  assert.deepStrictEqual(seoTools.map((tool) => tool.id), ['keyword_research', 'seo_analysis', 'discover_market_questions']);
 });
 
 test('getToolsByStatus() returns the correct counts for each status', () => {

@@ -96,6 +96,7 @@ const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
 const competitorResearchTool = require('../../tools/competitorResearchTool');
 const webCompetitorResearchTool = require('../../tools/webCompetitorResearchTool');
+const marketQuestionDiscoveryTool = require('../../tools/marketQuestionDiscoveryTool');
 const customerResearchTool = require('../../tools/customerResearchTool');
 const globalMarketOpportunityTool = require('../../tools/globalMarketOpportunityTool');
 const marketProductOpportunityTool = require('../../tools/marketProductOpportunityTool');
@@ -157,6 +158,22 @@ const TOOL_EXECUTORS = {
   live_competitor_research: (executionRequest, runTokenTracker) =>
     webCompetitorResearchTool.runWebCompetitorResearchTool({
       objective: executionRequest.objective,
+      businessId: executionRequest.business_id,
+      tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
+    }),
+  // The evidence-acquisition layer upstream of the SEO specialist's
+  // information_gap_analysis capability - like live_competitor_research above, a real
+  // Claude + web_search call sharing this run's token budget via runTokenTracker.
+  // Takes its topic seed from research_params where a caller supplied one, falling back
+  // to the free-text objective, so it works both from a structured plan step and from a
+  // plain objective without either path guessing the other's input.
+  discover_market_questions: (executionRequest, runTokenTracker) =>
+    marketQuestionDiscoveryTool.runMarketQuestionDiscoveryTool({
+      topic:
+        (executionRequest.research_params && executionRequest.research_params.topic) ||
+        executionRequest.objective,
+      market: (executionRequest.research_params && executionRequest.research_params.market) || '',
+      limit: executionRequest.research_params && executionRequest.research_params.limit,
       businessId: executionRequest.business_id,
       tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
     }),

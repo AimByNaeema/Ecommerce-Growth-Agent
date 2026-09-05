@@ -303,6 +303,15 @@ const TOOL_REGISTRY = [
     operation: 'read',
     status: 'implemented',
   },
+  {
+    id: 'discover_market_questions',
+    title: 'Real market question discovery',
+    description:
+      "Find real questions people publicly ask about a topic via Anthropic's hosted web_search tool (agent/core/claudeClient.js's sendMessage `tools` passthrough), verify every claimed question against the search results actually returned, and normalize/deduplicate them into agent/core/questionEvidenceModel.js evidence records - see tools/marketQuestionDiscoveryTool.js. The evidence-acquisition layer upstream of the SEO specialist's information_gap_analysis capability: its output feeds agent/core/informationGapEngine.js directly. No writes, no scraping, no new credential; a question whose source cannot be verified is reported as model-generated, never as a real market question.",
+    category: 'seo',
+    operation: 'read',
+    status: 'implemented',
+  },
 ];
 
 function getToolRegistry() {

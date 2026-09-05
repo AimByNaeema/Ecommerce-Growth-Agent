@@ -22,7 +22,14 @@
 // The tool ids that reach agent/core/claudeClient.js's sendMessage - directly (via
 // tools/aiReasoningCompletion.js) or via tools/webCompetitorResearchTool.js, which
 // also spends real web_search usage on top of the model call.
-const MODEL_CALL_TOOL_IDS = new Set(['ai_reasoning_completion', 'live_competitor_research']);
+const MODEL_CALL_TOOL_IDS = new Set([
+  'ai_reasoning_completion',
+  'live_competitor_research',
+  // Real market question discovery (tools/marketQuestionDiscoveryTool.js) reaches the
+  // public web through the same Claude + web_search path live_competitor_research uses,
+  // so a run's model-call ceiling must apply to it identically.
+  'discover_market_questions',
+]);
 
 // The tool ids that ultimately reach integrations/adapters/shopifyClient.js
 // (business_configuration_retrieval, analytics_data_retrieval, product_data_retrieval,
@@ -37,6 +44,7 @@ const EXTERNAL_API_TOOL_IDS = new Set([
   'collection_data_retrieval',
   'ai_reasoning_completion',
   'live_competitor_research',
+  'discover_market_questions',
 ]);
 
 // The tool ids backing the research specialist's wired tasks

@@ -104,6 +104,11 @@ const TOOL_CLASSIFICATIONS = {
   // above, it only ever retrieves/composes a research record for a human to read -
   // never publishes, sends, or changes anything by itself.
   live_competitor_research: 'analysis_only',
+  // A real web search + a Claude completion, on exactly the same footing as
+  // live_competitor_research above: it only ever retrieves and composes evidence
+  // records about publicly-asked questions for a human (or the Information Gap Finder)
+  // to read - it never publishes, sends, writes, or changes anything by itself.
+  discover_market_questions: 'analysis_only',
 };
 
 // Which tools/toolRegistry.js `operation` types ('read'/'write'/'execute') each of

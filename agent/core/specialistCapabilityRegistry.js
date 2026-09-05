@@ -85,6 +85,10 @@ const {
 
 const { RESEARCH_TYPES, RESEARCH_AGENT_RESULT_FIELDS } = require('./researchAgentResultModel');
 const { SEO_CAPABILITIES, SEO_AGENT_RESULT_FIELDS } = require('./seoAgentResultModel');
+// market_question_discovery is the one SEO capability that composes no seoAgent.js
+// result: it acquires and verifies question evidence, so its output contract is that
+// evidence record rather than the shared SEO envelope.
+const { QUESTION_EVIDENCE_FIELDS } = require('./questionEvidenceModel');
 const { LISTING_CAPABILITIES, LISTING_AGENT_RESULT_FIELDS } = require('./listingAgentResultModel');
 const { MARKETING_CAPABILITIES, MARKETING_AGENT_RESULT_FIELDS } = require('./marketingAgentResultModel');
 const {
@@ -829,6 +833,17 @@ const SEO_TASKS = [
     ],
     model: 'agent/core/seoAgentResultModel.js',
     fields: fieldIds(SEO_AGENT_RESULT_FIELDS),
+  }),
+  buildTask({
+    id: 'market_question_discovery',
+    title: 'Real market question discovery',
+    description:
+      "The evidence-ACQUISITION step upstream of information_gap_analysis: find real questions people publicly ask about a topic via tools/marketQuestionDiscoveryTool.js (Anthropic's hosted web_search through agent/core/claudeClient.js), verify every claimed question against the URLs the search actually returned, and normalize/deduplicate them into agent/core/questionEvidenceModel.js records whose gap_finder_input feeds information_gap_analysis directly. Deliberately TOOL-executed rather than agent-executed: unlike this specialist's other capabilities it composes no seoAgent.js result, because acquisition is an I/O concern - agent/core/questionDiscoveryEngine.js owns all of its deterministic logic. Its required input is a topic seed, NOT the `questions` information_gap_analysis requires, which is exactly why it is its own task rather than a second toolId on that one. live_data_tool_id is left null on purpose: declaring it would make this a fallback live source for every OTHER SEO task with none of its own (see competitor_research's identical note), wrongly substituting discovered questions for, say, a product_seo step.",
+    toolIds: ['discover_market_questions'],
+    required: ['topic'],
+    optional: ['market', 'limit'],
+    model: 'agent/core/questionEvidenceModel.js',
+    fields: fieldIds(QUESTION_EVIDENCE_FIELDS),
   }),
 ];
 
