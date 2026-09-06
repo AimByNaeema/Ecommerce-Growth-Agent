@@ -150,6 +150,31 @@ async function withMockedShopify({ result = null, throws = null }, fn) {
   }
 }
 
+// Pins the CONFIGURED blog id / author for one case.
+//
+// WHY THIS EXISTS: integrations/shopifyBlogPublishing.js falls back to
+// shopifyClient.getConfiguredBlogId()/getConfiguredArticleAuthor() when a caller passes
+// neither, and those read the real .env. A test that asserted "no blog id refuses" while
+// leaving that fallback live was really asserting something about the developer's own
+// machine - it passed only while SHOPIFY_BLOG_ID happened to be unset, and broke the
+// moment a real one was configured, even though the code was correct.
+//
+// Both are read through the shared module object, so substituting them here is the same
+// no-framework convention this file already uses for createBlogArticle. Restored in a
+// finally, so no case can leak into the next.
+async function withConfiguredPublishingDefaults({ blogId = null, authorName = null } = {}, fn) {
+  const savedBlogId = shopifyClient.getConfiguredBlogId;
+  const savedAuthor = shopifyClient.getConfiguredArticleAuthor;
+  shopifyClient.getConfiguredBlogId = () => blogId;
+  shopifyClient.getConfiguredArticleAuthor = () => authorName;
+  try {
+    return await fn();
+  } finally {
+    shopifyClient.getConfiguredBlogId = savedBlogId;
+    shopifyClient.getConfiguredArticleAuthor = savedAuthor;
+  }
+}
+
 function publish(requests, overrides = {}) {
   return publishAuthorizedArticleToShopifyBlog({
     requests,
@@ -416,21 +441,40 @@ async function withStubbedTransport({ scopes, articleResult = null, userErrors =
   });
 
   await testAsync('authorized but nothing publishable (no title/body/blog/author) -> zero mutation', async () => {
+    // Each case pins the CONFIGURED fallbacks explicitly so exactly one input is missing
+    // and nothing depends on the developer's own .env - see withConfiguredPublishingDefaults.
     const cases = [
-      ['no title', { content: { ...GENERATED_CONTENT, brief: {} } }],
-      ['no body', { content: { ...GENERATED_CONTENT, generated_content: '' } }],
-      ['no content at all', { content: undefined }],
-      ['no blog id', { blogId: null }],
-      ['no author', { authorName: null }],
+      ['no title', { content: { ...GENERATED_CONTENT, brief: {} } }, { blogId: BLOG_ID, authorName: AUTHOR }],
+      ['no body', { content: { ...GENERATED_CONTENT, generated_content: '' } }, { blogId: BLOG_ID, authorName: AUTHOR }],
+      ['no content at all', { content: undefined }, { blogId: BLOG_ID, authorName: AUTHOR }],
+      // Neither passed in NOR configured - the only way "no blog id" is genuinely true.
+      ['no blog id', { blogId: null }, { blogId: null, authorName: AUTHOR }],
+      ['no author', { authorName: null }, { blogId: BLOG_ID, authorName: null }],
     ];
-    for (const [label, overrides] of cases) {
-      await withMockedShopify({}, async (calls) => {
-        const outcome = await publish(pipeline(), overrides);
-        assert.strictEqual(outcome.status, 'refused', label);
-        assert.strictEqual(outcome.published, false, label);
-        assert.strictEqual(calls.length, 0, `${label}: zero mutation`);
+    for (const [label, overrides, configured] of cases) {
+      await withConfiguredPublishingDefaults(configured, async () => {
+        await withMockedShopify({}, async (calls) => {
+          const outcome = await publish(pipeline(), overrides);
+          assert.strictEqual(outcome.status, 'refused', label);
+          assert.strictEqual(outcome.published, false, label);
+          assert.strictEqual(calls.length, 0, `${label}: zero mutation`);
+        });
       });
     }
+  });
+
+  await testAsync('a missing blogId/author FALLS BACK to configuration when it is set', async () => {
+    // The other half of the same behavior: the refusals above must be caused by genuinely
+    // absent configuration, not by the fallback failing to work at all.
+    await withConfiguredPublishingDefaults({ blogId: BLOG_ID, authorName: AUTHOR }, async () => {
+      await withMockedShopify({}, async (calls) => {
+        const outcome = await publish(pipeline(), { blogId: null, authorName: null });
+        assert.strictEqual(outcome.status, 'published');
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].blogId, BLOG_ID, 'the configured blog id must be used');
+        assert.strictEqual(calls[0].authorName, AUTHOR, 'the configured author must be used');
+      });
+    });
   });
 
   // --- MISSING write_content SCOPE -> zero mutation, through the REAL client ---------
