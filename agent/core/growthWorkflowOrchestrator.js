@@ -52,7 +52,8 @@ const {
   isGatedForApproval,
   reviseStepAfterResume,
 } = require('./orchestratorExecutionContract');
-const { gatherGrowthOpportunityDrafts } = require('./crossAgentContext');
+const { gatherGrowthOpportunityDrafts, gatherSalesGrowthPlanEvidence } = require('./crossAgentContext');
+const { generateSalesGrowthPlan } = require('./salesGrowthPlanner');
 const { createAuditTracker } = require('../../audit/auditTrail');
 const { createUsageLedger, summarizeUsage } = require('../../usage/usageTracker');
 const { createToolResultCache } = require('./toolResultCache');
@@ -191,6 +192,29 @@ function buildPausedResponse(ctx, pendingApproval, nextStageIndex) {
   };
 }
 
+// The cross-domain synthesis, attached ONLY to a completed run. This is the one place in
+// the project where agent/core/salesGrowthPlanner.js is reached: it spans 7 domains owned
+// by 5 specialists, so per CLAUDE.md section 2 it belongs to the orchestrator layer that
+// coordinates them, never to any single specialist. Every domain's current state comes
+// from the stages that REALLY ran (crossAgentContext.js's gatherSalesGrowthPlanEvidence),
+// with the caller's own explicit salesGrowthPlan input always winning - the same
+// caller-precedence rule crossAgentContext.js already applies everywhere else.
+//
+// The planner is deterministic: no model call, no API call, no tokens, no new approval or
+// persistence path. Its own honesty guards (domain_gaps, domain_coverage, the bottleneck
+// severity downgrade) are left entirely to it - nothing is pre-filled here to make a
+// sparse run look complete.
+function buildSalesGrowthPlan(ctx) {
+  const supplied = (ctx.stageInputs && ctx.stageInputs.salesGrowthPlan) || {};
+  const derivedEvidence = gatherSalesGrowthPlanEvidence(ctx.plan);
+
+  return generateSalesGrowthPlan({
+    ...derivedEvidence,
+    // Caller-supplied domain evidence and judgment inputs override the derived values.
+    ...supplied,
+  });
+}
+
 function buildCompletedResponse(ctx) {
   return {
     status: 'completed',
@@ -199,6 +223,10 @@ function buildCompletedResponse(ctx) {
     plan: ctx.plan,
     ...aggregatePlanState(ctx.plan),
     growth_opportunity_drafts: gatherGrowthOpportunityDrafts(ctx.plan),
+    // Only on a completed run. A plan synthesized from a run that stopped early or is
+    // still waiting on an approval would describe a state that never happened - see
+    // buildStoppedResponse/the paused response, which deliberately carry none.
+    sales_growth_plan: buildSalesGrowthPlan(ctx),
     audit_trail: ctx.runAuditTracker.events,
     usage_ledger: ctx.runUsageLedger.events,
     usage_summary: summarizeUsage(ctx.runUsageLedger),

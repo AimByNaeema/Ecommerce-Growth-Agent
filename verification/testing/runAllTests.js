@@ -159,6 +159,7 @@ const TEST_FILES = [
   'conversionOptimizationCapability.test.js',
   'salesGrowthPlanModel.test.js',
   'salesGrowthPlanner.test.js',
+  'salesGrowthPlanIntegration.test.js',
   'experimentModel.test.js',
   'experimentEngine.test.js',
   'experimentLessonModel.test.js',

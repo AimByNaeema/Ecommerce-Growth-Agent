@@ -475,6 +475,116 @@ function gatherGrowthOpportunityDrafts(completedSteps) {
 }
 
 // ---------------------------------------------------------------------------------
+// "All -> Sales Growth Plan": per-domain current-state evidence for the standalone
+// agent/core/salesGrowthPlanner.js.
+//
+// WHY THIS LIVES HERE AND NOT IN AN ANALYTICS CAPABILITY. The plan spans 7 domains
+// belonging to 5 different specialists. CLAUDE.md section 2 makes the Chief/Orchestrator
+// "the only place cross-specialist coordination happens", so reading Product/SEO/
+// Marketing/Social output on Analytics's behalf would turn specialist #7 into a
+// cross-specialist aggregator. Gathering it here - one pure function over the plan's own
+// completed steps, exactly like gatherGrowthOpportunityDrafts above - keeps every
+// specialist boundary intact, and agent/core/growthWorkflowOrchestrator.js (which already
+// ran all 7) is the only caller.
+//
+// RELAY ONLY, NEVER SYNTHESIS. Each domain's evidence carries only fields a real result
+// already holds: `summary` from its own topic, `verificationStatus` from its own
+// verification_status, and metrics ONLY from an analytics snapshot record that genuinely
+// has them. A specialist envelope carries no metrics, so its metric arrays stay empty and
+// salesGrowthPlanner reports that domain as 'partial' - honest, not padded.
+//
+// Like gatherGrowthOpportunityDrafts, this NEVER calls generateSalesGrowthPlan() itself.
+const PLAN_DOMAIN_BY_SPECIALIST = {
+  product: 'product',
+  seo: 'seo',
+  marketing: 'marketing',
+  social_advertising: 'social',
+  analytics_optimization: 'analytics',
+};
+
+// Which analyticsModel.js category each analytics capability populates - verified 1:1
+// against agent/core/analyticsAgent.js's own composeAnalyticsSnapshotResult() calls.
+const ANALYTICS_CAPABILITY_TO_CATEGORY = {
+  sales: 'sales',
+  products: 'product_performance',
+  customers: 'customer_behavior',
+  conversion: 'conversion',
+  traffic: 'traffic',
+  marketing: 'marketing_performance',
+  advertising: 'advertising_performance',
+  inventory: 'inventory',
+};
+
+// DOMAINS WITH NO WORKFLOW SOURCE TODAY, declared rather than silently absent:
+//   customer    - no stage produces customer analytics (the Research stage is market
+//                 research, not customer research).
+//   advertising - the Social & Advertising stage runs content_calendar_generation, which
+//                 is social content, not advertising performance.
+// Both are left unset so salesGrowthPlanner reports them in domain_gaps/domain_coverage,
+// which is the honest outcome - never faked from an unrelated stage.
+const PLAN_DOMAINS_WITH_NO_WORKFLOW_SOURCE = ['customer', 'advertising'];
+
+// Pulls the real category metrics out of an analytics snapshot record, when the step
+// actually produced one. Returns null (not empty metrics) when there is nothing real to
+// relay, so the caller can fall back to the envelope-only shape.
+function analyticsCategoryEvidence(output, capabilityId) {
+  const category = ANALYTICS_CAPABILITY_TO_CATEGORY[capabilityId];
+  if (!category) return null;
+  const records = Array.isArray(output.specialized_records) ? output.specialized_records : [];
+  const snapshot = records.find((record) => record && record[category] && typeof record[category] === 'object');
+  if (!snapshot) return null;
+  const categoryRecord = snapshot[category];
+  return {
+    summary: categoryRecord.summary || output.topic || '',
+    actualMetrics: [...(categoryRecord.actual_metrics || [])],
+    calculatedMetrics: [...(categoryRecord.calculated_metrics || [])],
+    estimatedMetrics: [...(categoryRecord.estimated_metrics || [])],
+    verificationStatus: categoryRecord.verification_status || output.verification_status || 'unverified',
+  };
+}
+
+function gatherSalesGrowthPlanEvidence(completedSteps) {
+  const evidence = {};
+  if (!Array.isArray(completedSteps)) return evidence;
+
+  for (const step of completedSteps) {
+    const output = realOutput(step);
+    if (!output) continue;
+
+    const specialistId = step && step.selected_specialist && step.selected_specialist.id;
+    const domain = PLAN_DOMAIN_BY_SPECIALIST[specialistId];
+    if (!domain) continue;
+
+    const capabilityId = (step.inputs && step.inputs.capability_id) || null;
+    const fromAnalytics = domain === 'analytics' ? analyticsCategoryEvidence(output, capabilityId) : null;
+
+    const domainEvidence = fromAnalytics || {
+      summary: isNonEmptyString(output.topic) ? output.topic : '',
+      actualMetrics: [],
+      calculatedMetrics: [],
+      estimatedMetrics: [],
+      verificationStatus: output.verification_status || 'unverified',
+    };
+
+    // A later stage of the same specialist never overwrites an earlier one that already
+    // produced real metrics - the richer, measured evidence wins over a bare envelope.
+    const existing = evidence[domain];
+    const existingHasMetrics =
+      existing &&
+      (existing.actualMetrics.length > 0 || existing.calculatedMetrics.length > 0 || existing.estimatedMetrics.length > 0);
+    const incomingHasMetrics =
+      domainEvidence.actualMetrics.length > 0 ||
+      domainEvidence.calculatedMetrics.length > 0 ||
+      domainEvidence.estimatedMetrics.length > 0;
+    if (existingHasMetrics && !incomingHasMetrics) continue;
+
+    evidence[domain] = domainEvidence;
+  }
+
+  return evidence;
+}
+
+// ---------------------------------------------------------------------------------
 // 7. Product's freshly-retrieved LIVE evidence -> Listing / Marketing
 //
 // ADDITIVE, NOT A REPLACEMENT: deriveCrossAgentContext() above only ever reads a prior
@@ -558,6 +668,8 @@ module.exports = {
   deriveCrossAgentContext,
   deriveAllToAnalyticsContext,
   gatherGrowthOpportunityDrafts,
+  gatherSalesGrowthPlanEvidence,
+  PLAN_DOMAINS_WITH_NO_WORKFLOW_SOURCE,
   deriveLiveEvidenceContext,
   mergeContext,
   filterToDeclaredFields,
