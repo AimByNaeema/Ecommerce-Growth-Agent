@@ -158,6 +158,15 @@ const TOOL_REGISTRY = [
     status: 'implemented',
   },
   {
+    id: 'research_analysis',
+    title: 'Research analysis',
+    description:
+      "Trend research over observed trends, trending or emerging seasonal shifts; opportunity discovery to discover and structure signals a caller has already observed; and a global multi-market study spanning several countries or markets at once. Composes agent/core/researchAgent.js records from caller-supplied evidence via runResearch() - the three capabilities with no dedicated tool. See tools/researchAnalysisTool.js.",
+    category: 'research',
+    operation: 'read',
+    status: 'implemented',
+  },
+  {
     id: 'keyword_research',
     title: 'Keyword research',
     description:

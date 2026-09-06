@@ -64,6 +64,7 @@ const EXTERNAL_API_TOOL_IDS = new Set([
 // here too.
 const RESEARCH_TOOL_IDS = new Set([
   'market_research',
+  'research_analysis',
   'competitor_research',
   'live_competitor_research',
   'customer_research',

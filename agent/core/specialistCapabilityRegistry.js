@@ -240,8 +240,8 @@ const RESEARCH_TASKS = [
     id: 'global_market_research',
     title: 'Global market research',
     description:
-      "Produce one specialized market research record per market entry across a caller-supplied list of markets, via researchAgent.js's runGlobalMarketResearch(). Not yet wired to any tool in tools/toolRegistry.js.",
-    toolIds: [],
+      "Global multi-market study: produce one research record per market entry across a caller-supplied list of several markets or countries at once, via researchAgent.js's runGlobalMarketResearch(). Use for a multi-market or multi-country comparison of markets worldwide, not a single named market. Dispatched by the research_analysis tool.",
+    toolIds: ['research_analysis'],
     required: ['markets', 'markets[].market'],
     optional: [
       'markets[].country',
@@ -298,8 +298,8 @@ const RESEARCH_TASKS = [
     id: 'trend_research',
     title: 'Trend research',
     description:
-      "Produce one trend research record per caller-supplied trend topic via researchAgent.js's runTrendResearch(). Not yet wired to any tool in tools/toolRegistry.js.",
-    toolIds: [],
+      "Trend research: produce one trend record per caller-supplied trend topic via researchAgent.js's runTrendResearch(). Use for trends, trending topics, emerging or seasonal shifts a caller has already observed - trend evidence only, never a forecast. Dispatched by the research_analysis tool.",
+    toolIds: ['research_analysis'],
     required: ['trends', 'trends[].topic'],
     optional: [
       'trends[].market',
@@ -383,8 +383,8 @@ const RESEARCH_TASKS = [
     id: 'opportunity_discovery',
     title: 'Opportunity discovery',
     description:
-      "Produce one generic research record per caller-supplied signal via researchAgent.js's runOpportunityDiscovery(). Not yet wired to any tool in tools/toolRegistry.js.",
-    toolIds: [],
+      "Opportunity discovery: produce one record per caller-supplied signal via researchAgent.js's runOpportunityDiscovery(). Use to discover and structure observed signals - discovery of signal evidence only, never an invented opportunity, demand figure or market size. Dispatched by the research_analysis tool.",
+    toolIds: ['research_analysis'],
     required: ['signals', 'signals[].topic'],
     optional: [
       'signals[].market',

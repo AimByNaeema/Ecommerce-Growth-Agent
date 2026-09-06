@@ -160,15 +160,24 @@ test('every tool_id referenced anywhere in supported_tasks is a real, known tool
   }
 });
 
-test('the known Research tool_ids gaps (global_market_research, trend_research, opportunity_discovery) are honestly empty', () => {
+// The three former Research tool_ids gaps (global_market_research, trend_research,
+// opportunity_discovery) are now wired to the research_analysis tool - they were the last
+// Research capabilities nothing could reach. Every Research capability now has a tool, so
+// this test asserts the closed state rather than the gap it used to guard.
+test('every Research capability is wired to a real tool - the three former gaps now use research_analysis', () => {
   const researchEntry = getSpecialistCapabilityById('research');
   for (const id of ['global_market_research', 'trend_research', 'opportunity_discovery']) {
     const task = researchEntry.supported_tasks.find((t) => t.id === id);
-    assert.deepStrictEqual(task.tool_ids, []);
+    assert.deepStrictEqual(task.tool_ids, ['research_analysis'], id);
   }
   for (const id of ['market_research', 'competitor_research', 'customer_market_intelligence', 'customer_segmentation']) {
     const task = researchEntry.supported_tasks.find((t) => t.id === id);
     assert.ok(task.tool_ids.length > 0, `${id} should have at least one tool id`);
+    assert.ok(!task.tool_ids.includes('research_analysis'), `${id} keeps its own existing tool`);
+  }
+  // No Research capability is left unreachable.
+  for (const task of researchEntry.supported_tasks) {
+    assert.ok(task.tool_ids.length > 0, `${task.id} still has no tool wired`);
   }
 });
 

@@ -100,6 +100,9 @@ const TOOL_CLASSIFICATIONS = {
   advertising_performance_analysis: 'analysis_only',
   analytics: 'analysis_only',
   analytics_data_retrieval: 'analysis_only',
+  // Composes research records from caller-supplied evidence only - no external call,
+  // nothing published, nothing changed. Same footing as market_research above.
+  research_analysis: 'analysis_only',
   // A real web search + a Claude completion, but exactly like competitor_research
   // above, it only ever retrieves/composes a research record for a human to read -
   // never publishes, sends, or changes anything by itself.

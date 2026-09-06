@@ -92,6 +92,7 @@ const TEST_FILES = [
   'researchAgentResultModel.test.js',
   'researchAgent.test.js',
   'marketResearchTool.test.js',
+  'researchAnalysisTool.test.js',
   'competitorResearchTool.test.js',
   'customerResearchTool.test.js',
   'globalMarketComparisonModel.test.js',

@@ -94,6 +94,7 @@ const { summarizeExecutionState } = require('./resultSummary');
 const businessConfigurationRetrieval = require('../../tools/businessConfigurationRetrieval');
 const aiReasoningCompletion = require('../../tools/aiReasoningCompletion');
 const marketResearchTool = require('../../tools/marketResearchTool');
+const researchAnalysisTool = require('../../tools/researchAnalysisTool');
 const competitorResearchTool = require('../../tools/competitorResearchTool');
 const webCompetitorResearchTool = require('../../tools/webCompetitorResearchTool');
 const marketQuestionDiscoveryTool = require('../../tools/marketQuestionDiscoveryTool');
@@ -201,6 +202,8 @@ const TOOL_EXECUTORS = {
       businessId: executionRequest.business_id,
       tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
     }),
+  research_analysis: (executionRequest) =>
+    researchAnalysisTool.runResearchAnalysisTool(executionRequest.research_params),
   customer_research: (executionRequest) =>
     customerResearchTool.runCustomerResearchTool(executionRequest.research_params),
   global_market_opportunity_analysis: (executionRequest) =>
@@ -1213,6 +1216,7 @@ const TOOL_CAPABILITY_SELECTORS = {
     field: 'customerResearchMode',
     valueMap: { customer_market_intelligence: 'segment_research', customer_segmentation: 'customer_segmentation' },
   },
+  research_analysis: { field: 'researchType', valueMap: null },
   keyword_research: { field: 'seoCapability', valueMap: null },
   seo_analysis: { field: 'seoCapability', valueMap: null },
   listing_content_generation: { field: 'listingCapability', valueMap: null },
