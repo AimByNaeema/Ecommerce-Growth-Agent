@@ -1290,6 +1290,34 @@ const ANALYTICS_TASKS = [
     model: 'agent/core/analyticsAgentResultModel.js',
     fields: fieldIds(ANALYTICS_AGENT_RESULT_FIELDS),
   }),
+  buildTask({
+    id: 'conversion_optimization',
+    title: 'Conversion optimization audit',
+    description:
+      "Audit 8 conversion dimensions - product pages, landing pages, offers, CTA, trust signals, checkout friction, mobile experience, pricing presentation - over caller-supplied store evidence via analyticsAgent.js's conversion_optimization capability, delegating every check to conversionOptimizationChecker.js's checkConversionOptimization() (never reimplemented). Mechanical checks only (counts, presence, thresholds) - it never fetches a live page or theme file and never predicts a conversion rate. A dimension with no evidence is reported as empty, never assumed to pass.",
+    toolIds: ['analytics'],
+    // No field is required: the checker audits whatever dimensions were supplied and
+    // reports the rest honestly as empty, so an objective naming none is still valid.
+    required: [],
+    optional: [
+      'subjectReference',
+      'productPages',
+      'landingPages',
+      'offers',
+      'cta',
+      'trustSignals',
+      'checkoutFriction',
+      'mobileExperience',
+      'pricingPresentation',
+      'topic',
+      'market',
+      'confidence',
+      'verificationStatus',
+      'researchDate',
+    ],
+    model: 'agent/core/analyticsAgentResultModel.js',
+    fields: fieldIds(ANALYTICS_AGENT_RESULT_FIELDS),
+  }),
 ];
 
 // ---------------------------------------------------------------------------------

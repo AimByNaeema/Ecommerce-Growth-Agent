@@ -91,6 +91,7 @@ const {
   validateInsightShape,
 } = require('./insightModel');
 const { evaluateMetricSignificance } = require('./insightEngine');
+const { checkConversionOptimization } = require('./conversionOptimizationChecker');
 const {
   ANALYTICS_CAPABILITIES,
   createEmptyAnalyticsAgentResult,
@@ -275,6 +276,12 @@ const ANALYTICS_SNAPSHOT_LIMITATION_HEADER =
   'This result reflects only the actual/calculated/estimated data supplied to this call - agent/core/analyticsAgent.js itself never fetches data on its own; see tools/analyticsTool.js (caller-supplied evidence) or tools/analyticsDataTool.js (live, read-only Shopify data) for where this data came from.';
 const GROWTH_OPPORTUNITY_LIMITATION_HEADER =
   'No live sales/customer data platform is configured; this result reflects only caller-supplied evidence.';
+
+// Names exactly what the CRO audit can and cannot see, so a reader never mistakes a
+// structural evidence audit for a measured conversion-rate result. Wording verified
+// against agent/core/conversionOptimizationChecker.js's own header.
+const CONVERSION_OPTIMIZATION_LIMITATION_HEADER =
+  'This is a structural audit of caller-supplied store evidence only - agent/core/conversionOptimizationChecker.js never fetches a live page, screenshot or theme file, and never predicts an actual conversion rate.';
 
 // Formats one metrics array with a provenance label so flattened findings text stays
 // traceable to actual/calculated/estimated even after composeResult() combines
@@ -547,6 +554,80 @@ function analyzeInsights(params = {}) {
   });
 }
 
+// The Conversion Optimization (CRO) audit capability. Delegates ENTIRELY to
+// agent/core/conversionOptimizationChecker.js's checkConversionOptimization() - not one
+// line of its 8-dimension check logic is reimplemented here, exactly as analyzeInsights()
+// above delegates significance detection to agent/core/insightEngine.js. This function
+// only maps caller params in and wraps the engine's own record into the standard
+// analytics result envelope so it can travel the existing dispatch path.
+//
+// WHY THIS EXISTS: the checker was already built and tested but had no capability, so no
+// tool and no Chief route could reach it. This is the wrapper that was missing, not new
+// analysis.
+//
+// STATUS HONESTY: the composed record is one specialized record, so tools/analyticsTool.js
+// derives 'empty' when no dimension evidence was supplied at all, and 'success' when a
+// real audit was produced from real supplied evidence. Per-dimension coverage is NOT
+// flattened into that status - it is already fully modeled inside the record itself
+// (dimension_status, dimension_gaps and quality_score), which is the honest place for it.
+function analyzeConversionOptimization(params = {}) {
+  const {
+    subjectReference,
+    productPages,
+    landingPages,
+    offers,
+    cta,
+    trustSignals,
+    checkoutFriction,
+    mobileExperience,
+    pricingPresentation,
+    topic,
+    market = '',
+    researchDate,
+  } = params;
+
+  const check = checkConversionOptimization({
+    subjectReference,
+    productPages,
+    landingPages,
+    offers,
+    cta,
+    trustSignals,
+    checkoutFriction,
+    mobileExperience,
+    pricingPresentation,
+    researchDate,
+  });
+
+  const limitations = [CONVERSION_OPTIMIZATION_LIMITATION_HEADER];
+  const { dimensions_total: total, dimensions_empty: empty } = check.quality_score;
+
+  if (empty === total) {
+    // The one wording tools/analyticsTool.js's deriveStatus() recognises - an audit with
+    // no evidence at all is reported as 'empty', never as a passing audit.
+    limitations.push('No evidence was supplied for conversion optimization.');
+  } else if (empty > 0) {
+    limitations.push(
+      `${empty} of ${total} conversion dimension(s) had no evidence supplied and were reported as empty rather than assumed to pass - see dimension_gaps.`
+    );
+  }
+
+  return composeResult({
+    capability: 'conversion_optimization',
+    topic: topic || `Conversion optimization audit: ${check.subject_reference || '(no subject reference)'}`,
+    market,
+    findings: check.findings,
+    evidence: [],
+    source: [],
+    confidence: params.confidence,
+    limitations,
+    recommendations: check.recommendations,
+    verificationStatus: params.verificationStatus,
+    researchDate: check.research_date,
+    specializedRecords: [check],
+  });
+}
+
 const ANALYTICS_CAPABILITY_HANDLERS = {
   sales: analyzeSales,
   products: analyzeProducts,
@@ -558,6 +639,7 @@ const ANALYTICS_CAPABILITY_HANDLERS = {
   inventory: analyzeInventory,
   growth_opportunities: analyzeGrowthOpportunities,
   insights: analyzeInsights,
+  conversion_optimization: analyzeConversionOptimization,
 };
 
 // The single entry point: dispatches by capability to the matching function above.
@@ -581,6 +663,7 @@ module.exports = {
   analyzeInventory,
   analyzeGrowthOpportunities,
   analyzeInsights,
+  analyzeConversionOptimization,
   runAnalyticsAgent,
 };
 

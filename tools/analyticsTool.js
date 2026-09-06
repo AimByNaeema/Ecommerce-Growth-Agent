@@ -44,6 +44,7 @@ const {
   analyzeInventory,
   analyzeGrowthOpportunities,
   analyzeInsights,
+  analyzeConversionOptimization,
 } = require('../agent/core/analyticsAgent');
 
 const CAPABILITY_HANDLERS = {
@@ -57,6 +58,7 @@ const CAPABILITY_HANDLERS = {
   inventory: analyzeInventory,
   growth_opportunities: analyzeGrowthOpportunities,
   insights: analyzeInsights,
+  conversion_optimization: analyzeConversionOptimization,
 };
 
 function deriveStatus(result) {

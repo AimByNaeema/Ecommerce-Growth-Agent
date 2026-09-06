@@ -28,6 +28,13 @@ const ANALYTICS_CAPABILITIES = [
   'inventory',
   'growth_opportunities',
   'insights',
+  // Wraps agent/core/conversionOptimizationChecker.js's checkConversionOptimization()
+  // exactly as 'insights' wraps agent/core/insightEngine.js - the engine already
+  // existed and was fully tested but had no capability, so nothing reached it through
+  // the Chief/orchestrator dispatch path. Deliberately distinct from the 'conversion'
+  // snapshot above: that composes a conversion METRICS record from supplied figures,
+  // this runs the 8-dimension CRO AUDIT over supplied store evidence.
+  'conversion_optimization',
 ];
 
 const ANALYTICS_AGENT_RESULT_FIELDS = [

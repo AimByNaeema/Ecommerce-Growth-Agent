@@ -23,7 +23,11 @@ function test(name, fn) {
   }
 }
 
-test('ANALYTICS_CAPABILITIES lists exactly the 10 requested capabilities, in the requested order', () => {
+// The original 10 requested capabilities, plus conversion_optimization - added when
+// agent/core/conversionOptimizationChecker.js (already built and tested, but reachable
+// by nothing) was exposed through the existing analytics tool, exactly as 'insights'
+// exposes agent/core/insightEngine.js. The first 10 and their order are unchanged.
+test('ANALYTICS_CAPABILITIES lists exactly the 11 capabilities, in the requested order', () => {
   assert.deepStrictEqual(ANALYTICS_CAPABILITIES, [
     'sales',
     'products',
@@ -35,7 +39,14 @@ test('ANALYTICS_CAPABILITIES lists exactly the 10 requested capabilities, in the
     'inventory',
     'growth_opportunities',
     'insights',
+    'conversion_optimization',
   ]);
+});
+
+test('conversion_optimization is distinct from the conversion snapshot capability', () => {
+  assert.ok(ANALYTICS_CAPABILITIES.includes('conversion'), 'the metrics snapshot capability must still exist');
+  assert.ok(ANALYTICS_CAPABILITIES.includes('conversion_optimization'), 'the CRO audit capability must exist');
+  assert.notStrictEqual('conversion', 'conversion_optimization');
 });
 
 test('every field has a non-empty title and description', () => {
