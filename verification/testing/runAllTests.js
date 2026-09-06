@@ -109,6 +109,7 @@ const TEST_FILES = [
   'productOpportunityScoringEngine.test.js',
   'productRecommendationModel.test.js',
   'productRecommendationEngine.test.js',
+  'productResearchCapability.test.js',
   'onPageOptimizationModel.test.js',
   'seoAgentResultModel.test.js',
   'seoAgent.test.js',

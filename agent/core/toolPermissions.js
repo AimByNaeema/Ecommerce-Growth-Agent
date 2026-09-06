@@ -103,6 +103,11 @@ const TOOL_CLASSIFICATIONS = {
   // Composes research records from caller-supplied evidence only - no external call,
   // nothing published, nothing changed. Same footing as market_research above.
   research_analysis: 'analysis_only',
+  // Audits, scores, and recommends on caller-supplied product records only - no external
+  // call, no model call, nothing published, imported, or purchased (the recommendation it
+  // composes says so in its own recommended_next_step). Same footing as
+  // market_product_opportunity_analysis above, which wraps the same Product modules.
+  product_research: 'analysis_only',
   // A real web search + a Claude completion, but exactly like competitor_research
   // above, it only ever retrieves/composes a research record for a human to read -
   // never publishes, sends, or changes anything by itself.

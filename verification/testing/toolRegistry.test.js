@@ -50,6 +50,9 @@ const IMPLEMENTED_IDS = [
   'product_data_retrieval',
   'collection_data_retrieval',
   'market_product_opportunity_analysis',
+  // Long reserved as 'not_implemented' and now wrapped by tools/productResearchTool.js,
+  // which connects the four Product capabilities that previously had no tool.
+  'product_research',
   'market_research',
   'customer_research',
   'global_market_opportunity_analysis',

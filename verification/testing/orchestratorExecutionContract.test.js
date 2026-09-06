@@ -451,8 +451,13 @@ test('planRouting does NOT merge a genuinely separate unmatched instruction that
 
 (async () => {
   await testAsync('executeSelectedCapability returns not_available for an unimplemented tool', async () => {
-    const capability = identifyRequiredCapability('run product research on my catalog');
-    const request = createExecutionRequest('run product research on my catalog', capability);
+    // memory_retrieval, not product_research: product_research is now implemented
+    // (tools/productResearchTool.js), so this test moved to one of the two tools that
+    // genuinely remain 'not_implemented' in tools/toolRegistry.js.
+    const objective = 'retrieve stored memory records';
+    const capability = identifyRequiredCapability(objective);
+    assert.strictEqual(capability.tool.id, 'memory_retrieval');
+    const request = createExecutionRequest(objective, capability);
     const outcome = await executeSelectedCapability(request);
     assert.strictEqual(outcome.status, 'not_available');
     assert.ok(outcome.error.includes('not yet implemented'));
@@ -714,20 +719,22 @@ test('planRouting does NOT merge a genuinely separate unmatched instruction that
     assert.ok(step.inputs.input_contract.optional.length > 0, 'keyword_research should now declare optional fields');
   });
 
-  await testAsync('runOrchestratorContract: a matched tool with zero connected capabilities (Product) honestly reports capability_id null, never guessed', async () => {
-    // Wording updated for the "product" GENERIC_ROUTING_WORDS reclassification above:
-    // the original phrasing ("run product research on my catalog") also contained
-    // "research", which - now that "product" no longer outscores it - legitimately
-    // routes to the Research specialist instead (Research's own id/title/description
-    // repeats "research" 3x, same structural pattern "product" had). Dropping
-    // "research" keeps this test's real target (Product's own product_research tool,
-    // which has zero connected capabilities) unambiguous without it.
+  await testAsync('runOrchestratorContract: a Product clause now resolves to a real capability - product_research no longer has zero connected capabilities', async () => {
+    // This test used to assert the opposite: 'Run product catalog pipeline.' matched
+    // Product's product_research tool, which had zero capabilities pointing at it, so
+    // capability_id was honestly null. tools/productResearchTool.js closed that gap -
+    // all four previously-unwired Product capabilities now list product_research in
+    // their tool_ids - so a Product clause can no longer land on a capability-less tool.
+    // With no researchParams supplied, the existing cross-capability live-data fallback
+    // resolves this clause to the one Product capability that is self-sufficient from a
+    // live Shopify pull. The capability_id-null branch itself is still covered, by the
+    // shared-infrastructure test immediately below.
     const response = await runOrchestratorContract('Run product catalog pipeline.');
     const step = response.routing.plan[0];
     assert.strictEqual(step.selected_specialist.id, 'product');
-    assert.strictEqual(step.inputs.tool_id, 'product_research');
-    assert.strictEqual(step.inputs.capability_id, null);
-    assert.strictEqual(step.inputs.input_contract, null);
+    assert.strictEqual(step.inputs.tool_id, 'product_data_retrieval');
+    assert.strictEqual(step.inputs.capability_id, 'product_discovery');
+    assert.ok(step.inputs.input_contract, 'a resolved capability must carry its real input_contract');
   });
 
   await testAsync('runOrchestratorContract: a shared-infrastructure step (no specialist, no capability registry entry) reports capability_id null', async () => {

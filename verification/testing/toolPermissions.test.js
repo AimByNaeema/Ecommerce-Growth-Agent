@@ -98,7 +98,10 @@ test('DENIED: a specialist that does not own the tool\'s category is refused, ev
 });
 
 test('UNAVAILABLE: a registered but not-yet-implemented tool is refused regardless of who asks', () => {
-  const result = checkToolAccess({ specialistId: 'product', toolId: 'product_research' });
+  // memory_retrieval, not product_research: product_research is now implemented
+  // (tools/productResearchTool.js), so this test moved to one of the two tools that
+  // genuinely remain 'not_implemented' in tools/toolRegistry.js.
+  const result = checkToolAccess({ specialistId: 'product', toolId: 'memory_retrieval' });
   assert.strictEqual(result.decision, 'unavailable');
   assert.strictEqual(result.available, false);
   assert.ok(/not yet implemented/.test(result.reason));
@@ -111,10 +114,17 @@ test('UNAVAILABLE: an unknown tool id is refused honestly, not treated as denied
 });
 
 test('a specialist IS permitted for a not-yet-implemented tool in its own category (permission and availability are independent)', () => {
-  // product_research belongs to the 'products' category, which the 'product'
-  // specialist owns - the tool being unavailable must not be reported as a
-  // permission problem.
-  const result = checkToolAccess({ specialistId: 'product', toolId: 'product_research' });
+  // A synthetic tool in the 'products' category, which the 'product' specialist owns -
+  // the tool being unavailable must not be reported as a permission problem. Synthetic
+  // rather than a real registry id because every tool in an owned category is now
+  // implemented: product_research, the last one, is wrapped by
+  // tools/productResearchTool.js, and the two tools that remain 'not_implemented'
+  // (memory_retrieval, verification) are shared infrastructure that no specialist owns,
+  // so neither could exercise this branch honestly.
+  const result = evaluateToolAccess({
+    specialistId: 'product',
+    tool: { id: 'hypothetical_product_tool', status: 'not_implemented', category: 'products' },
+  });
   assert.strictEqual(result.decision, 'unavailable');
   assert.notStrictEqual(result.decision, 'denied');
 });

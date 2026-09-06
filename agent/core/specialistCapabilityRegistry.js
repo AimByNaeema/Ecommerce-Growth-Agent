@@ -38,16 +38,23 @@
 // socialAdvertisingAgent.js, and analyticsAgent.js source - nothing invented beyond
 // what those files actually enforce), and PRODUCT_CAPABILITY_IDS itself.
 //
-// HONEST tool_ids GAPS - deliberately left as an empty array, never fabricated to
-// look complete: agent/core/researchAgent.js's global_market_research,
-// trend_research, and opportunity_discovery (no tool in tools/toolRegistry.js wraps
-// any of them yet); 4 of 5 Product capabilities - product_validation,
-// product_opportunity_analysis, product_opportunity_scoring, product_recommendation -
-// still have no wrapper (tools/toolRegistry.js's 'product_research' entry, the
-// would-be wrapper, is still 'not_implemented'). product_discovery is the one
-// exception: tools/productDataRetrievalTool.js's runProductDataRetrievalTool() wraps
-// it via a live, read-only Shopify product pull (product_data_retrieval) - see
-// live_data_tool_id below.
+// tool_ids - no capability in this registry is left with an empty array any more. The
+// two long-standing gaps this comment used to declare are both closed: Research's
+// global_market_research/trend_research/opportunity_discovery by
+// tools/researchAnalysisTool.js, and Product's product_validation/
+// product_opportunity_analysis/product_opportunity_scoring/product_recommendation by
+// tools/productResearchTool.js (tools/toolRegistry.js's long-reserved 'product_research'
+// entry, now 'implemented' - the same id, wrapped at last, never a second Product
+// route). product_discovery remains wrapped by tools/productDataRetrievalTool.js's
+// runProductDataRetrievalTool() via a live, read-only Shopify product pull
+// (product_data_retrieval) - see live_data_tool_id below.
+//
+// THE REMAINING HONEST GAP is the mirror image, and is deliberately not papered over:
+// tools/toolRegistry.js's 'collection_data_retrieval' is an implemented Product tool
+// that no capability here references, because no Product capability consumes
+// store-wide collection data yet. Closing it needs a real new capability, not a
+// tool_ids edit, so it stays visible rather than being attached to an existing
+// capability that does not actually use it.
 //
 // live_data_tool_id (agent/core/specialistCapabilityModel.js) - a NEW, additive,
 // backward-compatible field (default null): names a tool_ids entry that can satisfy
@@ -464,8 +471,8 @@ const PRODUCT_TASKS = [
     id: 'product_validation',
     title: 'Product validation',
     description:
-      "Structural completeness audit of one product record via productAgent.js's validateProduct() - never a quality judgment. Returns an ad hoc shape, not a *Model.js record.",
-    toolIds: [],
+      "Structural completeness audit of one already-built product record via productAgent.js's validateProduct() - never a quality judgment. Reports shape validity, per-field completeness, and whether the record is research-ready. Returns an ad hoc shape, not a *Model.js record. Dispatched by the product_research tool.",
+    toolIds: ['product_research'],
     required: ['productRecord'],
     // optional intentionally left empty - verified against source: validateProduct()
     // reads only its one `productRecord` parameter, nothing else.
@@ -477,8 +484,8 @@ const PRODUCT_TASKS = [
     id: 'product_opportunity_analysis',
     title: 'Product opportunity analysis',
     description:
-      "Assess demand/competition/market_fit/product_risk plus profitability inputs and a 4-dimension coverage count for one product via productAgent.js's analyzeProductOpportunity(). Not yet wired to any tool.",
-    toolIds: [],
+      "Assess demand/competition/market_fit/product_risk plus profitability inputs and a 4-dimension coverage count for one product via productAgent.js's analyzeProductOpportunity(). Profitability is pricing and cost inputs only, never a computed margin. Dispatched by the product_research tool.",
+    toolIds: ['product_research'],
     required: ['productIdentity'],
     optional: [
       'category',
@@ -532,8 +539,8 @@ const PRODUCT_TASKS = [
     id: 'product_opportunity_scoring',
     title: 'Product opportunity scoring',
     description:
-      "Score 8 dimensions (demand, competition, market_fit, pricing, margin_inputs, trend, risk, differentiation) of one product's opportunity via productOpportunityScoringEngine.js's scoreProductOpportunity() - a mechanical evidence-coverage measurement, never a judgment of quality. Not yet wired to any tool.",
-    toolIds: [],
+      "Score 8 dimensions (demand, competition, market_fit, pricing, margin_inputs, trend, risk, differentiation) of one product's opportunity via productOpportunityScoringEngine.js's scoreProductOpportunity() - a mechanical evidence-coverage measurement with a coverage percentage, never a judgment of quality. Dispatched by the product_research tool.",
+    toolIds: ['product_research'],
     required: ['productIdentity'],
     optional: [
       'category',
@@ -564,8 +571,8 @@ const PRODUCT_TASKS = [
     id: 'product_recommendation',
     title: 'Product recommendation',
     description:
-      "Compose a structured recommendation (opportunity, reasoning, evidence, risks, missing information, confidence, recommended next step) from an already-scored productOpportunityScoreModel.js record via productRecommendationEngine.js's buildProductRecommendation(). Never purchases, publishes, or imports anything. Not yet wired to any tool.",
-    toolIds: [],
+      "Compose a structured recommendation (opportunity, reasoning, evidence, risks, missing information, confidence, recommended next step) from an already-scored productOpportunityScoreModel.js record via productRecommendationEngine.js's buildProductRecommendation(). Never purchases, publishes, or imports anything. Dispatched by the product_research tool.",
+    toolIds: ['product_research'],
     required: ['scoreResult'],
     optional: ['recommendedNextStep'],
     model: 'agent/core/productRecommendationModel.js',

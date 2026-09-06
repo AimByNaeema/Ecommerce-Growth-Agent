@@ -24,8 +24,8 @@
 // tools/platformContentTool.js, tools/contentCalendarTool.js,
 // tools/advertisingStrategyTool.js, tools/advertisingPerformanceTool.js,
 // tools/analyticsTool.js, tools/analyticsDataTool.js, and
-// tools/webCompetitorResearchTool.js) - the other 3 tools (product_research,
-// memory_retrieval, verification) remain 'not_implemented'.
+// tools/webCompetitorResearchTool.js, and tools/productResearchTool.js) - the other 2
+// tools (memory_retrieval, verification) remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -116,10 +116,10 @@ const TOOL_REGISTRY = [
     id: 'product_research',
     title: 'Product research',
     description:
-      'Run product research per the products/productResearchArchitecture.js pipeline.',
+      "Audit, assess, score, and recommend on one already-supplied product record: structural completeness validation, a demand/product risk/profitability inputs assessment, an 8-dimension evidence-coverage score, and a structured recommendation naming its own missing information - via agent/core/productAgent.js's validateProduct()/analyzeProductOpportunity(), productOpportunityScoringEngine.js's scoreProductOpportunity(), and productRecommendationEngine.js's buildProductRecommendation(). See tools/productResearchTool.js. Caller-supplied evidence only, deterministic; profitability is pricing and cost inputs only, never a computed margin; never purchases, publishes, or imports anything.",
     category: 'products',
     operation: 'read',
-    status: 'not_implemented',
+    status: 'implemented',
   },
   {
     id: 'market_research',

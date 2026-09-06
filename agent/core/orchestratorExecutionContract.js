@@ -117,6 +117,7 @@ const advertisingPerformanceTool = require('../../tools/advertisingPerformanceTo
 const analyticsTool = require('../../tools/analyticsTool');
 const analyticsDataTool = require('../../tools/analyticsDataTool');
 const productDataRetrievalTool = require('../../tools/productDataRetrievalTool');
+const productResearchTool = require('../../tools/productResearchTool');
 const collectionDataRetrievalTool = require('../../tools/collectionDataRetrievalTool');
 
 // Tool ids this orchestrator knows how to actually call. Each entry maps a
@@ -249,6 +250,11 @@ const TOOL_EXECUTORS = {
       ...(executionRequest.research_params || {}),
       businessId: executionRequest.business_id,
     }),
+  // No businessId spread: unlike the two live Shopify pulls above, this tool reaches no
+  // external system - it only composes what the caller already supplied, exactly like
+  // research_analysis and analytics above.
+  product_research: (executionRequest) =>
+    productResearchTool.runProductResearchTool(executionRequest.research_params),
 };
 
 const STOPWORDS = new Set([
@@ -1210,13 +1216,15 @@ function planRouting(objective) {
 // destructuring default - see tools/analyticsTool.js, tools/seoAnalysisTool.js,
 // tools/keywordResearchTool.js, tools/marketingAnalysisTool.js,
 // tools/listingContentTool.js, tools/customerResearchTool.js,
-// tools/socialContentTool.js, tools/paidAdvertisingTool.js).
+// tools/socialContentTool.js, tools/paidAdvertisingTool.js,
+// tools/productResearchTool.js).
 const TOOL_CAPABILITY_SELECTORS = {
   customer_research: {
     field: 'customerResearchMode',
     valueMap: { customer_market_intelligence: 'segment_research', customer_segmentation: 'customer_segmentation' },
   },
   research_analysis: { field: 'researchType', valueMap: null },
+  product_research: { field: 'productCapability', valueMap: null },
   keyword_research: { field: 'seoCapability', valueMap: null },
   seo_analysis: { field: 'seoCapability', valueMap: null },
   listing_content_generation: { field: 'listingCapability', valueMap: null },

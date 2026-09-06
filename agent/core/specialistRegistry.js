@@ -9,10 +9,11 @@
 // tools/marketResearchTool.js, tools/competitorResearchTool.js, and
 // tools/customerResearchTool.js; agent/core/productAgent.js,
 // agent/core/productOpportunityScoringEngine.js, and
-// agent/core/productRecommendationEngine.js (no tool wraps these yet -
-// tools/toolRegistry.js's 'product_research' entry is still 'not_implemented', so
-// Product is implemented as a specialist module but not yet reachable through the
-// tool system); agent/core/seoAgent.js, connected via tools/keywordResearchTool.js
+// agent/core/productRecommendationEngine.js, connected via
+// tools/productDataRetrievalTool.js, tools/marketProductOpportunityTool.js, and
+// tools/productResearchTool.js (tools/toolRegistry.js's 'product_research' entry, which
+// wraps all three of those Product modules' remaining capabilities);
+// agent/core/seoAgent.js, connected via tools/keywordResearchTool.js
 // and tools/seoAnalysisTool.js; agent/core/listingAgent.js, connected via
 // tools/listingContentTool.js; agent/core/marketingAgent.js, connected via
 // tools/marketingAnalysisTool.js; agent/core/socialAdvertisingAgent.js, connected via

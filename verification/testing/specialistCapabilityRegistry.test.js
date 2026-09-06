@@ -108,10 +108,16 @@ test('every permissions.tool_access element deep-equals a fresh direct checkTool
   }
 });
 
-test('known-decision spot checks: product_research is unavailable, market_research is allowed', () => {
+test('known-decision spot checks: product_research is now allowed, market_research is allowed', () => {
+  // product_research used to be this file's stock example of an 'unavailable' decision.
+  // It is now implemented (tools/productResearchTool.js), so the honest assertion is the
+  // closed state: every tool in Product's own category is reachable by Product.
   const productEntry = getSpecialistCapabilityById('product');
   const productResearchAccess = productEntry.permissions.tool_access.find((a) => a.tool_id === 'product_research');
-  assert.strictEqual(productResearchAccess.decision, 'unavailable');
+  assert.strictEqual(productResearchAccess.decision, 'allowed');
+  for (const access of productEntry.permissions.tool_access) {
+    assert.strictEqual(access.decision, 'allowed', `product should now be allowed ${access.tool_id}`);
+  }
 
   const researchEntry = getSpecialistCapabilityById('research');
   const marketResearchAccess = researchEntry.permissions.tool_access.find((a) => a.tool_id === 'market_research');
@@ -126,11 +132,24 @@ test('approval_requirements: an allowed tool has requires_human_approval false a
   assert.ok(marketResearchApproval.title);
 });
 
-test('approval_requirements: an unavailable tool has requires_human_approval true and a null classification - never silently fine', () => {
+test('approval_requirements: product_research is now allowed, so it has requires_human_approval false and its real classification', () => {
   const productEntry = getSpecialistCapabilityById('product');
   const productResearchApproval = productEntry.approval_requirements.find((a) => a.tool_id === 'product_research');
-  assert.strictEqual(productResearchApproval.requires_human_approval, true);
-  assert.strictEqual(productResearchApproval.classification, null);
+  assert.strictEqual(productResearchApproval.requires_human_approval, false);
+  assert.strictEqual(productResearchApproval.classification, 'analysis_only');
+  assert.ok(productResearchApproval.title);
+});
+
+test('an unavailable tool is still never silently fine: approval_required is not false for one', () => {
+  // The "unavailable => requires_human_approval true" derivation
+  // (requires_human_approval: access.approval_required !== false) is what makes an
+  // unreachable tool fail closed rather than open. product_research used to be this
+  // file's example of it; now that every tool in every specialist-owned category is
+  // implemented, the branch is asserted against checkToolAccess directly, using one of
+  // the two tools that genuinely remain 'not_implemented'.
+  const access = checkToolAccess({ specialistId: 'product', toolId: 'memory_retrieval' });
+  assert.strictEqual(access.decision, 'unavailable');
+  assert.notStrictEqual(access.approval_required, false);
 });
 
 test('every specialist\'s supported_tasks[].id list deep-equals its real capability enum (or PRODUCT_CAPABILITY_IDS)', () => {
@@ -181,19 +200,35 @@ test('every Research capability is wired to a real tool - the three former gaps 
   }
 });
 
-test('4 of Product\'s 5 productAgent.js-backed supported_tasks have tool_ids: [] - no tool wraps productAgent.js\'s own functions today (market_product_opportunity_analysis and product_discovery are the two exceptions: a separate workflow wired to a real tool, and a live Shopify pull wired to a real tool, respectively)', () => {
+test('every one of Product\'s 6 supported_tasks is now wrapped by a real tool - the 4 that had tool_ids: [] are wired to product_research, and the 2 pre-existing exceptions are unchanged', () => {
   const productEntry = getSpecialistCapabilityById('product');
   for (const task of productEntry.supported_tasks) {
     if (task.id === 'market_product_opportunity_analysis') {
       assert.deepStrictEqual(task.tool_ids, ['market_product_opportunity_analysis']);
+      assert.strictEqual(task.live_data_tool_id, null);
     } else if (task.id === 'product_discovery') {
       assert.deepStrictEqual(task.tool_ids, ['product_data_retrieval']);
       assert.strictEqual(task.live_data_tool_id, 'product_data_retrieval');
     } else {
-      assert.deepStrictEqual(task.tool_ids, []);
+      // product_validation, product_opportunity_analysis, product_opportunity_scoring,
+      // product_recommendation - all four now dispatched by tools/productResearchTool.js.
+      assert.deepStrictEqual(task.tool_ids, ['product_research']);
+      // Still null, and deliberately so: unlike product_discovery, none of these four can
+      // be satisfied from a live Shopify pull alone - each needs caller-supplied evidence
+      // (a product record, dimension evidence, or an already-computed score).
       assert.strictEqual(task.live_data_tool_id, null);
     }
   }
+});
+
+test('no capability in the whole registry is left with an empty tool_ids - every specialist is reachable through a real tool', () => {
+  const unwired = [];
+  for (const entry of SPECIALIST_CAPABILITY_REGISTRY) {
+    for (const task of entry.supported_tasks) {
+      if (task.tool_ids.length === 0) unwired.push(`${entry.id}/${task.id}`);
+    }
+  }
+  assert.deepStrictEqual(unwired, []);
 });
 
 test('output_contract.fields for one task per envelope-based specialist deep-equals the real *_FIELDS.map(f => f.id)', () => {
