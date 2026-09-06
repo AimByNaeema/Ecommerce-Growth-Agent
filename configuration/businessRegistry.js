@@ -39,6 +39,12 @@ const CREDENTIAL_KEYS = [
   'SHOPIFY_CLIENT_ID',
   'SHOPIFY_CLIENT_SECRET',
   'SHOPIFY_API_VERSION',
+  // Shopify blog-article publishing (integrations/shopifyBlogPublishing.js). The approved
+  // blog's id and the byline articles carry - configuration, never hardcoded, resolved per
+  // business exactly like every key above. Additive: a business whose .env has neither gets
+  // them back as '' like any other absent key, so no existing configuration changes meaning.
+  'SHOPIFY_BLOG_ID',
+  'SHOPIFY_ARTICLE_AUTHOR',
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_MODEL',
   'ANTHROPIC_MAX_TOKENS',

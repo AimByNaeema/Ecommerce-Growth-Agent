@@ -177,6 +177,7 @@ const TEST_FILES = [
   'complianceApprovalGate.test.js',
   'publishAuthorization.test.js',
   'etsyPublishing.test.js',
+  'shopifyBlogPublishing.test.js',
 ];
 
 function runAll() {

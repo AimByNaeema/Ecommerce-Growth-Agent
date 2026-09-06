@@ -4,18 +4,34 @@
 // a CONNECTION LAYER: it can reach the store, confirm the connection works
 // (getShopInfo), and read product, collection, order, customer, and inventory data
 // (getProducts, getCollections, getOrders, getCustomers, getInventoryLevels).
-// Read-only only - no write/mutation of any kind exists here, and it is not wired into
-// agent/core/agentContract.js's stages yet - that orchestration is later, explicitly
-// scoped work. No response is ever invented here: a missing config, a network failure,
+// No response is ever invented here: a missing config, a network failure,
 // or a non-success/GraphQL-error response all throw a clear error instead of returning
 // fabricated data (same convention as every research/analysis module already in this
 // project, and as agent/core/claudeClient.js).
+//
+// EXACTLY ONE MUTATION EXISTS HERE: createBlogArticle(), the real Admin API
+// `articleCreate` mutation behind the publishing chain in
+// integrations/shopifyBlogPublishing.js. Everything else in this file is still a read,
+// unchanged. There is no second Shopify client anywhere in this project: the mutation
+// reuses THIS module's credential resolution, token cache, retry/timeout layer, and
+// error handling rather than opening a parallel transport. Nothing here decides whether
+// a publish is allowed - approvals/publishAuthorization.js does, and
+// integrations/shopifyBlogPublishing.js is the single call site that consults it
+// immediately before calling createBlogArticle().
 //
 // Required Admin API scopes, read-only: read_products, read_orders, read_customers,
 // read_inventory. A store whose access token lacks one of these will get a GraphQL
 // access-denied error from that one function - the caller (tools/analyticsDataTool.js)
 // is responsible for degrading gracefully per source rather than this layer silently
 // swallowing it (this layer never swallows an error; it always throws one).
+//
+// createBlogArticle() additionally requires the WRITE scope 'write_content'
+// (REQUIRED_PUBLISH_SCOPE). It is checked as a PREFLIGHT against the app's genuinely
+// granted scopes (getGrantedAccessScopes(), a real read query - never an assumption)
+// before any mutation is sent, so a store whose app lacks the scope makes ZERO mutation
+// attempts rather than sending one and being refused. That is a fail-closed guard in
+// front of the mutation, not a substitute for the authorization boundary in front of
+// this whole layer.
 //
 // getCustomers() deliberately requests no personally-identifiable fields (no name,
 // email, phone, or address) - only account-level aggregate stats (order count, amount
@@ -60,6 +76,18 @@ const DEFAULT_API_VERSION = '2026-07';
 const CLIENT_CREDENTIALS_TOKEN_CACHE = new Map(); // cacheKey -> { accessToken, expiresAt }
 const TOKEN_EXPIRY_SAFETY_MARGIN_MS = 60000;
 
+// The Admin API scope createBlogArticle() genuinely needs, per Shopify's own scope
+// naming. Declared once, named in the preflight error, and exported so a caller (and a
+// test) can check it without restating the string.
+const REQUIRED_PUBLISH_SCOPE = 'write_content';
+
+// Which scopes the configured app was ACTUALLY granted, cached per resolved credential
+// set exactly like the token above (same cacheKey derivation, same "never written to
+// disk" rule). Scope grants change only when the app is re-installed/re-deployed, so one
+// read per process is enough - this keeps the publish preflight from costing a network
+// round-trip on every article.
+const ACCESS_SCOPES_CACHE = new Map(); // cacheKey -> string[]
+
 let envLoadAttempted = false;
 
 // Loads .env (git-ignored - see .env.example) into process.env exactly once, using
@@ -97,6 +125,8 @@ function resolveCredentials(businessId) {
       apiVersion: process.env.SHOPIFY_API_VERSION,
       clientId: process.env.SHOPIFY_CLIENT_ID,
       clientSecret: process.env.SHOPIFY_CLIENT_SECRET,
+      blogId: process.env.SHOPIFY_BLOG_ID,
+      articleAuthor: process.env.SHOPIFY_ARTICLE_AUTHOR,
     };
   }
   const credentials = businessRegistry.loadBusinessCredentials(businessId);
@@ -106,7 +136,25 @@ function resolveCredentials(businessId) {
     apiVersion: credentials.SHOPIFY_API_VERSION,
     clientId: credentials.SHOPIFY_CLIENT_ID,
     clientSecret: credentials.SHOPIFY_CLIENT_SECRET,
+    blogId: credentials.SHOPIFY_BLOG_ID,
+    articleAuthor: credentials.SHOPIFY_ARTICLE_AUTHOR,
   };
+}
+
+// The approved blog this store publishes articles to, and the byline articles carry -
+// configuration, never a hardcoded id or name (CLAUDE.md rule 14). Both resolve through
+// the SAME two-mode credential architecture as every other key above, so pointing the
+// system at a different store/business needs no code change. Absent means absent: these
+// return null rather than a guessed default, and integrations/shopifyBlogPublishing.js
+// refuses (with zero mutation) rather than inventing either one.
+function getConfiguredBlogId({ businessId = null } = {}) {
+  const { blogId } = resolveCredentials(businessId);
+  return blogId && blogId.trim() ? blogId.trim() : null;
+}
+
+function getConfiguredArticleAuthor({ businessId = null } = {}) {
+  const { articleAuthor } = resolveCredentials(businessId);
+  return articleAuthor && articleAuthor.trim() ? articleAuthor.trim() : null;
 }
 
 // True when both a client id and client secret are present and non-blank - the signal
@@ -239,7 +287,12 @@ function reshapeOrThrow(fnName, reshapeFn) {
 // deterministically fail again, so it is thrown as a plain (non-retryable) Error
 // instead - retrying it would only waste calls. The "not configured" check happens
 // before retryAsync() is ever entered, so it never triggers a retry either.
-async function runAdminGraphqlQuery(query, fnName, businessId = null) {
+//
+// `variables` is optional and additive: omitted (the default) the request body is exactly
+// `{ query }`, byte-for-byte what every existing read already sent. Supplied, it is sent
+// as GraphQL variables - which is how createBlogArticle() passes article content, so no
+// title or body is ever interpolated into a query string.
+async function runAdminGraphqlQuery(query, fnName, businessId = null, variables = null) {
   if (!isConfigured({ businessId })) {
     const message = businessId
       ? `Business '${businessId}' has no configured Shopify credentials. Create ` +
@@ -279,7 +332,7 @@ async function runAdminGraphqlQuery(query, fnName, businessId = null) {
             'content-type': 'application/json',
             'X-Shopify-Access-Token': accessToken,
           },
-          body: JSON.stringify({ query }),
+          body: JSON.stringify(variables ? { query, variables } : { query }),
           signal,
         })
       );
@@ -590,6 +643,170 @@ async function getCollections({ limit = 50, businessId = null } = {}) {
   );
 }
 
+// ---------------------------------------------------------------------------------
+// PUBLISHING: the one mutation in this file, and the scope preflight in front of it.
+// ---------------------------------------------------------------------------------
+
+// The Admin API scopes the configured app was ACTUALLY granted, read from the store
+// itself rather than assumed from what .env happens to contain - a token is not the same
+// thing as a permission, and only Shopify knows which scopes an app really holds.
+//
+// Returns: a sorted array of scope handles (e.g. ['read_products', 'write_content']).
+// Throws: same conditions as getShopInfo(). Never returns a fabricated scope list, and
+// never returns [] to mean "unknown" - an unreadable answer is an error, so the publish
+// preflight can never mistake a failed check for a granted scope.
+async function getGrantedAccessScopes({ businessId = null, refresh = false } = {}) {
+  const resolved = resolveCredentials(businessId);
+  const cacheKey = businessId || (resolved.clientId && resolved.clientId.trim()) || '__default__';
+  if (!refresh && ACCESS_SCOPES_CACHE.has(cacheKey)) {
+    return ACCESS_SCOPES_CACHE.get(cacheKey);
+  }
+
+  const query = `{
+    currentAppInstallation {
+      accessScopes { handle }
+    }
+  }`;
+
+  const { raw } = await runAdminGraphqlQuery(query, 'getGrantedAccessScopes', businessId);
+
+  if (!raw || !raw.data || !raw.data.currentAppInstallation || !Array.isArray(raw.data.currentAppInstallation.accessScopes)) {
+    throw new Error('Shopify Admin API response did not include the app installation access scopes.');
+  }
+
+  const handles = reshapeOrThrow('getGrantedAccessScopes', () =>
+    raw.data.currentAppInstallation.accessScopes.map(({ handle }) => handle).sort()
+  );
+  ACCESS_SCOPES_CACHE.set(cacheKey, handles);
+  return handles;
+}
+
+// True only when the store's app genuinely holds REQUIRED_PUBLISH_SCOPE. Deliberately
+// async and network-backed: there is no offline way to know this, and guessing it is
+// exactly the failure mode the preflight exists to prevent.
+// Drops the cached scope answer, so the next check re-reads it from the store. Needed
+// because a scope grant CAN change while a process is running (the app is re-installed
+// with a new scope), and used by the test suite to keep one stubbed answer from leaking
+// into the next test.
+function clearAccessScopesCache() {
+  ACCESS_SCOPES_CACHE.clear();
+}
+
+async function hasWriteContentScope({ businessId = null, refresh = false } = {}) {
+  const granted = await getGrantedAccessScopes({ businessId, refresh });
+  return granted.includes(REQUIRED_PUBLISH_SCOPE);
+}
+
+// Creates ONE blog article on the store, via the Admin API's real `articleCreate`
+// mutation. The mutation name, its argument (`article: ArticleCreateInput!`), every input
+// field used below, and the payload's `article`/`userErrors` shape are all taken from the
+// store's own schema at the API version this client targets - nothing here is invented or
+// remembered. Only the smallest set of fields an article actually needs is sent; image,
+// metafields, tags, templateSuffix and publishDate are deliberately not.
+//
+//   blogId     - the approved blog's id (a `gid://shopify/Blog/...` GID). Configuration or
+//                caller input - never hardcoded. Required.
+//   title      - the article title. Required by ArticleCreateInput.
+//   body       - the article body (HTML). Required here: an article with no body is not
+//                something to publish, and an empty one is never substituted.
+//   authorName - the byline. ArticleCreateInput.author is AuthorInput! - required by the
+//                real schema, so it is required here rather than invented.
+//   summary/handle - optional, sent only when supplied.
+//   isPublished - whether the article goes live. Defaults to true, because this is only
+//                ever reached past a human approval that said to publish.
+//
+// Returns: Shopify's own article node, relayed unchanged.
+// Throws: when not configured, when REQUIRED_PUBLISH_SCOPE is missing (BEFORE sending any
+// mutation), on a network/transport failure, on GraphQL errors, or when Shopify returns
+// userErrors. Never a fabricated article id, never a partial success reported as success.
+async function createBlogArticle({
+  blogId,
+  title,
+  body,
+  summary = null,
+  handle = null,
+  authorName,
+  isPublished = true,
+  businessId = null,
+} = {}) {
+  for (const [name, value] of [['blogId', blogId], ['title', title], ['body', body], ['authorName', authorName]]) {
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new Error(`createBlogArticle requires a non-empty ${name}. No Shopify mutation was attempted.`);
+    }
+  }
+
+  if (!isConfigured({ businessId })) {
+    throw new Error(
+      businessId
+        ? `Business '${businessId}' has no configured Shopify credentials. Create ` +
+          `configuration/businesses/${businessId}/.env with either SHOPIFY_ADMIN_API_ACCESS_TOKEN ` +
+          'or SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET (plus SHOPIFY_STORE_DOMAIN) before calling createBlogArticle().'
+        : 'SHOPIFY_STORE_DOMAIN is not set, or neither SHOPIFY_ADMIN_API_ACCESS_TOKEN nor ' +
+          'SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET is set. Copy .env.example to .env and add real ' +
+          "values for the owner's Shopify store before calling createBlogArticle()."
+    );
+  }
+
+  // THE PREFLIGHT. Checked against genuinely granted scopes, and it throws BEFORE the
+  // mutation is built or sent - so a store whose app lacks write_content makes zero
+  // mutation attempts. Sending one and letting Shopify refuse would also be safe, but it
+  // would be an attempted write, and "zero mutation" is the property this project tests.
+  const granted = await getGrantedAccessScopes({ businessId });
+  if (!granted.includes(REQUIRED_PUBLISH_SCOPE)) {
+    throw new Error(
+      `Shopify publishing is not permitted: this store's app has not been granted the '${REQUIRED_PUBLISH_SCOPE}' ` +
+        `Admin API scope (granted: ${granted.join(', ') || 'none'}). Add '${REQUIRED_PUBLISH_SCOPE}' to the app's ` +
+        'access scopes and re-deploy/re-install it, then try again. No Shopify mutation was attempted.'
+    );
+  }
+
+  const mutation = `mutation CreateBlogArticle($article: ArticleCreateInput!) {
+    articleCreate(article: $article) {
+      article {
+        id
+        handle
+        title
+        isPublished
+        publishedAt
+        blog { id }
+      }
+      userErrors { field message code }
+    }
+  }`;
+
+  const article = {
+    blogId: blogId.trim(),
+    title: title.trim(),
+    body,
+    isPublished: Boolean(isPublished),
+    author: { name: authorName.trim() },
+  };
+  if (typeof summary === 'string' && summary.trim() !== '') article.summary = summary;
+  if (typeof handle === 'string' && handle.trim() !== '') article.handle = handle.trim();
+
+  const { raw } = await runAdminGraphqlQuery(mutation, 'createBlogArticle', businessId, { article });
+
+  const payload = raw && raw.data && raw.data.articleCreate;
+  if (!payload) {
+    throw new Error('Shopify Admin API response did not include an articleCreate result.');
+  }
+
+  // A userErrors entry means the article was NOT created. Surfaced as a failure with
+  // Shopify's own messages - never swallowed, and never reported as a success.
+  if (Array.isArray(payload.userErrors) && payload.userErrors.length > 0) {
+    const details = payload.userErrors
+      .map((entry) => `${Array.isArray(entry.field) ? entry.field.join('.') : entry.field || 'article'}: ${entry.message}`)
+      .join('; ');
+    throw new Error(`Shopify refused to create the blog article: ${details}`);
+  }
+
+  if (!payload.article || !payload.article.id) {
+    throw new Error('Shopify reported no error but returned no article - refusing to report an unconfirmed publish as a success.');
+  }
+
+  return payload.article;
+}
+
 module.exports = {
   getShopInfo,
   getProducts,
@@ -604,6 +821,14 @@ module.exports = {
   buildTokenUrl,
   getClientCredentialsToken,
   DEFAULT_API_VERSION,
+  // Publishing (the one mutation) and the scope preflight in front of it.
+  REQUIRED_PUBLISH_SCOPE,
+  getGrantedAccessScopes,
+  hasWriteContentScope,
+  clearAccessScopesCache,
+  createBlogArticle,
+  getConfiguredBlogId,
+  getConfiguredArticleAuthor,
 };
 
 if (require.main === module) {
