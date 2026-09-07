@@ -120,11 +120,22 @@ function getMemoryRecordById(businessId, recordId, opts = {}) {
 // Lists ONE business's own records only - always scoped to a single, explicit
 // businessId (see this module's own header on why there is no cross-business list).
 // Optional priorityId filters to one agent/core/memoryRules.js MEMORY_PRIORITIES
-// category. Newest first, capped at `limit`. A business with nothing saved yet (or an
+// category. Optional capabilityId filters to the records produced BY one capability -
+// an exact string match on the record's own already-persisted
+// `source.capability_id` (agent/core/orchestratorExecutionContract.js writes it on
+// every memory record it saves). This is the "and task" half of
+// agent/core/memoryRules.js's `retrievable` quality ("looked up by business and task
+// without scanning everything") and of agent/core/contextBoundaries.js's
+// memory_context boundary ("relevant to the current task and business"); the
+// businessId argument has always been the "by business" half. Still exact-match only:
+// no embedding, no similarity, no ranking - the same string comparison priorityId
+// already uses, one field over.
+//
+// Newest first, capped at `limit`. A business with nothing saved yet (or an
 // invalid businessId) is an empty list, not an error - matches
 // agent/core/runHistoryStore.js's own "genuinely nothing here yet" convention. One
 // corrupt record file is skipped, never breaking the rest of that business's own list.
-function listMemoryRecords(businessId, { priorityId = null, limit = 100, ...opts } = {}) {
+function listMemoryRecords(businessId, { priorityId = null, capabilityId = null, limit = 100, ...opts } = {}) {
   let dir;
   try {
     dir = getBusinessMemoryDir(businessId, opts);
@@ -149,6 +160,10 @@ function listMemoryRecords(businessId, { priorityId = null, limit = 100, ...opts
     }
     if (!record || typeof record !== 'object') continue;
     if (priorityId && record.priority_id !== priorityId) continue;
+    // A record with no source (source is optional - see memoryRecordModel.js) simply
+    // has no task to match, so it is excluded from a task-scoped list rather than
+    // guessed into one.
+    if (capabilityId && !(record.source && record.source.capability_id === capabilityId)) continue;
     records.push(record);
   }
 

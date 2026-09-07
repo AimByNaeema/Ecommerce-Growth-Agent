@@ -213,6 +213,36 @@ test('listMemoryRecords filters by priorityId to one agent/core/memoryRules.js c
   });
 });
 
+// The "and task" half of agent/core/memoryRules.js's `retrievable` quality - an exact
+// string match on the record's own source.capability_id, the same shape of plain
+// comparison priorityId above already uses. No embedding, no similarity, no ranking.
+test('listMemoryRecords filters by capabilityId to the records one capability actually produced', () => {
+  withTempRoot((rootDir) => {
+    saveMemoryRecord(
+      verifiedRecord({ id: 'mem-seo', source: { run_id: 'r1', tool_id: 'seo_analysis', capability_id: 'product_seo' } }),
+      { rootDir }
+    );
+    saveMemoryRecord(
+      verifiedRecord({ id: 'mem-listing', source: { run_id: 'r2', tool_id: 'listing_content_generation', capability_id: 'listing_content' } }),
+      { rootDir }
+    );
+    // No source at all - has no task, so it must never be matched into one.
+    saveMemoryRecord(verifiedRecord({ id: 'mem-sourceless' }), { rootDir });
+
+    const seoOnly = listMemoryRecords('business-a', { rootDir, capabilityId: 'product_seo' });
+    assert.strictEqual(seoOnly.length, 1);
+    assert.strictEqual(seoOnly[0].id, 'mem-seo');
+
+    assert.strictEqual(listMemoryRecords('business-a', { rootDir, capabilityId: 'never_ran' }).length, 0);
+    assert.strictEqual(listMemoryRecords('business-a', { rootDir }).length, 3, 'no filter still returns everything');
+
+    // Both filters compose, and stay inside this one business.
+    const both = listMemoryRecords('business-a', { rootDir, priorityId: 'reusable_findings', capabilityId: 'listing_content' });
+    assert.deepStrictEqual(both.map((record) => record.id), ['mem-listing']);
+    assert.strictEqual(listMemoryRecords('business-b', { rootDir, capabilityId: 'product_seo' }).length, 0);
+  });
+});
+
 test('listMemoryRecords returns newest first and respects limit', () => {
   withTempRoot((rootDir) => {
     for (let i = 0; i < 5; i += 1) {

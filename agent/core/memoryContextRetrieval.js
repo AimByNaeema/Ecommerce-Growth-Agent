@@ -21,8 +21,9 @@
 //     more plain data field (`relevant_memory`) on research_params - whether/how a
 //     tool actually reads that field is separate, not-yet-scoped work.
 //   - NO VECTOR/SEMANTIC SEARCH: retrieval is exact-match only - scoped to one
-//     business, newest first, capped - reusing agent/core/memoryStore.js's
-//     listMemoryRecords() completely unmodified.
+//     business and (when the caller knows it) to the current task's own capability id,
+//     newest first, capped - reusing agent/core/memoryStore.js's listMemoryRecords()
+//     and its plain string filters. No embedding, no similarity, no ranking model.
 //   - NO NEW MEMORY CATEGORIES: every record still uses one of
 //     agent/core/memoryRules.js's existing MEMORY_PRIORITIES ids
 //     (agent/core/memoryRecordModel.js's own MEMORY_PRIORITY_IDS) - this file adds no
@@ -64,23 +65,67 @@ const MAX_RELEVANT_MEMORY_RECORDS = 10;
 // in the right file.
 //
 // "Relevant" here means exactly what this schema supports without vector/semantic
-// search or a new categorization rule: scoped to this one business only (never
-// another business's memory - see agent/core/contextBoundaries.js's own
-// memory_context description), newest first, capped at MAX_RELEVANT_MEMORY_RECORDS.
-function getRelevantMemoryContext(businessId, { limit = MAX_RELEVANT_MEMORY_RECORDS } = {}) {
+// search or a new categorization rule, and it is scoped on BOTH axes the project's own
+// requirements name:
+//
+//   BY BUSINESS - this one business only, never another's (agent/core/
+//   contextBoundaries.js's memory_context boundary, agent/core/memoryRules.js's `safe`
+//   quality). This has always been enforced here.
+//
+//   BY TASK - `capabilityId`, when supplied, is the current step's capability id, and
+//   the records this exact capability produced before come FIRST. That is the other
+//   half of memoryRules.js's `retrievable` quality ("looked up by business and task
+//   without scanning everything") and of memory_context's own wording ("relevant to
+//   the current task and business"), which business-only retrieval satisfied for the
+//   business and not for the task: a run about listing content was handed whatever
+//   happened to be this business's 10 newest memories, whichever capability produced
+//   them. The match is an exact string comparison on the record's own already-persisted
+//   source.capability_id (see memoryStore.js's listMemoryRecords) - no embedding, no
+//   similarity scoring, no new categorization vocabulary.
+//
+// TASK-FIRST, NOT TASK-ONLY. The remaining budget is filled with this business's other
+// newest records, de-duplicated by record id. A hard task filter was rejected on
+// purpose: it would hand back nothing at all the first time a capability runs for a
+// business (strictly worse than today), and it would drop exactly the cross-task
+// patterns memoryRules.js's `useful_historical_context` priority exists to keep. So
+// this never returns less than the business-only behavior did - it reorders what a run
+// sees so the current task's own history is what survives the cap.
+//
+// Omitting capabilityId reproduces the previous behavior exactly: business-scoped,
+// newest first, capped.
+function getRelevantMemoryContext(businessId, { capabilityId = null, limit = MAX_RELEVANT_MEMORY_RECORDS } = {}) {
   if (!isValidBusinessId(businessId)) return {};
 
-  const records = listMemoryRecords(businessId, { limit }).filter(
-    (record) => validateMemoryRecord(record).valid
-  );
+  const isUsable = (record) => validateMemoryRecord(record).valid;
+  const taskScoped =
+    typeof capabilityId === 'string' && capabilityId.trim()
+      ? listMemoryRecords(businessId, { capabilityId: capabilityId.trim(), limit }).filter(isUsable)
+      : [];
+
+  const records = [...taskScoped];
+  const seenIds = new Set(taskScoped.map((record) => record.id));
+  if (records.length < limit) {
+    for (const record of listMemoryRecords(businessId, { limit })) {
+      if (records.length >= limit) break;
+      if (seenIds.has(record.id) || !isUsable(record)) continue;
+      seenIds.add(record.id);
+      records.push(record);
+    }
+  }
   if (records.length === 0) return {};
 
-  // Compact projection only (memoryRules.js's "compact" quality) - a summary and its
-  // category/date, never the record's full internal shape (id/source/approval are
-  // this layer's own bookkeeping, not something a tool needs to see).
+  // Compact projection only (memoryRules.js's "compact" quality) - a summary, its
+  // category/date, and the capability that produced it, never the record's full
+  // internal shape (id/approval and the rest of `source` are this layer's own
+  // bookkeeping, not something a tool needs to see). capability_id is included because
+  // it is the task key this retrieval now scopes on: without it a memory from a
+  // different capability would read as if it belonged to the current task, which is
+  // exactly the kind of unstated assumption CLAUDE.md rule 8 forbids. It is null for a
+  // record saved without a source.
   return {
     relevant_memory: records.map((record) => ({
       priority_id: record.priority_id,
+      capability_id: (record.source && record.source.capability_id) || null,
       summary: record.summary,
       created_at: record.created_at,
     })),

@@ -1707,7 +1707,23 @@ async function buildPlanStep(
     // (computed above, from the caller's own untouched researchParams) is already
     // decided before this merge happens, so this can never itself trigger the
     // "PREFER REAL DATA OVER NO DATA" live-dispatch swap.
-    derivedContext = mergeContext(derivedContext, relevantMemoryContext || {});
+    //
+    // TASK-SCOPED WHEN THE TASK IS KNOWN. runOrchestratorContract computes the
+    // run-level, business-scoped context before any routing exists, so it cannot know
+    // which capability each step will land on. Here it IS known (matchedCapability),
+    // which is the only place in the flow where memory can satisfy
+    // agent/core/contextBoundaries.js's memory_context boundary in full ("relevant to
+    // the current task AND business"). So when this run has a real businessId, the
+    // context is re-derived for THIS capability - the same exact-match store read, one
+    // extra filter - and the run-level, business-only context is used unchanged
+    // otherwise (every caller that passes no businessId, i.e. today's server.js /run,
+    // growthWorkflowOrchestrator.js and optimizationCycleOrchestrator.js, behaves
+    // exactly as before). getRelevantMemoryContext never throws and returns {} when
+    // there is nothing to merge.
+    const taskScopedMemoryContext = isValidBusinessId(businessId)
+      ? getRelevantMemoryContext(businessId, { capabilityId: matchedCapability.id })
+      : relevantMemoryContext || {};
+    derivedContext = mergeContext(derivedContext, taskScopedMemoryContext);
 
     if (Object.keys(derivedContext).length > 0) {
       effectiveResearchParams = { ...derivedContext, ...(researchParams || {}) };

@@ -66,7 +66,7 @@ test('getRelevantMemoryContext returns {} for a valid businessId that has never 
   });
 });
 
-test('getRelevantMemoryContext returns a compact relevant_memory array (priority_id, summary, created_at only) for a business with saved records', () => {
+test('getRelevantMemoryContext returns a compact relevant_memory array (priority_id, capability_id, summary, created_at only) for a business with saved records', () => {
   withTempMemoryStoreDir(() => {
     saveMemoryRecord(
       createMemoryRecord({
@@ -81,7 +81,14 @@ test('getRelevantMemoryContext returns a compact relevant_memory array (priority
     const context = getRelevantMemoryContext('biz-a');
     assert.ok(Array.isArray(context.relevant_memory));
     assert.strictEqual(context.relevant_memory.length, 1);
-    assert.deepStrictEqual(Object.keys(context.relevant_memory[0]).sort(), ['created_at', 'priority_id', 'summary']);
+    // capability_id joined this projection when retrieval gained task scoping - it is
+    // the task key the lookup now matches on, so a consumer must be able to see which
+    // capability a memory actually came from.
+    assert.deepStrictEqual(
+      Object.keys(context.relevant_memory[0]).sort(),
+      ['capability_id', 'created_at', 'priority_id', 'summary']
+    );
+    assert.strictEqual(context.relevant_memory[0].capability_id, null, 'a record saved with no source has no task');
     assert.strictEqual(context.relevant_memory[0].summary, 'A real, verified finding.');
     assert.strictEqual(context.relevant_memory[0].priority_id, 'reusable_findings');
   });
@@ -258,6 +265,123 @@ test('persistVerifiedFinding with the same id overwrites the prior record - neve
     persistVerifiedFinding({ businessId: 'biz-a', id: 'mem-1', priorityId: 'reusable_findings', summary: 'First version.', verificationStatus: 'passed' });
     persistVerifiedFinding({ businessId: 'biz-a', id: 'mem-1', priorityId: 'reusable_findings', summary: 'Corrected version.', verificationStatus: 'passed' });
     assert.strictEqual(getMemoryRecordById('biz-a', 'mem-1').summary, 'Corrected version.');
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// TASK SCOPING - the "and task" half of agent/core/memoryRules.js's `retrievable`
+// quality and agent/core/contextBoundaries.js's memory_context boundary. Exact-match
+// only: a plain string comparison on each record's own already-persisted
+// source.capability_id. No embedding, no similarity, no ranking.
+// ---------------------------------------------------------------------------------
+
+// Saves one memory record attributed to a capability, the same way
+// agent/core/orchestratorExecutionContract.js does after a verified step.
+function saveForCapability(businessId, id, capabilityId, summary) {
+  return persistVerifiedFinding({
+    businessId,
+    id,
+    priorityId: 'reusable_findings',
+    summary,
+    source: { run_id: `run-${id}`, tool_id: 'seo_analysis', capability_id: capabilityId },
+    verificationStatus: 'passed',
+  });
+}
+
+test('getRelevantMemoryContext puts THIS capability\'s own memory first, ahead of newer memory from other tasks', () => {
+  withTempMemoryStoreDir(() => {
+    saveForCapability('biz-a', 'mem-old-task', 'product_seo', "The current task's own older finding.");
+    // Saved afterwards, so business-only newest-first retrieval would rank these above.
+    saveForCapability('biz-a', 'mem-new-other-1', 'listing_content', 'A newer finding from a different task.');
+    saveForCapability('biz-a', 'mem-new-other-2', 'keyword_research', 'Another newer finding from a different task.');
+
+    const scoped = getRelevantMemoryContext('biz-a', { capabilityId: 'product_seo' });
+    assert.strictEqual(scoped.relevant_memory[0].summary, "The current task's own older finding.");
+    assert.strictEqual(scoped.relevant_memory[0].capability_id, 'product_seo');
+
+    // Without a capabilityId the previous behavior is reproduced exactly: newest first.
+    const unscoped = getRelevantMemoryContext('biz-a');
+    assert.strictEqual(unscoped.relevant_memory[0].capability_id, 'keyword_research');
+  });
+});
+
+test('task scoping is task-FIRST, never task-only - other tasks still fill the remaining budget, de-duplicated', () => {
+  withTempMemoryStoreDir(() => {
+    saveForCapability('biz-a', 'mem-task', 'product_seo', 'This task\'s finding.');
+    saveForCapability('biz-a', 'mem-other', 'listing_content', "Another task's finding.");
+
+    const context = getRelevantMemoryContext('biz-a', { capabilityId: 'product_seo' });
+    assert.strictEqual(context.relevant_memory.length, 2, 'cross-task history must not be dropped');
+    assert.deepStrictEqual(
+      context.relevant_memory.map((entry) => entry.capability_id),
+      ['product_seo', 'listing_content']
+    );
+    // The task-matched record appears once, never twice.
+    const summaries = context.relevant_memory.map((entry) => entry.summary);
+    assert.strictEqual(new Set(summaries).size, summaries.length);
+  });
+});
+
+test('a capability with no memory of its own is never worse off than business-only retrieval', () => {
+  withTempMemoryStoreDir(() => {
+    saveForCapability('biz-a', 'mem-1', 'listing_content', 'An existing finding from another task.');
+    const context = getRelevantMemoryContext('biz-a', { capabilityId: 'a_capability_that_never_ran' });
+    assert.strictEqual(context.relevant_memory.length, 1);
+    assert.strictEqual(context.relevant_memory[0].capability_id, 'listing_content');
+  });
+});
+
+test('task scoping never crosses the business boundary', () => {
+  withTempMemoryStoreDir(() => {
+    saveForCapability('biz-a', 'mem-a', 'product_seo', "Business A's product_seo finding.");
+    saveForCapability('biz-b', 'mem-b', 'product_seo', "Business B's product_seo finding.");
+
+    const contextA = getRelevantMemoryContext('biz-a', { capabilityId: 'product_seo' });
+    assert.strictEqual(contextA.relevant_memory.length, 1);
+    assert.strictEqual(contextA.relevant_memory[0].summary, "Business A's product_seo finding.");
+
+    const contextB = getRelevantMemoryContext('biz-b', { capabilityId: 'product_seo' });
+    assert.strictEqual(contextB.relevant_memory.length, 1);
+    assert.strictEqual(contextB.relevant_memory[0].summary, "Business B's product_seo finding.");
+  });
+});
+
+test('the cap still holds, and is spent on the current task\'s own memory first', () => {
+  withTempMemoryStoreDir(() => {
+    for (let i = 0; i < MAX_RELEVANT_MEMORY_RECORDS + 5; i += 1) {
+      saveForCapability('biz-a', `mem-other-${i}`, 'listing_content', `Other-task finding ${i}.`);
+    }
+    saveForCapability('biz-a', 'mem-mine', 'product_seo', 'The current task\'s only finding.');
+
+    const context = getRelevantMemoryContext('biz-a', { capabilityId: 'product_seo' });
+    assert.strictEqual(context.relevant_memory.length, MAX_RELEVANT_MEMORY_RECORDS);
+    assert.strictEqual(context.relevant_memory[0].capability_id, 'product_seo');
+  });
+});
+
+test('an unverified record is still never returned, task-scoped or not', () => {
+  withTempMemoryStoreDir(() => {
+    saveForCapability('biz-a', 'mem-good', 'product_seo', 'A verified finding.');
+    // Written straight to disk, bypassing saveMemoryRecord's verified/approved gate -
+    // the read side must refuse it either way.
+    const forged = createMemoryRecord({
+      id: 'mem-forged',
+      businessId: 'biz-a',
+      priorityId: 'reusable_findings',
+      summary: 'An unverified guess someone wrote to disk by hand.',
+      source: { run_id: 'r', tool_id: 't', capability_id: 'product_seo' },
+      verificationStatus: 'passed',
+    });
+    forged.verification_status = 'unverified';
+    fs.writeFileSync(
+      path.join(process.env.MEMORY_STORE_DIR, 'biz-a', 'records', 'mem-forged.json'),
+      JSON.stringify(forged),
+      'utf8'
+    );
+
+    const context = getRelevantMemoryContext('biz-a', { capabilityId: 'product_seo' });
+    assert.strictEqual(context.relevant_memory.length, 1);
+    assert.strictEqual(context.relevant_memory[0].summary, 'A verified finding.');
   });
 });
 
