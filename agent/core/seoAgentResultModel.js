@@ -47,6 +47,11 @@ const SEO_CAPABILITIES = [
   // above, it is tool-executed rather than composed by agent/core/seoAgent.js - its
   // output is an agent/core/contentBriefModel.js result, not this envelope.
   'seo_content_generation',
+  // Audits an already-built listingOptimizationModel.js record across 8 SEO quality
+  // dimensions (agent/core/seoQualityChecker.js) - it does not build one, so it is
+  // tool-executed like market_question_discovery/seo_content_generation above, and its
+  // output is an agent/core/seoQualityCheckModel.js record, not this envelope.
+  'seo_quality_check',
 ];
 
 const SEO_AGENT_RESULT_FIELDS = [

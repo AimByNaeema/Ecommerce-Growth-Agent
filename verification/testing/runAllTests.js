@@ -117,6 +117,9 @@ const TEST_FILES = [
   'seoAnalysisTool.test.js',
   'seoQualityCheckModel.test.js',
   'seoQualityChecker.test.js',
+  // The wiring that makes seoQualityChecker.js reachable through Chief dispatch (the
+  // checker's own dimension logic stays covered by the file above).
+  'seoQualityCheckCapability.test.js',
   'listingContentModel.test.js',
   'marketplaceListingFormatModel.test.js',
   'listingAgentResultModel.test.js',
@@ -124,6 +127,9 @@ const TEST_FILES = [
   'listingContentTool.test.js',
   'listingQualityCheckModel.test.js',
   'listingQualityChecker.test.js',
+  // The wiring that makes listingQualityChecker.js reachable through Chief dispatch
+  // (the checker's own dimension logic stays covered by the file above).
+  'listingQualityCheckCapability.test.js',
   'marketingAgentResultModel.test.js',
   'campaignPlanModel.test.js',
   'marketingAgent.test.js',

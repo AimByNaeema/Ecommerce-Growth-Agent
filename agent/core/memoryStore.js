@@ -150,11 +150,21 @@ function listMemoryRecords(businessId, { priorityId = null, capabilityId = null,
     return [];
   }
 
+  // Each entry also carries the file's own mtimeMs - never persisted, read fresh here
+  // only as a sort tie-breaker (see below). created_at is an ISO string with
+  // millisecond resolution, so two records saved within the same millisecond (a real
+  // occurrence: this project's own tests save several records back-to-back) would
+  // otherwise tie under created_at alone, and a tie falls back to fs.readdirSync's
+  // filesystem-dependent order - not actual save order - which silently breaks the
+  // "newest first" contract this function documents above.
   const records = [];
   for (const fileName of fileNames) {
     let record;
+    let mtimeMs = 0;
     try {
-      record = JSON.parse(fs.readFileSync(path.join(dir, fileName), 'utf8'));
+      const filePath = path.join(dir, fileName);
+      record = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      mtimeMs = fs.statSync(filePath).mtimeMs;
     } catch (err) {
       continue;
     }
@@ -164,11 +174,16 @@ function listMemoryRecords(businessId, { priorityId = null, capabilityId = null,
     // has no task to match, so it is excluded from a task-scoped list rather than
     // guessed into one.
     if (capabilityId && !(record.source && record.source.capability_id === capabilityId)) continue;
-    records.push(record);
+    records.push({ record, mtimeMs });
   }
 
-  records.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
-  return records.slice(0, Math.max(0, limit));
+  // Newest first by created_at; a created_at tie breaks by the file's own mtimeMs
+  // (higher-resolution and reflects actual write order), never left to readdir order.
+  records.sort((a, b) => {
+    const byCreatedAt = new Date(b.record.created_at || 0).getTime() - new Date(a.record.created_at || 0).getTime();
+    return byCreatedAt !== 0 ? byCreatedAt : b.mtimeMs - a.mtimeMs;
+  });
+  return records.slice(0, Math.max(0, limit)).map((entry) => entry.record);
 }
 
 // Removes one business's one record, if it exists. Returns true when a file was

@@ -105,7 +105,13 @@ const { QUESTION_EVIDENCE_FIELDS } = require('./questionEvidenceModel');
 // seo_content_generation likewise composes no seoAgent.js result - its output is the
 // content brief plus draft.
 const { CONTENT_GENERATION_RESULT_FIELDS } = require('./contentBriefModel');
+// seo_quality_check likewise composes no seoAgent.js result - it audits an
+// already-built listingOptimizationModel.js record rather than building one.
+const { SEO_QUALITY_CHECK_FIELDS } = require('./seoQualityCheckModel');
 const { LISTING_CAPABILITIES, LISTING_AGENT_RESULT_FIELDS } = require('./listingAgentResultModel');
+// listing_quality_check composes no listingAgent.js result either - it audits an
+// already-built listingContentModel.js record rather than building one.
+const { LISTING_QUALITY_CHECK_FIELDS } = require('./listingQualityCheckModel');
 const { MARKETING_CAPABILITIES, MARKETING_AGENT_RESULT_FIELDS } = require('./marketingAgentResultModel');
 // offer_recommendation is the one Marketing capability that composes no marketingAgent.js
 // envelope - its output is this record instead (same shape of exception as SEO's
@@ -876,6 +882,17 @@ const SEO_TASKS = [
     model: 'agent/core/contentBriefModel.js',
     fields: fieldIds(CONTENT_GENERATION_RESULT_FIELDS),
   }),
+  buildTask({
+    id: 'seo_quality_check',
+    title: 'SEO quality check',
+    description:
+      "Audit one already-built listing optimization record (an agent/core/listingOptimizationModel.js record, e.g. from product_seo/collection_seo/content_seo/on_page_seo) across 8 SEO quality dimensions - keyword usage, meta completeness, heading structure, readability, duplicate content risk, thin content, over-optimization, internal linking opportunities - via agent/core/seoQualityChecker.js's checkSeoQuality(). Tool-executed rather than seoAgent.js-composed, like market_question_discovery/seo_content_generation above: its output is an agent/core/seoQualityCheckModel.js result, not this specialist's shared envelope. It audits what the caller supplied - it never rewrites content or invents a missing dimension's evidence.",
+    toolIds: ['seo_quality_check'],
+    required: ['listingRecord'],
+    optional: ['keywordRecords', 'factualAttributes', 'researchDate'],
+    model: 'agent/core/seoQualityCheckModel.js',
+    fields: fieldIds(SEO_QUALITY_CHECK_FIELDS),
+  }),
 ];
 
 // ---------------------------------------------------------------------------------
@@ -921,6 +938,17 @@ const LISTING_TASKS = [
     optional: ['sourceListing', 'constraints', 'evidence'],
     model: 'agent/core/listingAgentResultModel.js',
     fields: fieldIds(LISTING_AGENT_RESULT_FIELDS),
+  }),
+  buildTask({
+    id: 'listing_quality_check',
+    title: 'Listing quality check',
+    description:
+      "Audit one already-built listing content record (an agent/core/listingContentModel.js record from listing_content) across 8 quality dimensions - completeness, clarity, accuracy, conversion quality, SEO compatibility, customer objection coverage, missing information, unsupported claims - via agent/core/listingQualityChecker.js's checkListingQuality(). Tool-executed rather than listingAgent.js-composed: its output is an agent/core/listingQualityCheckModel.js result, not this specialist's shared envelope. It audits what the caller supplied - it never rewrites content or invents evidence for a claim the caller did not back.",
+    toolIds: ['listing_quality_check'],
+    required: ['listingRecord'],
+    optional: ['keywordRecords', 'factualAttributes', 'customerObjections', 'researchDate'],
+    model: 'agent/core/listingQualityCheckModel.js',
+    fields: fieldIds(LISTING_QUALITY_CHECK_FIELDS),
   }),
 ];
 

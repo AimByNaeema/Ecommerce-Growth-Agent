@@ -8,12 +8,13 @@
 //
 // Standalone deliverable, not wired into tools/toolRegistry.js or
 // agent/core/orchestratorExecutionContract.js - the same deliberate scope choice
-// agent/core/growthOpportunityEngine.js, agent/core/offerRecommendationEngine.js,
-// agent/core/seoQualityChecker.js, agent/core/conversionOptimizationChecker.js, and
-// agent/core/salesGrowthPlanner.js already made. This engine does not call into any
-// specialist agent, fetch a live page, or make an AI/API call itself - whoever calls it
-// (a workflow, the orchestrator, or a human) is responsible for supplying real
-// hypothesis/control/variant/result/decision facts.
+// agent/core/growthOpportunityEngine.js, agent/core/conversionOptimizationChecker.js,
+// and agent/core/salesGrowthPlanner.js already made (agent/core/offerRecommendationEngine.js
+// and agent/core/seoQualityChecker.js were once standalone on this same footing too,
+// but have since been wired as Chief-dispatchable tools - see their own headers). This
+// engine does not call into any specialist agent, fetch a live page, or make an AI/API
+// call itself - whoever calls it (a workflow, the orchestrator, or a human) is
+// responsible for supplying real hypothesis/control/variant/result/decision facts.
 //
 // WHAT THIS MODULE INVENTS VS. RELAYS (the same deterministic, evidence-only
 // philosophy as every other engine in this project):

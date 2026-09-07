@@ -17,7 +17,20 @@
 
 const { CONFIDENCE_LEVELS, RESEARCH_VERIFICATION_STATUSES } = require('./researchRecordModel');
 
-const LISTING_CAPABILITIES = ['listing_content', 'marketplace_format'];
+const LISTING_CAPABILITIES = [
+  'listing_content',
+  'marketplace_format',
+  // Audits an already-built listing_content record across 8 quality dimensions
+  // (agent/core/listingQualityChecker.js). Listed here because it is a real capability
+  // of the Listing specialist - agent/core/specialistCapabilityRegistry.js's Listing
+  // task list is kept exactly in step with this enum - but note it is the one Listing
+  // capability agent/core/listingAgent.js does NOT run: it audits existing content, it
+  // does not compose it, so its output is an agent/core/listingQualityCheckModel.js
+  // record rather than this envelope. Tool-executed via tools/listingQualityCheckTool.js,
+  // the same treatment SEO's market_question_discovery/seo_content_generation and
+  // Marketing's offer_recommendation already get.
+  'listing_quality_check',
+];
 
 const LISTING_AGENT_RESULT_FIELDS = [
   {

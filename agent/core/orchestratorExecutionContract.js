@@ -121,6 +121,8 @@ const analyticsDataTool = require('../../tools/analyticsDataTool');
 const productDataRetrievalTool = require('../../tools/productDataRetrievalTool');
 const productResearchTool = require('../../tools/productResearchTool');
 const collectionDataRetrievalTool = require('../../tools/collectionDataRetrievalTool');
+const seoQualityCheckTool = require('../../tools/seoQualityCheckTool');
+const listingQualityCheckTool = require('../../tools/listingQualityCheckTool');
 
 // Tool ids this orchestrator knows how to actually call. Each entry maps a
 // TOOL_REGISTRY id to the real function that performs the work - the only sanctioned
@@ -263,6 +265,15 @@ const TOOL_EXECUTORS = {
   // research_analysis and analytics above.
   product_research: (executionRequest) =>
     productResearchTool.runProductResearchTool(executionRequest.research_params),
+  // No businessId spread: like offer_recommendation above, these tools reach no
+  // external system - they only audit what the caller already supplied. Neither needs
+  // a TOOL_CAPABILITY_SELECTORS entry either, for the same reason: each serves exactly
+  // one capability (seo_quality_check / listing_quality_check), so there is no mode
+  // for the orchestrator to select.
+  seo_quality_check: (executionRequest) =>
+    seoQualityCheckTool.runSeoQualityCheckTool(executionRequest.research_params),
+  listing_quality_check: (executionRequest) =>
+    listingQualityCheckTool.runListingQualityCheckTool(executionRequest.research_params),
 };
 
 const STOPWORDS = new Set([

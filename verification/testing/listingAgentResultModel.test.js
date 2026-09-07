@@ -23,8 +23,8 @@ function test(name, fn) {
   }
 }
 
-test('LISTING_CAPABILITIES lists exactly the 2 supported capabilities', () => {
-  assert.deepStrictEqual(LISTING_CAPABILITIES, ['listing_content', 'marketplace_format']);
+test('LISTING_CAPABILITIES lists exactly the 3 supported capabilities', () => {
+  assert.deepStrictEqual(LISTING_CAPABILITIES, ['listing_content', 'marketplace_format', 'listing_quality_check']);
 });
 
 test('every field has a non-empty title and description', () => {

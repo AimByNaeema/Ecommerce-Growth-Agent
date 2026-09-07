@@ -137,6 +137,18 @@ const TOOL_CLASSIFICATIONS = {
   // approval_required would mean requiring approval in order to decide whether something
   // may go to approval.
   compliance_check: 'analysis_only',
+  // Reads one caller-supplied listingOptimizationModel.js record and returns a
+  // dimension-by-dimension quality verdict - no external call, no model call, nothing
+  // published, sent, or changed. Same footing as compliance_check above, which is
+  // likewise a pure read-and-verdict tool.
+  seo_quality_check: 'analysis_only',
+  // Reads one caller-supplied listingContentModel.js record and returns a
+  // dimension-by-dimension quality verdict - no external call, no model call, nothing
+  // published, sent, or changed. 'write' operation only because Listing's role
+  // (SPECIALIST_ROLE_PERMISSIONS.listing) covers no read tools, exactly the same
+  // reasoning offer_recommendation documents above for Marketing's identical
+  // write-only role - the classification itself is unaffected by that operation type.
+  listing_quality_check: 'analysis_only',
 };
 
 // Which tools/toolRegistry.js `operation` types ('read'/'write'/'execute') each of

@@ -12,13 +12,11 @@
 // philosophy as agent/core/productOpportunityScoringEngine.js and
 // agent/core/listingQualityChecker.js.
 //
-// Standalone deliverable, not yet wired into tools/toolRegistry.js or
-// agent/core/orchestratorExecutionContract.js - the same deliberate scope choice
-// agent/core/productOpportunityScoringEngine.js, agent/core/productRecommendationEngine.js,
-// agent/core/seoQualityChecker.js, and agent/core/listingQualityChecker.js already made
-// (a recommendation/scoring engine that composes existing structured input, directly
-// callable, not part of a 7-capability dispatcher). A future, explicitly-scoped prompt
-// can wire it in if wanted.
+// Wired into Chief dispatch as the offer_recommendation tool (tools/toolRegistry.js,
+// tools/offerRecommendationTool.js) - the same treatment SEO's
+// agent/core/seoQualityChecker.js and Listing's agent/core/listingQualityChecker.js
+// later got. This module still owns all the recommendation logic; the tool only
+// relays this function's own honest result.
 //
 // "Do not create unsupported guarantees or claims" is enforced structurally, not just
 // documented: every value proposition and objection response is scanned for

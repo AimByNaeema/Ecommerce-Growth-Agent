@@ -369,6 +369,24 @@ const TOOL_REGISTRY = [
     operation: 'read',
     status: 'implemented',
   },
+  {
+    id: 'seo_quality_check',
+    title: 'SEO quality check',
+    description:
+      "Audit one already-built listing optimization record across its SEO quality dimensions - keyword usage, meta completeness, heading structure, readability, duplicate content risk, thin content, over-optimization, internal linking opportunities - via agent/core/seoQualityChecker.js's checkSeoQuality(), composing an agent/core/seoQualityCheckModel.js record. Relays only what the caller supplied, reports each dimension it had nothing to work with honestly, never rewrites content. See tools/seoQualityCheckTool.js.",
+    category: 'seo',
+    operation: 'read',
+    status: 'implemented',
+  },
+  {
+    id: 'listing_quality_check',
+    title: 'Listing quality check',
+    description:
+      "Audit one already-built listing content record across its quality dimensions - completeness, clarity, accuracy, conversion quality, SEO compatibility, customer objection coverage, missing information, unsupported claims - via agent/core/listingQualityChecker.js's checkListingQuality(), composing an agent/core/listingQualityCheckModel.js record. Relays only what the caller supplied, flags absolute claims that no supplied evidence backs, never rewrites content. See tools/listingQualityCheckTool.js.",
+    category: 'listing',
+    operation: 'write',
+    status: 'implemented',
+  },
 ];
 
 function getToolRegistry() {

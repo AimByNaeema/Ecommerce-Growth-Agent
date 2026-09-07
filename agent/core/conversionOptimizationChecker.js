@@ -21,12 +21,15 @@
 //
 // Standalone deliverable, not wired into tools/toolRegistry.js or
 // agent/core/orchestratorExecutionContract.js - the same deliberate scope choice
-// agent/core/seoQualityChecker.js, agent/core/listingQualityChecker.js,
-// agent/core/growthOpportunityEngine.js, agent/core/offerRecommendationEngine.js, and
-// agent/core/productOpportunityScoringEngine.js already made (a checker that evaluates
-// caller-supplied structured evidence, directly callable, not part of the
-// 7-capability dispatcher). A future, explicitly-scoped prompt can wire it in if
-// wanted.
+// agent/core/growthOpportunityEngine.js and agent/core/productOpportunityScoringEngine.js
+// already made (agent/core/seoQualityChecker.js, agent/core/listingQualityChecker.js,
+// and agent/core/offerRecommendationEngine.js were once standalone on this same
+// footing too, but have since been wired as Chief-dispatchable tools - see their own
+// headers). This checker's own evidence shape (store-wide CRO signals: checkout
+// friction, trust signals, mobile experience) does not map to any one specialist's
+// existing capability enum the way those three did, so it remains callable directly
+// by a workflow, the orchestrator, or a human. A future, explicitly-scoped prompt can
+// wire it in if wanted.
 //
 // "Do not automatically modify production pages": this module has no write/execute/
 // publish code path anywhere - it only reads caller-supplied evidence and composes a

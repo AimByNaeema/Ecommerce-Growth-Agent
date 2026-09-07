@@ -12,12 +12,11 @@
 // target keywords were supplied), that is reported honestly as 'empty', with a finding
 // explaining why, not silently skipped or guessed.
 //
-// Standalone deliverable, not yet wired into tools/toolRegistry.js or
-// agent/core/orchestratorExecutionContract.js - the same deliberate scope choice
-// agent/core/seoQualityChecker.js and agent/core/productOpportunityScoringEngine.js
-// already made (a scoring engine that evaluates existing structured output, directly
-// callable, not part of the 7-capability dispatcher). A future, explicitly-scoped
-// prompt can wire it in if wanted.
+// Wired into Chief dispatch as the listing_quality_check tool (tools/toolRegistry.js,
+// tools/listingQualityCheckTool.js) - the same treatment SEO's
+// market_question_discovery/seo_content_generation and Marketing's
+// offer_recommendation already got. This module still owns all the check logic; the
+// tool only relays this function's own honest result.
 //
 // Reuses, never duplicates: takes an already-built, already-validated
 // agent/core/listingContentModel.js record as input, plus 3 optional auxiliary inputs

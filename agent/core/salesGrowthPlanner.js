@@ -7,11 +7,15 @@
 //
 // Standalone deliverable, not wired into tools/toolRegistry.js or
 // agent/core/orchestratorExecutionContract.js - the same deliberate scope choice
-// agent/core/growthOpportunityEngine.js, agent/core/offerRecommendationEngine.js, and
-// agent/core/seoQualityChecker.js already made. It does not call into any specialist
-// agent, fetch a live page, or make an AI/API call itself - whoever calls this planner
-// (a workflow, the orchestrator, or a human) is responsible for gathering each
-// domain's evidence from the relevant specialist first.
+// agent/core/growthOpportunityEngine.js already made (agent/core/offerRecommendationEngine.js
+// and agent/core/seoQualityChecker.js were once standalone on this same footing too,
+// but have since been wired as Chief-dispatchable tools - see their own headers; this
+// planner has not, because it composes a cross-domain report from evidence already
+// gathered by other capabilities rather than auditing one caller-supplied record).
+// It does not call into any specialist agent, fetch a live page, or make an AI/API
+// call itself - whoever calls this planner (a workflow, the orchestrator, or a human)
+// is responsible for gathering each domain's evidence from the relevant specialist
+// first.
 //
 // WHAT THIS MODULE INVENTS VS. RELAYS (the same deterministic, evidence-only
 // philosophy as every other engine in this project):

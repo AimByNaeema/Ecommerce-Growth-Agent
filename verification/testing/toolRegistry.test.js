@@ -44,6 +44,8 @@ const EXPECTED_ORDER = [
   'discover_market_questions',
   'seo_content_generation',
   'compliance_check',
+  'seo_quality_check',
+  'listing_quality_check',
 ];
 
 const IMPLEMENTED_IDS = [
@@ -80,6 +82,11 @@ const IMPLEMENTED_IDS = [
   'discover_market_questions',
   'seo_content_generation',
   'compliance_check',
+  // Wrap agent/core/seoQualityChecker.js and agent/core/listingQualityChecker.js, the
+  // two remaining implemented SEO/Listing engines that had no route into normal Chief
+  // dispatch - the same gap tools/offerRecommendationTool.js closed for Marketing.
+  'seo_quality_check',
+  'listing_quality_check',
 ];
 
 let passed = 0;
@@ -97,7 +104,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 31 required tools, in the requested order', () => {
+test('the registry has exactly the 33 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER
@@ -140,6 +147,11 @@ test('getToolsByOperation() filters correctly', () => {
       'ai_reasoning_completion',
       'content_calendar_generation',
       'listing_content_generation',
+      // Audits an already-built listing content record - registered 'write' because
+      // agent/core/toolPermissions.js's SPECIALIST_ROLE_PERMISSIONS scopes Listing to
+      // ['write'] only, the same precedent offer_recommendation set for Marketing's
+      // identical write-only role (see tools/listingQualityCheckTool.js).
+      'listing_quality_check',
       'marketing_analysis',
       // Composes an offer recommendation record for a human to act on - applies,
       // publishes and purchases nothing (see tools/offerRecommendationTool.js).
@@ -176,7 +188,13 @@ test('getToolById() finds a known tool and returns undefined for an unknown one'
 
 test('getToolsByCategory() filters correctly', () => {
   const seoTools = getToolsByCategory('seo');
-  assert.deepStrictEqual(seoTools.map((tool) => tool.id), ['keyword_research', 'seo_analysis', 'discover_market_questions', 'seo_content_generation']);
+  assert.deepStrictEqual(seoTools.map((tool) => tool.id), [
+    'keyword_research',
+    'seo_analysis',
+    'discover_market_questions',
+    'seo_content_generation',
+    'seo_quality_check',
+  ]);
 });
 
 test('getToolsByStatus() returns the correct counts for each status', () => {

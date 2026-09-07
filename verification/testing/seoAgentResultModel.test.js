@@ -23,7 +23,7 @@ function test(name, fn) {
   }
 }
 
-test('SEO_CAPABILITIES lists exactly the 10 supported capabilities', () => {
+test('SEO_CAPABILITIES lists exactly the 11 supported capabilities', () => {
   assert.deepStrictEqual(SEO_CAPABILITIES, [
     'keyword_research',
     'search_intent_analysis',
@@ -35,6 +35,7 @@ test('SEO_CAPABILITIES lists exactly the 10 supported capabilities', () => {
     'information_gap_analysis',
     'market_question_discovery',
     'seo_content_generation',
+    'seo_quality_check',
   ]);
 });
 
