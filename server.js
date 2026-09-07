@@ -40,12 +40,16 @@ const { summarizeExecutionState } = require('./agent/core/resultSummary');
 const { decideApprovalRequest, getApprovalRequestById } = require('./approvals/approvalWorkflow');
 // The persisted counterpart to orchestratorRuns below - see
 // agent/core/runHistoryStore.js's own header for why this exists and its scope. Every
-// /run and /orchestrate result is saved here as soon as it's produced, and
-// /orchestrate/approve re-saves under the same run_id after a human decision is
-// resolved, so a result survives a page refresh or a server restart - unlike
-// orchestratorRuns (still in-memory only, since a pending APPROVAL DECISION itself
-// requires the live approvals/approvalWorkflow.js request object, not just its saved
-// JSON shape - see that Map's own comment above for why that part stays unpersisted).
+// /run, /orchestrate, /growth-workflow and /optimization-cycle result is saved here as
+// soon as it's produced, and every continuation endpoint (/orchestrate/approve,
+// /growth-workflow/approve, /optimization-cycle/approve|measure|next) re-saves under the
+// same run_id once a human decision or measurement is resolved, so a run's RECORD - its
+// audit trail, usage ledger and approval outcomes - survives a page refresh or a server
+// restart. What is deliberately NOT saved is the ability to CONTINUE a paused run: both
+// orchestratorRuns and the two workflow Maps stay in-memory only, because resuming needs
+// the live approvals/approvalWorkflow.js request object and the live, non-serializable
+// trackers, not their saved JSON shape - see those Maps' and saveWorkflowRunRecord's own
+// comments below.
 const runHistoryStore = require('./agent/core/runHistoryStore');
 // The HTTP boundary's authentication + rate limiting (CLAUDE.md section 3's
 // "Security"). Every endpoint below that can reach real store data, call an external
@@ -165,6 +169,76 @@ function withoutResumeState(result) {
   if (!isPlainObject(result)) return result;
   const { _resumeState, ...publicResult } = result;
   return publicResult;
+}
+
+// Maps a growth-workflow / optimization-cycle status onto the same three-way run-history
+// vocabulary /run and /orchestrate already use ('success' | 'error' | 'partial'), by the
+// identical rule: finished -> success, a real halt -> error, still-in-progress -> partial.
+// 'stopped' is a genuine halt (a budget, tool-call or iteration ceiling was hit - the
+// orchestrator's own stop_reason says which), not "not done yet", so it maps to 'error'
+// exactly the way /run maps completion_state 'failed'.
+function deriveWorkflowHistoryStatus(result) {
+  if (!isPlainObject(result)) return 'partial';
+  if (result.status === 'completed') return 'success';
+  if (result.status === 'stopped') return 'error';
+  return 'partial';
+}
+
+// One short, honest sentence for a saved run-history list row, composed only from what
+// the orchestrator itself reported - never a fabricated narrative. Mirrors
+// buildOrchestrateHistorySummary's discipline above.
+function buildWorkflowHistorySummary(result) {
+  if (!isPlainObject(result)) return 'This run produced no result.';
+  const parts = [`Status: ${result.status || 'unknown'}.`];
+  if (result.stop_reason) parts.push(`Stop reason: ${result.stop_reason}.`);
+  if (Array.isArray(result.stages)) parts.push(`${result.stages.length} stage(s) recorded.`);
+  if (Array.isArray(result.iterations)) parts.push(`${result.iterations.length} iteration(s) recorded.`);
+  if (Array.isArray(result.audit_trail)) parts.push(`${result.audit_trail.length} audit event(s).`);
+  return parts.join(' ');
+}
+
+// Persists one growth-workflow / optimization-cycle run so its audit trail, usage ledger
+// and approval outcomes survive a server restart - the durability CLAUDE.md section 3's
+// Audit requirement ("traceable after the fact") already assumes, and which /run and
+// /orchestrate have had since agent/core/runHistoryStore.js was built. These two surfaces
+// were simply never connected to it, so their trail lived only in this process.
+//
+// WHAT IS DELIBERATELY NOT PERSISTED: withoutResumeState() is applied first, so
+// `_resumeState` never reaches disk. That is not an oversight - it is the same rule that
+// keeps it out of an HTTP response (see withoutResumeState's own comment): it carries a
+// non-serializable tool-result cache (a Map, which JSON.stringify silently guts) and the
+// live token/usage/approval trackers that make this run's cost controls real. A saved
+// copy would be a resumable-LOOKING record that is neither resumable nor safe to trust,
+// so the in-memory Maps below remain the only place a run is resumed from, and an
+// expired/restarted run still gets requireRunState's honest "Unrecognized or expired run
+// id" rather than a silently degraded resume. What is saved is the RECORD of what
+// happened, not the ability to continue it.
+//
+// A save failure is logged and swallowed, never allowed to fail the real response the
+// user is waiting on - identical to /run and /orchestrate's own save call sites.
+function saveWorkflowRunRecord({ runId, kind, businessId, result }) {
+  if (typeof runId !== 'string' || !runId.trim()) return;
+  try {
+    // A continuation (approve/measure/next) re-saves under the SAME run_id, so the record
+    // always reflects the run's latest known state rather than a stale first snapshot -
+    // the overwrite-by-run_id behavior /orchestrate/approve already relies on. The
+    // original business_id and created_at are read back from that first record, because
+    // the continuation request bodies carry only a run id.
+    const existing = runHistoryStore.getRunRecordById(runId);
+    const now = new Date().toISOString();
+    runHistoryStore.saveRunRecord({
+      run_id: runId,
+      kind,
+      business_id: businessId || (existing && existing.business_id) || null,
+      status: deriveWorkflowHistoryStatus(result),
+      summary: buildWorkflowHistorySummary(result),
+      created_at: (existing && existing.created_at) || now,
+      updated_at: now,
+      result: withoutResumeState(result),
+    });
+  } catch (saveErr) {
+    console.error(`Could not save run history for ${kind}:`, saveErr.message);
+  }
 }
 
 // Stores a paused run's resume state under its own run id, or forgets the run entirely
@@ -313,8 +387,14 @@ function createApp() {
   // the earlier stages already spent from, and a caller cannot reset either by editing a
   // request body (see withoutResumeState's own comment). Entries are deleted as soon as a
   // run reaches a terminal status. In memory only, per process, lost on restart - the
-  // identical, deliberate stance orchestratorRuns documents above; choosing a persistence
-  // engine remains an unscoped decision (CLAUDE.md rule 15).
+  // identical, deliberate stance orchestratorRuns documents above, and NOT for want of a
+  // persistence engine: agent/core/runHistoryStore.js exists and every one of these runs
+  // is now saved to it (see saveWorkflowRunRecord). What is not persisted is precisely
+  // this resume state, because a JSON copy of it would be neither resumable (its
+  // tool-result cache is a Map that JSON.stringify guts) nor safe to trust (its trackers
+  // ARE this run's cost controls). The record of what happened is durable; the ability to
+  // continue it stays bound to this process, and an expired run gets requireRunState's
+  // honest error rather than a silently degraded resume.
   const growthWorkflowRuns = new Map();
   const optimizationCycleRuns = new Map();
 
@@ -692,6 +772,12 @@ function createApp() {
     try {
       const result = await growthWorkflowOrchestrator.runGrowthWorkflow(businessId || null, stageInputs);
       retainRunState(growthWorkflowRuns, result && result.run_id, result);
+      saveWorkflowRunRecord({
+        runId: result && result.run_id,
+        kind: 'growth_workflow',
+        businessId: businessId || null,
+        result,
+      });
       res.json(withoutResumeState(result));
     } catch (err) {
       console.error('POST /growth-workflow failed:', err.message);
@@ -735,6 +821,7 @@ function createApp() {
         runLookup.state
       );
       retainRunState(growthWorkflowRuns, runId, result);
+      saveWorkflowRunRecord({ runId, kind: 'growth_workflow', businessId: null, result });
       res.json(withoutResumeState(result));
     } catch (err) {
       console.error('POST /growth-workflow/approve failed:', err.message);
@@ -787,6 +874,12 @@ function createApp() {
         actionParams,
       });
       retainRunState(optimizationCycleRuns, result && result.run_id, result);
+      saveWorkflowRunRecord({
+        runId: result && result.run_id,
+        kind: 'optimization_cycle',
+        businessId: businessId || null,
+        result,
+      });
       res.json(withoutResumeState(result));
     } catch (err) {
       console.error('POST /optimization-cycle failed:', err.message);
@@ -823,6 +916,7 @@ function createApp() {
         runLookup.state
       );
       retainRunState(optimizationCycleRuns, runId, result);
+      saveWorkflowRunRecord({ runId, kind: 'optimization_cycle', businessId: null, result });
       res.json(withoutResumeState(result));
     } catch (err) {
       console.error('POST /optimization-cycle/approve failed:', err.message);
@@ -850,6 +944,7 @@ function createApp() {
         lesson,
       });
       retainRunState(optimizationCycleRuns, runId, result);
+      saveWorkflowRunRecord({ runId, kind: 'optimization_cycle', businessId: null, result });
       res.json(withoutResumeState(result));
     } catch (err) {
       console.error('POST /optimization-cycle/measure failed:', err.message);
@@ -889,6 +984,7 @@ function createApp() {
         actionParams,
       });
       retainRunState(optimizationCycleRuns, runId, result);
+      saveWorkflowRunRecord({ runId, kind: 'optimization_cycle', businessId: null, result });
       res.json(withoutResumeState(result));
     } catch (err) {
       console.error('POST /optimization-cycle/next failed:', err.message);
@@ -901,8 +997,18 @@ function createApp() {
   // restart (public/index.html's History page). Never executes anything; a bad/unknown
   // id is an honest 404, never a fabricated result.
   app.get('/history', protect, (req, res) => {
+    // Optional business scoping: /growth-workflow and /optimization-cycle both accept a
+    // business_id, so their saved records carry one, and a caller working on one business
+    // must be able to list only that business's runs rather than every business's. Omitted
+    // -> the full listing, exactly as before. Unattributed /run and /orchestrate records
+    // are never returned for a business-scoped request (see listRunRecordSummaries).
+    const businessId = req.query && typeof req.query.business_id === 'string' ? req.query.business_id : null;
+    if (req.query && req.query.business_id !== undefined && typeof req.query.business_id !== 'string') {
+      res.status(400).json({ error: 'If provided, "business_id" must be a string.' });
+      return;
+    }
     try {
-      res.json({ runs: runHistoryStore.listRunRecordSummaries({ limit: 50 }) });
+      res.json({ runs: runHistoryStore.listRunRecordSummaries({ limit: 50, businessId }) });
     } catch (err) {
       res.status(502).json({ error: 'Could not read saved run history right now. Please try again shortly.' });
     }

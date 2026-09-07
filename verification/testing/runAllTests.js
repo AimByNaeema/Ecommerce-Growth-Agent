@@ -174,6 +174,9 @@ const TEST_FILES = [
   'server.test.js',
   'orchestratorEndpoints.test.js',
   'workflowOrchestratorEndpoints.test.js',
+  // What survives a server restart for those same two surfaces (and what deliberately
+  // does not) - see agent/core/runHistoryStore.js and server.js's saveWorkflowRunRecord.
+  'workflowRunHistoryPersistence.test.js',
   'serverResearchParams.test.js',
   'resultSummary.test.js',
   'webCompetitorResearchTool.test.js',

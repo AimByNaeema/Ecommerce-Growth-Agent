@@ -203,6 +203,32 @@ test('listRunRecordSummaries respects the limit option', () => {
   });
 });
 
+// BUSINESS ISOLATION over the same flat store - see listRunRecordSummaries' own comment.
+test('listRunRecordSummaries scopes to one business, and never leaks another business\'s or an unattributed run into that scope', () => {
+  withTempStoreDir((storeDir) => {
+    saveRunRecord({ run_id: 'gw-a', kind: 'growth_workflow', business_id: 'business-a', created_at: '2026-01-01T00:00:00.000Z' }, { storeDir });
+    saveRunRecord({ run_id: 'gw-b', kind: 'growth_workflow', business_id: 'business-b', created_at: '2026-01-02T00:00:00.000Z' }, { storeDir });
+    // No business_id at all - what every /run and /orchestrate record looks like.
+    saveRunRecord({ run_id: 'plain', kind: 'run', created_at: '2026-01-03T00:00:00.000Z' }, { storeDir });
+
+    const scopedToA = listRunRecordSummaries({ storeDir, businessId: 'business-a' });
+    assert.deepStrictEqual(scopedToA.map((s) => s.run_id), ['gw-a']);
+    assert.strictEqual(scopedToA[0].business_id, 'business-a');
+
+    assert.deepStrictEqual(
+      listRunRecordSummaries({ storeDir, businessId: 'business-b' }).map((s) => s.run_id),
+      ['gw-b']
+    );
+    assert.deepStrictEqual(listRunRecordSummaries({ storeDir, businessId: 'business-c' }), []);
+
+    // Unscoped listing is unchanged for every existing caller, and an unattributed
+    // record reports business_id: null rather than being hidden or invented.
+    const all = listRunRecordSummaries({ storeDir });
+    assert.strictEqual(all.length, 3);
+    assert.strictEqual(all.find((s) => s.run_id === 'plain').business_id, null);
+  });
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
   process.exit(1);

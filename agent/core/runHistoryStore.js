@@ -103,7 +103,16 @@ function getRunRecordById(runId, { storeDir = getDefaultStoreDir() } = {}) {
 // yet" case in this codebase (e.g. agent/core/resultSummary.js's "empty" status).
 // One unreadable/corrupt record file is skipped, never allowed to break the whole
 // listing - see this module's own header comment on why one file per run.
-function listRunRecordSummaries({ limit = 50, storeDir = getDefaultStoreDir() } = {}) {
+//
+// BUSINESS ISOLATION: `businessId`, when supplied, restricts the listing to records
+// saved for that one business. Records with no business_id (every /run and /orchestrate
+// record - those endpoints have never accepted one) are NOT returned for such a
+// request: an unattributed run must never be shown as if it belonged to a named
+// business. Omitting the option lists everything, which is the exact behavior every
+// existing caller already had. This is a filter on an additive record field, not a
+// second store: the same flat one-file-per-run directory as before.
+function listRunRecordSummaries({ limit = 50, businessId = null, storeDir = getDefaultStoreDir() } = {}) {
+  const filterBusinessId = typeof businessId === 'string' && businessId.trim() ? businessId.trim() : null;
   let fileNames;
   try {
     fileNames = fs.readdirSync(storeDir).filter((name) => name.endsWith('.json'));
@@ -120,9 +129,12 @@ function listRunRecordSummaries({ limit = 50, storeDir = getDefaultStoreDir() } 
       continue;
     }
     if (!record || typeof record !== 'object') continue;
+    const recordBusinessId = record.business_id || null;
+    if (filterBusinessId && recordBusinessId !== filterBusinessId) continue;
     summaries.push({
       run_id: record.run_id || null,
       kind: record.kind || null,
+      business_id: recordBusinessId,
       objective: record.objective || null,
       specialist_id: record.specialist_id || null,
       specialist_name: record.specialist_name || null,
