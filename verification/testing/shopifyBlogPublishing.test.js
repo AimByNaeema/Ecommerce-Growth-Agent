@@ -286,11 +286,19 @@ async function withStubbedTransport({ scopes, articleResult = null, userErrors =
     }
   });
 
-  test('the READ adapter contract is unchanged, and Shopify is still not a publishing ADAPTER', () => {
+  test('the READ adapter contract is unchanged, and Shopify is still not a MARKETPLACE-LISTING publishing adapter', () => {
     // The one mutation added here does not make shopifyClient a marketplace-listing
-    // publishing adapter, and platformAdapterContract.js was deliberately not changed.
+    // publishing adapter. It never gained publishListing(), and the default kind of
+    // validatePublishingAdapterShape() is still that one, so this assertion is
+    // unchanged from before publishing kinds existed.
     assert.strictEqual(validateAdapterShape(shopifyClient).valid, true);
     assert.strictEqual(validatePublishingAdapterShape(shopifyClient).valid, false);
+    assert.strictEqual(validatePublishingAdapterShape(shopifyClient, { kind: 'marketplace_listing' }).valid, false);
+    // What it IS: the store-content publishing adapter, which is the kind this workflow
+    // actually performs. That kind was added to platformAdapterContract.js precisely
+    // because this - the one publisher that reaches a real store - previously satisfied
+    // no publishing contract at all. Nothing here changed to make it fit.
+    assert.strictEqual(validatePublishingAdapterShape(shopifyClient, { kind: 'store_content' }).valid, true);
   });
 
   // --- The content mapping: only approved content, nothing invented -----------------

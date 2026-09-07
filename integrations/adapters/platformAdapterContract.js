@@ -144,6 +144,24 @@ const ADAPTER_CONTRACT_RULES = [
 //
 // A publishing adapter is checked with validatePublishingAdapterShape(), never with
 // validateAdapterShape() - the two answer different questions.
+//
+// THERE IS MORE THAN ONE KIND OF PUBLISH, AND THIS CONTRACT ONLY DESCRIBED ONE.
+// The capability list below was written around a MARKETPLACE LISTING publish
+// (integrations/adapters/etsyClient.js's publishListing, whose transport is a declared,
+// honest gap). But the one publishing integration in this project that actually reaches
+// a real store today publishes STORE CONTENT, not a listing:
+// integrations/adapters/shopifyClient.js's createBlogArticle(), behind its own
+// fail-closed hasWriteContentScope() preflight, called from
+// integrations/shopifyBlogPublishing.js past a passing publish authorization.
+//
+// Checked against the list below, that working adapter reports as non-conforming
+// ("missing canPublish, missing publishListing") while the adapter with no transport
+// reports as conforming - the contract had the two exactly backwards, because a blog
+// article is not a marketplace listing and never will be. See PUBLISHING_ADAPTER_KINDS
+// below, which fixes that by naming the kind being checked. NOTHING about either
+// adapter changed: both kinds below describe capabilities that already exist and are
+// already exported today. No endpoint, field, credential or publishing behavior is
+// invented for either platform.
 const PUBLISHING_ADAPTER_CAPABILITIES = [
   {
     id: 'isConfigured',
@@ -164,6 +182,67 @@ const PUBLISHING_ADAPTER_CAPABILITIES = [
   },
 ];
 
+// Capabilities a STORE CONTENT publishing adapter must expose. Every entry is a
+// function integrations/adapters/shopifyClient.js already exports and
+// integrations/shopifyBlogPublishing.js already calls - this describes an implemented
+// boundary, it does not ask for anything new.
+//
+// As with the read contract above, a capability's `id` IS the required export name, and
+// those names were set by the adapter that implemented the capability first (the read
+// contract took getShopInfo/getProducts from Shopify the same way). hasWriteContentScope
+// is therefore the literal export required here; the generic capability it stands for is
+// "the adapter verifies its own granted write permission before any mutation leaves the
+// process, and fails closed" - the store-content counterpart to canPublish() in the
+// marketplace-listing kind above.
+const CONTENT_PUBLISHING_ADAPTER_CAPABILITIES = [
+  {
+    id: 'isConfigured',
+    description:
+      'Whether every credential this platform requires is present, per business. Never reports a value, only presence. Same capability as the marketplace-listing kind - a publish of any kind needs credentials first.',
+    normalized_shape: 'boolean',
+  },
+  {
+    id: 'hasWriteContentScope',
+    description:
+      "Whether the connected app has actually been granted the platform's content-write permission. Checked by the adapter itself, immediately before any mutation, and failing closed - so an app missing the grant reaches zero mutations rather than discovering it from a rejected write. Distinct from isConfigured() for the same reason canPublish() is: a present credential is not a granted permission.",
+    normalized_shape: 'Promise<boolean>',
+  },
+  {
+    id: 'createBlogArticle',
+    description:
+      "Publish one content article to the store's own blog, from an already-approved generated-content record. Must return the platform's own result/reference, or throw - never a fabricated article id, never a silent no-op, never a partial success reported as a success.",
+    normalized_shape: "the platform's own result object, relayed unchanged",
+  },
+];
+
+// The publish kinds this contract describes. Each one is backed by a real adapter in
+// this repository - a kind is never declared for a platform or a publishing style that
+// does not already exist here, which is what keeps this a contract over real
+// integrations rather than a wishlist.
+const PUBLISHING_ADAPTER_KINDS = [
+  {
+    id: 'marketplace_listing',
+    title: 'Marketplace listing publishing',
+    description:
+      'Publishes one formatted marketplace listing (an agent/core/marketplaceListingFormatModel.js record) to the seller\'s account on an external marketplace.',
+    capabilities: PUBLISHING_ADAPTER_CAPABILITIES,
+    implemented_by: 'integrations/adapters/etsyClient.js',
+  },
+  {
+    id: 'store_content',
+    title: 'Store content publishing',
+    description:
+      "Publishes one approved content article to the business's own store, on a platform the business already owns - not a third-party marketplace listing.",
+    capabilities: CONTENT_PUBLISHING_ADAPTER_CAPABILITIES,
+    implemented_by: 'integrations/adapters/shopifyClient.js',
+  },
+];
+
+// The kind assumed when a caller names none - the marketplace-listing kind this contract
+// originally described on its own, so every existing call site keeps its exact previous
+// behavior.
+const DEFAULT_PUBLISHING_KIND = 'marketplace_listing';
+
 const PUBLISHING_CONTRACT_RULES = [
   {
     id: 'authorization_before_mutation',
@@ -182,17 +261,32 @@ const PUBLISHING_CONTRACT_RULES = [
   },
 ];
 
-// Structural check for a PUBLISHING adapter. Same limits as validateAdapterShape(): it
-// verifies capability presence, not real return shape, which cannot be checked without a
-// live platform.
-function validatePublishingAdapterShape(adapterModule) {
+// Structural check for a PUBLISHING adapter of one kind. Same limits as
+// validateAdapterShape(): it verifies capability presence, not real return shape, which
+// cannot be checked without a live platform.
+//
+// `kind` names which publish this adapter claims to perform (see
+// PUBLISHING_ADAPTER_KINDS). Omitting it checks the marketplace-listing kind, which is
+// what this function checked before kinds existed - so every existing caller is
+// unchanged. An adapter is only ever checked against a kind it actually claims: asking
+// a store-content adapter for publishListing() is a question about the wrong contract,
+// not a defect in the adapter. An unknown kind is an error, never a silent pass.
+function validatePublishingAdapterShape(adapterModule, { kind = DEFAULT_PUBLISHING_KIND } = {}) {
   const errors = [];
+
+  const publishingKind = getPublishingKindById(kind);
+  if (!publishingKind) {
+    return {
+      valid: false,
+      errors: [`unknown publishing kind: ${kind} (must be one of: ${PUBLISHING_ADAPTER_KINDS.map((entry) => entry.id).join(', ')})`],
+    };
+  }
 
   if (typeof adapterModule !== 'object' || adapterModule === null) {
     return { valid: false, errors: ['adapter module must be an object'] };
   }
 
-  for (const capability of PUBLISHING_ADAPTER_CAPABILITIES) {
+  for (const capability of publishingKind.capabilities) {
     if (typeof adapterModule[capability.id] !== 'function') {
       errors.push(`missing required publishing capability: ${capability.id} (must be a function)`);
     }
@@ -201,8 +295,18 @@ function validatePublishingAdapterShape(adapterModule) {
   return { valid: errors.length === 0, errors };
 }
 
-function getPublishingCapabilityById(id) {
-  return PUBLISHING_ADAPTER_CAPABILITIES.find((entry) => entry.id === id);
+function getPublishingKindById(id) {
+  return PUBLISHING_ADAPTER_KINDS.find((entry) => entry.id === id);
+}
+
+// Looks a publishing capability up within one kind (the marketplace-listing kind when
+// none is named, preserving this helper's previous behavior). Deliberately not a search
+// across every kind at once: isConfigured is required by both, and returning whichever
+// happened to be declared first would hand back the wrong kind's description.
+function getPublishingCapabilityById(id, { kind = DEFAULT_PUBLISHING_KIND } = {}) {
+  const publishingKind = getPublishingKindById(kind);
+  if (!publishingKind) return undefined;
+  return publishingKind.capabilities.find((entry) => entry.id === id);
 }
 
 function getCapabilityById(id) {
@@ -239,8 +343,12 @@ module.exports = {
   REQUIRED_ADAPTER_CAPABILITIES,
   ADAPTER_CONTRACT_RULES,
   PUBLISHING_ADAPTER_CAPABILITIES,
+  CONTENT_PUBLISHING_ADAPTER_CAPABILITIES,
+  PUBLISHING_ADAPTER_KINDS,
+  DEFAULT_PUBLISHING_KIND,
   PUBLISHING_CONTRACT_RULES,
   validatePublishingAdapterShape,
+  getPublishingKindById,
   getPublishingCapabilityById,
   getCapabilityById,
   getRuleById,
@@ -272,4 +380,26 @@ if (require.main === module) {
     console.log('  FAIL:');
     result.errors.forEach((error) => console.log(`    - ${error}`));
   }
+
+  console.log('\nPublishing kinds, each checked against the adapter that implements it:');
+  const adaptersByKind = {
+    marketplace_listing: { path: 'integrations/adapters/etsyClient.js', module: require('./etsyClient') },
+    store_content: { path: 'integrations/adapters/shopifyClient.js', module: shopifyClient },
+  };
+  for (const publishingKind of PUBLISHING_ADAPTER_KINDS) {
+    const adapter = adaptersByKind[publishingKind.id];
+    const outcome = validatePublishingAdapterShape(adapter.module, { kind: publishingKind.id });
+    console.log(`  [${publishingKind.id}] ${adapter.path}`);
+    console.log(`    required: ${publishingKind.capabilities.map((entry) => entry.id).join(', ')}`);
+    if (outcome.valid) {
+      console.log('    PASS: every required publishing capability is exposed.');
+    } else {
+      console.log('    FAIL:');
+      outcome.errors.forEach((error) => console.log(`      - ${error}`));
+    }
+  }
+
+  console.log('\nA passing structural check is not a claim that a platform can be published to -');
+  console.log('integrations/adapters/etsyClient.js exposes publishListing() and still has no transport,');
+  console.log('and says so itself at runtime rather than fabricating a result.');
 }
