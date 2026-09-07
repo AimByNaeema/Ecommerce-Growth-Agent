@@ -59,7 +59,9 @@ const CLEAN_DRAFT =
 
 // Replaces BOTH clients so no configuration can produce a real call, and records which
 // one the provider selector actually reached.
-async function withMockedProviders({ provider = 'claude', text = CLEAN_DRAFT, throws = null }, fn) {
+// `stopReason` overrides the provider's own default so a truncated completion can be
+// reproduced in each provider's own spelling - both pass their raw value straight through.
+async function withMockedProviders({ provider = 'claude', text = CLEAN_DRAFT, throws = null, stopReason = null }, fn) {
   const savedProvider = process.env.AI_PROVIDER;
   const savedClaude = claudeClient.sendMessage;
   const savedGemini = geminiClient.sendMessage;
@@ -74,7 +76,12 @@ async function withMockedProviders({ provider = 'claude', text = CLEAN_DRAFT, th
   claudeClient.sendMessage = async () => {
     hits.claude += 1;
     if (throws) throw new Error(throws);
-    return { text, model: 'claude-sonnet-5', stopReason: 'end_turn', usage: { input_tokens: 120, output_tokens: 80 } };
+    return {
+      text,
+      model: 'claude-sonnet-5',
+      stopReason: stopReason || 'end_turn',
+      usage: { input_tokens: 120, output_tokens: 80 },
+    };
   };
   geminiClient.sendMessage = async () => {
     hits.gemini += 1;
@@ -82,7 +89,7 @@ async function withMockedProviders({ provider = 'claude', text = CLEAN_DRAFT, th
     return {
       text,
       model: 'gemini-2.5-flash',
-      stopReason: 'STOP',
+      stopReason: stopReason || 'STOP',
       usage: { promptTokenCount: 120, candidatesTokenCount: 80 },
     };
   };
@@ -277,6 +284,68 @@ function buildOpportunity(overrides = {}) {
       assert.strictEqual(outcome.result.status, 'review');
       assert.ok(outcome.result.review_reasons.some((reason) => reason.includes('needs a fact it was not given')));
     });
+  });
+
+  // TRUNCATION. Found by an end-to-end run of the real pipeline
+  // (market_question_discovery -> information_gap_analysis -> seo_content_generation ->
+  // Compliance -> approval -> publish authorization -> Shopify): a live draft cut off at
+  // the provider's output-token limit came back 'ready' with no review reason, passed
+  // Compliance as PASS, and reached the publishing mutation as the article body. The tool
+  // already had the stop reason and was reading it only for usage reporting.
+  await testAsync('THE PIPELINE DEFECT: a draft the provider CUT OFF is REVIEW, never ready', async () => {
+    // Claude's own spelling.
+    await withMockedProviders({ provider: 'claude', stopReason: 'max_tokens' }, async () => {
+      const outcome = await runSeoContentGenerationTool({ opportunity: buildOpportunity() });
+      assert.strictEqual(outcome.status, 'partial');
+      assert.strictEqual(outcome.result.status, 'review');
+      assert.ok(outcome.result.review_reasons.some((reason) => reason.includes('cut off before it finished')));
+      // The reason names the stop reason it actually saw, and says what must happen next.
+      assert.ok(outcome.result.review_reasons.some((reason) => reason.includes("stop reason 'max_tokens'")));
+      // The partial text is still returned - it is reported as partial, never discarded
+      // and never replaced with a fabricated ending.
+      assert.strictEqual(outcome.result.generated_content, CLEAN_DRAFT);
+      assert.strictEqual(outcome.stopReason, 'max_tokens');
+    });
+    // Google's own spelling, through the same code path - neither provider is privileged.
+    await withMockedProviders({ provider: 'gemini', stopReason: 'MAX_TOKENS' }, async () => {
+      const outcome = await runSeoContentGenerationTool({ opportunity: buildOpportunity() });
+      assert.strictEqual(outcome.result.status, 'review');
+      assert.ok(outcome.result.review_reasons.some((reason) => reason.includes('cut off before it finished')));
+    });
+  });
+
+  await testAsync('a NORMAL stop reason is untouched - only truncation downgrades a clean draft', async () => {
+    for (const [provider, stopReason] of [['claude', 'end_turn'], ['gemini', 'STOP'], ['claude', 'stop_sequence']]) {
+      await withMockedProviders({ provider, stopReason }, async () => {
+        const outcome = await runSeoContentGenerationTool({ opportunity: buildOpportunity() });
+        assert.strictEqual(outcome.result.status, 'ready', `${provider}/${stopReason} should stay ready`);
+        assert.deepStrictEqual(outcome.result.review_reasons, []);
+      });
+    }
+    // A missing or non-string stop reason is not treated as truncation either.
+    for (const stopReason of [null, undefined]) {
+      await withMockedProviders({ stopReason }, async () => {
+        const outcome = await runSeoContentGenerationTool({ opportunity: buildOpportunity() });
+        assert.strictEqual(outcome.result.status, 'ready');
+      });
+    }
+  });
+
+  await testAsync('truncation is reported ALONGSIDE a content check, never instead of it', async () => {
+    await withMockedProviders(
+      {
+        stopReason: 'max_tokens',
+        text: 'An insulated jacket typically lasts [VERIFY: typical lifespan] with normal use and care.',
+      },
+      async () => {
+        const outcome = await runSeoContentGenerationTool({ opportunity: buildOpportunity() });
+        assert.strictEqual(outcome.result.status, 'review');
+        assert.ok(outcome.result.review_reasons.some((reason) => reason.includes('needs a fact it was not given')));
+        assert.ok(outcome.result.review_reasons.some((reason) => reason.includes('cut off before it finished')));
+        // The content checks are additive - truncation does not replace or suppress them.
+        assert.ok(outcome.result.review_reasons.length > 1);
+      }
+    );
   });
 
   await testAsync('a draft inventing demand or ranking data is downgraded to REVIEW', async () => {

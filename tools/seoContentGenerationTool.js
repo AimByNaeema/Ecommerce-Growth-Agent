@@ -39,8 +39,9 @@
 //   status 'failed'  - no/invalid opportunity supplied, or the model call itself failed
 //   status 'blocked' - the opportunity must not become content (see the result's
 //                       review_reasons); no model call was made
-//   status 'partial' - a brief was produced but the content is not ready: either the
-//                       opportunity needed review, or the draft failed a post-check
+//   status 'partial' - a brief was produced but the content is not ready: the
+//                       opportunity needed review, the draft failed a post-check, or the
+//                       provider cut the draft off at its output-token limit
 //   status 'success' - brief and draft produced, every post-check passed
 
 const { runReasoningCompletion } = require('./aiReasoningCompletion');
@@ -59,6 +60,14 @@ const {
 // against both the per-call ceiling and the run's remaining budget, so this is a request,
 // never an entitlement.
 const MAX_TOKENS = 2048;
+
+// The stop reason both providers report when they hit the output-token ceiling, in each
+// provider's own spelling - compared case-insensitively so neither is privileged.
+const TRUNCATED_STOP_REASON = 'max_tokens';
+
+function isTruncatedStopReason(stopReason) {
+  return typeof stopReason === 'string' && stopReason.trim().toLowerCase() === TRUNCATED_STOP_REASON;
+}
 
 const BASE_LIMITATIONS = [
   'This is a draft for a human to review - nothing here is published, scheduled, or sent anywhere, and no page is modified.',
@@ -174,14 +183,32 @@ async function runSeoContentGenerationTool(researchParams) {
     targetQuestion: brief.target_question,
   });
 
+  // A draft the provider CUT OFF is not a finished draft, however clean its text looks.
+  // The completion already reports this and it was previously read only for usage
+  // reporting, so a truncated half-sentence could be returned as 'ready' and travel the
+  // whole Compliance -> approval -> publish chain as if it were complete - an end-to-end
+  // pipeline verification caught exactly that. This is completion metadata rather than a
+  // property of the text, which is why it is checked here rather than inside
+  // agent/core/contentBriefEngine.js's checkGeneratedContent (that function is given only
+  // the content). Both providers pass their own raw value straight through
+  // (agent/core/claudeClient.js reports Anthropic's 'max_tokens',
+  // agent/core/geminiClient.js reports Google's finishReason 'MAX_TOKENS'), so the
+  // comparison is case-insensitive rather than pinned to one provider's spelling.
+  const reasons = [...checks.reasons];
+  if (isTruncatedStopReason(completion.stopReason)) {
+    reasons.push(
+      `The draft was cut off before it finished: the provider stopped at its output-token limit (stop reason '${completion.stopReason}'), so this is a partial draft, not a complete one. It must be regenerated or completed by a human before it goes any further.`
+    );
+  }
+
   result.generated_content = typeof completion.text === 'string' ? completion.text.trim() : '';
 
-  if (checks.reasons.length > 0) {
+  if (reasons.length > 0) {
     result.brief = { ...brief, status: 'review' };
     result.limitations.unshift(
       'The draft was generated but did not pass every honesty check - see review_reasons. It must be corrected or verified by a human before it goes any further.'
     );
-    return { status: 'partial', result: finalize(result, 'review', checks.reasons), error: null, ...usage };
+    return { status: 'partial', result: finalize(result, 'review', reasons), error: null, ...usage };
   }
 
   return { status: 'success', result: finalize(result, 'ready', []), error: null, ...usage };
