@@ -82,7 +82,17 @@
 //     that record's campaign_reference when the caller didn't explicitly set one, and
 //     the campaign plan record is included alongside the calendar entry in
 //     specialized_records so the provided context stays visible and auditable, not
-//     hidden.
+//     hidden. When the caller supplies `plannedEntries` (optional), the rest of the
+//     day's calendar is built through this module's own
+//     retrieveSocialAdvertisingData('content_calendar', ...) - the same builder and
+//     validation the primary entry uses - and every entry travels in
+//     specialized_records. When the caller (in practice the orchestrator, from
+//     configuration/business.yaml's social_content.daily_content_units) supplies
+//     `dailyContentUnits`, agent/core/contentCadencePolicy.js compares each date's
+//     planned organic volume to that target and any off-target day is added to
+//     `limitations`. It is a REPORT, never an enforcement: nothing is rejected, no
+//     entry is added or removed to meet the number, paid campaigns are never counted
+//     toward it, and with no target configured nothing is reported at all.
 //   - advertising_strategy composes its own dedicated
 //     agent/core/advertisingStrategyModel.js record (strategy_reference,
 //     campaign_objective, audience, offer, creative_angle, ad_copy, cta,
@@ -162,6 +172,12 @@ const { deriveRecommendations } = require('./researchAgent');
 // (socialAdvertisingAgent.js -> marketingAgent.js); marketingAgent.js does not import
 // this module, so there is no cycle.
 const { retrieveMarketingData: retrieveMarketingAgentData } = require('./marketingAgent');
+
+// The business's own organic daily content cadence, applied to content_calendar only.
+// Reused, never reimplemented: this module does no counting and holds no target of its
+// own, and reads no configuration file - the target arrives as a caller/orchestrator
+// -supplied `dailyContentUnits` param, exactly like every other value here.
+const { checkDailyContentCadence, describeCadenceLimitations } = require('./contentCadencePolicy');
 
 function requireNonEmptyString(value, fieldName, fnName) {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -740,7 +756,7 @@ function analyzeContentGeneration(params = {}) {
 // visible in the output, not silently absorbed.
 function analyzeContentCalendar(params = {}) {
   const fnName = 'analyzeContentCalendar';
-  const { campaignContext, ...entryParams } = params;
+  const { campaignContext, plannedEntries, dailyContentUnits, ...entryParams } = params;
 
   let campaignPlanRecord = null;
   if (campaignContext !== undefined) {
@@ -756,12 +772,38 @@ function analyzeContentCalendar(params = {}) {
   }
 
   const record = buildContentCalendarRecord(entryInput, fnName);
-  const specializedRecords = [record];
 
-  const analysis = analyzeSocialAdvertisingRecords([record], 'content_calendar', CONTENT_CALENDAR_LIMITATION_HEADER);
+  // The rest of the day's calendar, when the caller planned more than one entry. Built
+  // through this module's own retrieveSocialAdvertisingData('content_calendar', ...) -
+  // the same builder and the same validation the primary entry above went through, not
+  // a second, looser path. Optional and additive: with none supplied, this capability
+  // behaves exactly as it always has, on exactly one entry.
+  if (plannedEntries !== undefined && !Array.isArray(plannedEntries)) {
+    throw new Error(`${fnName} requires \`plannedEntries\` to be an array when supplied.`);
+  }
+  const additionalRecords = plannedEntries
+    ? retrieveSocialAdvertisingData('content_calendar', plannedEntries, fnName)
+    : [];
+
+  const calendarRecords = [record, ...additionalRecords];
+  const specializedRecords = [...calendarRecords];
+
+  const analysis = analyzeSocialAdvertisingRecords(
+    calendarRecords,
+    'content_calendar',
+    CONTENT_CALENDAR_LIMITATION_HEADER
+  );
   const findings = [...analysis.findings];
   const evidence = [...analysis.evidence];
   const limitations = [...analysis.limitations];
+
+  // The business's own organic daily content target (configuration/business.yaml's
+  // social_content.daily_content_units, threaded in by the orchestrator - never read or
+  // guessed here). Off-target days are reported as limitations; the calendar is never
+  // rejected and no entry is ever added or removed to meet the number. With no target
+  // configured, checkDailyContentCadence returns null and nothing is reported at all.
+  const cadenceCheck = checkDailyContentCadence(calendarRecords, dailyContentUnits);
+  limitations.push(...describeCadenceLimitations(cadenceCheck));
 
   if (campaignPlanRecord) {
     specializedRecords.push(campaignPlanRecord);

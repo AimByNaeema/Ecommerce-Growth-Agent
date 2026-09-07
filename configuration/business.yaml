@@ -87,5 +87,11 @@ marketing_channels:
   - "Creative Market, Design Bundles, Gumroad, Shopify, or similar digital-product marketplaces"
   - "Influencer collaborations with Cricut, craft, and small-business creators"
 
+# Confirmed by the owner: exactly 2 organic social content units per day, counted
+# across all platforms combined (not 2 per platform). Paid ad campaigns do not count
+# toward it. Reported against, never enforced - see agent/core/contentCadencePolicy.js.
+social_content:
+  daily_content_units: 2
+
 # Optional - left empty, no integrations confirmed.
 integrations: []

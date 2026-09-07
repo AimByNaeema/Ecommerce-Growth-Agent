@@ -48,6 +48,16 @@ business_goals: []
 # Marketing channels the business uses or plans to use.
 marketing_channels: []
 
+# Organic social content cadence for the Social & Advertising specialist.
+# `daily_content_units` is how many ORGANIC social content units the business plans per
+# calendar day ACROSS all platforms combined - not per platform. Paid ad campaigns are a
+# separate concern and never count toward it. It is a reporting target, not a limit: a
+# calendar that misses it is reported as off-target, never rejected.
+# Optional: omit it (or leave it blank) and no cadence is reported at all - the agent
+# never assumes a number of its own.
+social_content:
+  daily_content_units:
+
 # Integrations this business uses or plans to connect (e.g. its e-commerce platform,
 # email marketing tool, analytics provider - see integrations/README.md). Names only -
 # credentials and connection details are configured separately (see .env.example) and

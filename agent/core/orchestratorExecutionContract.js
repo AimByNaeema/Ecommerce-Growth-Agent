@@ -56,6 +56,7 @@
 const path = require('path');
 const { TOOL_REGISTRY, getToolsByCategory, getToolById } = require('../../tools/toolRegistry');
 const { loadBusinessConfig } = require('../../tools/configValidator');
+const { readDailyContentUnitsTarget } = require('./contentCadencePolicy');
 const { getSpecialistById } = require('./specialistRegistry');
 const { getSpecialistCapabilityRegistry, getSpecialistCapabilityById } = require('./specialistCapabilityRegistry');
 const {
@@ -1287,14 +1288,28 @@ function stripMarketQualifier(value) {
   return value.replace(/\s*\((?:primary|secondary)\)\s*$/i, '').trim();
 }
 
+// A second capability now maps to a business.yaml field the same way: content_calendar's
+// `dailyContentUnits` is exactly configuration/business.yaml's
+// social_content.daily_content_units - the business's own organic daily content-unit
+// target, which a free-text objective can never supply either. Read through
+// agent/core/contentCadencePolicy.js's own readDailyContentUnitsTarget() rather than
+// reaching into the config shape here, so there is one place that decides what a usable
+// target is. Same honest failure mode as markets above: {} when business.yaml is
+// missing, unparsable, or has no target, in which case the calendar simply reports no
+// cadence at all rather than being measured against an invented number.
 function deriveBusinessConfigContext({ toCapabilityId, configPath = BUSINESS_CONFIG_PATH }) {
-  if (toCapabilityId !== 'global_market_opportunity_analysis') return {};
+  if (toCapabilityId !== 'global_market_opportunity_analysis' && toCapabilityId !== 'content_calendar') return {};
 
   let businessConfig;
   try {
     businessConfig = loadBusinessConfig(configPath);
   } catch (err) {
     return {};
+  }
+
+  if (toCapabilityId === 'content_calendar') {
+    const dailyContentUnits = readDailyContentUnitsTarget(businessConfig);
+    return dailyContentUnits === null ? {} : { dailyContentUnits };
   }
 
   const countries = Array.isArray(businessConfig.countries) ? businessConfig.countries : [];

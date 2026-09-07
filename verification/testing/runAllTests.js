@@ -145,6 +145,7 @@ const TEST_FILES = [
   'platformContentTool.test.js',
   'contentCalendarModel.test.js',
   'contentCalendarTool.test.js',
+  'contentCadencePolicy.test.js',
   'advertisingStrategyModel.test.js',
   'advertisingStrategyTool.test.js',
   'advertisingPerformanceModel.test.js',

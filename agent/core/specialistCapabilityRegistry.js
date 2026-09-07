@@ -1212,10 +1212,18 @@ const SOCIAL_ADVERTISING_TASKS = [
     id: 'content_calendar',
     title: 'Content calendar',
     description:
-      "Compose one contentCalendarModel.js entry (date, platform, content type, topic, hook, CTA, campaign, product, KPI) via socialAdvertisingAgent.js's content_calendar capability, optionally informed by Marketing Agent campaign context via marketingAgent.js's retrieveMarketingData('campaign_plan', ...).",
+      "Compose one contentCalendarModel.js entry (date, platform, content type, topic, hook, CTA, campaign, product, KPI) via socialAdvertisingAgent.js's content_calendar capability, optionally informed by Marketing Agent campaign context via marketingAgent.js's retrieveMarketingData('campaign_plan', ...), and optionally reporting each date's planned organic volume against the business's own configured daily content-unit target via contentCadencePolicy.js.",
     toolIds: ['content_calendar_generation'],
     required: ['entryReference', 'date', 'platform'],
-    optional: ['contentType', 'topic', 'hook', 'cta', 'campaign', 'product', 'kpi', 'evidence', 'verificationStatus', 'campaignContext'],
+    optional: [
+      'contentType', 'topic', 'hook', 'cta', 'campaign', 'product', 'kpi', 'evidence', 'verificationStatus', 'campaignContext',
+      // The rest of the day's calendar, when more than one entry is planned - each built
+      // through the same contentCalendarModel.js builder the primary entry uses.
+      'plannedEntries', 'plannedEntries[].entryReference', 'plannedEntries[].date', 'plannedEntries[].platform',
+      // configuration/business.yaml's social_content.daily_content_units, threaded in by
+      // the orchestrator. Reported against, never enforced.
+      'dailyContentUnits',
+    ],
     model: 'agent/core/socialAdvertisingAgentResultModel.js',
     fields: fieldIds(SOCIAL_ADVERTISING_AGENT_RESULT_FIELDS),
   }),
