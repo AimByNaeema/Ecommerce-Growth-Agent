@@ -27,6 +27,7 @@ const EXPECTED_ORDER = [
   'seo_analysis',
   'listing_content_generation',
   'marketing_analysis',
+  'offer_recommendation',
   'social_content_planning',
   'paid_advertising_planning',
   'social_media_strategy_generation',
@@ -62,6 +63,9 @@ const IMPLEMENTED_IDS = [
   'seo_analysis',
   'listing_content_generation',
   'marketing_analysis',
+  // Wraps agent/core/offerRecommendationEngine.js, the one implemented Marketing engine
+  // that had no route into normal Chief dispatch.
+  'offer_recommendation',
   'social_content_planning',
   'paid_advertising_planning',
   'social_media_strategy_generation',
@@ -93,7 +97,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 30 required tools, in the requested order', () => {
+test('the registry has exactly the 31 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER
@@ -137,6 +141,9 @@ test('getToolsByOperation() filters correctly', () => {
       'content_calendar_generation',
       'listing_content_generation',
       'marketing_analysis',
+      // Composes an offer recommendation record for a human to act on - applies,
+      // publishes and purchases nothing (see tools/offerRecommendationTool.js).
+      'offer_recommendation',
       'paid_advertising_planning',
       'platform_content_generation',
       'social_content_planning',

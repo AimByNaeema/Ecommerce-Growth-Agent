@@ -27,6 +27,17 @@ const MARKETING_CAPABILITIES = [
   'email_strategy',
   'conversion_opportunities',
   'marketing_opportunity_ranking',
+  // Tool-executed, not composed by agent/core/marketingAgent.js: its output is an
+  // agent/core/offerRecommendationModel.js record (dimension_status, coverage_score,
+  // unsupported_claims_flagged), not the envelope this file describes, so
+  // runMarketingAgent() correctly has no handler for it and rejects it like any other
+  // capability it cannot run. Listed here because this array is the Marketing
+  // SPECIALIST's capability list (what agent/core/specialistCapabilityRegistry.js
+  // declares), not the marketingAgent.js dispatcher's handler list - exactly the same
+  // treatment agent/core/seoAgentResultModel.js's SEO_CAPABILITIES already gives
+  // market_question_discovery and seo_content_generation. See
+  // tools/offerRecommendationTool.js.
+  'offer_recommendation',
 ];
 
 const MARKETING_AGENT_RESULT_FIELDS = [

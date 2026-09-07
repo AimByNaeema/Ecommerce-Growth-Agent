@@ -107,6 +107,7 @@ const keywordResearchTool = require('../../tools/keywordResearchTool');
 const seoAnalysisTool = require('../../tools/seoAnalysisTool');
 const listingContentTool = require('../../tools/listingContentTool');
 const marketingAnalysisTool = require('../../tools/marketingAnalysisTool');
+const offerRecommendationTool = require('../../tools/offerRecommendationTool');
 const socialContentTool = require('../../tools/socialContentTool');
 const paidAdvertisingTool = require('../../tools/paidAdvertisingTool');
 const socialMediaStrategyTool = require('../../tools/socialMediaStrategyTool');
@@ -219,6 +220,12 @@ const TOOL_EXECUTORS = {
     listingContentTool.runListingContentTool(executionRequest.research_params),
   marketing_analysis: (executionRequest) =>
     marketingAnalysisTool.runMarketingAnalysisTool(executionRequest.research_params),
+  // No businessId spread: like marketing_analysis above, this tool reaches no external
+  // system - it only audits what the caller already supplied. It also needs no
+  // TOOL_CAPABILITY_SELECTORS entry, because it serves exactly one capability
+  // (offer_recommendation), so there is no mode for the orchestrator to select.
+  offer_recommendation: (executionRequest) =>
+    offerRecommendationTool.runOfferRecommendationTool(executionRequest.research_params),
   social_content_planning: (executionRequest) =>
     socialContentTool.runSocialContentTool(executionRequest.research_params),
   paid_advertising_planning: (executionRequest) =>
@@ -842,6 +849,21 @@ const ROUTING_SYNONYMS = {
   product: ['shopify', 'products'],
   seo: ['keywords'],
   listing: ['listings', 'titles'],
+  // Same bug class and same additive fix as the "shopify"/"products", "business" and
+  // "orders" entries above, found when wiring agent/core/offerRecommendationEngine.js:
+  // agent/core/specialistRegistry.js's Marketing description ("Campaign ideas, copy, and
+  // marketing strategy.") contains no offer vocabulary at all, so an objective about a
+  // bundle, an upsell or a supportable discount depth scored 0 for Marketing and was
+  // routed to Product instead - despite tools/offerRecommendationTool.js and the
+  // existing `offers`/`promotions` capabilities existing for exactly that request.
+  // Additive routing vocabulary only: Marketing's real id/title/description are
+  // unchanged. Deliberately excludes "margin" and "price"/"pricing", which belong to
+  // Product/Analytics evidence just as often as to an offer - and, verified against
+  // this file's own tests, "bundle"/"bundles": that is a generic e-commerce noun of
+  // exactly the "product" shape described above, appearing as an incidental modifier in
+  // objectives that belong elsewhere ("our SVG bundle" -> SEO, "our bundle listings" ->
+  // Listing), and adding it flipped both of those pinned routes to Marketing.
+  marketing: ['offer', 'offers', 'discount', 'discounts', 'upsell'],
 };
 
 // Generic words a user naturally types that, on their own, do not indicate which

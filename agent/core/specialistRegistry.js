@@ -16,7 +16,9 @@
 // agent/core/seoAgent.js, connected via tools/keywordResearchTool.js
 // and tools/seoAnalysisTool.js; agent/core/listingAgent.js, connected via
 // tools/listingContentTool.js; agent/core/marketingAgent.js, connected via
-// tools/marketingAnalysisTool.js; agent/core/socialAdvertisingAgent.js, connected via
+// tools/marketingAnalysisTool.js, and agent/core/offerRecommendationEngine.js,
+// connected via tools/offerRecommendationTool.js;
+// agent/core/socialAdvertisingAgent.js, connected via
 // tools/socialContentTool.js and tools/paidAdvertisingTool.js; and
 // agent/core/analyticsAgent.js, connected via tools/analyticsTool.js.
 //

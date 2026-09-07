@@ -130,6 +130,9 @@ const TEST_FILES = [
   'marketingAnalysisTool.test.js',
   'offerRecommendationModel.test.js',
   'offerRecommendationEngine.test.js',
+  // The wiring that makes offerRecommendationEngine.js reachable through Chief routing
+  // (the engine's own logic stays covered by the file above).
+  'offerRecommendationCapability.test.js',
   'socialContentModel.test.js',
   'adCampaignModel.test.js',
   'socialAdvertisingAgentResultModel.test.js',

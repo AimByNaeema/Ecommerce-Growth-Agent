@@ -108,6 +108,13 @@ const TOOL_CLASSIFICATIONS = {
   // composes says so in its own recommended_next_step). Same footing as
   // market_product_opportunity_analysis above, which wraps the same Product modules.
   product_research: 'analysis_only',
+  // Audits one caller-supplied product across the 7 offer dimensions and computes a
+  // margin-safe discount ceiling - no external call, no model call, and nothing is
+  // applied, published, or purchased (agent/core/offerRecommendationEngine.js has no
+  // apply/publish function of any kind; acting on a recommendation stays a separate,
+  // human-approved action via approvals/). Same footing as marketing_analysis above,
+  // which is likewise a 'write'-operation Marketing tool that only composes records.
+  offer_recommendation: 'analysis_only',
   // A real web search + a Claude completion, but exactly like competitor_research
   // above, it only ever retrieves/composes a research record for a human to read -
   // never publishes, sends, or changes anything by itself.

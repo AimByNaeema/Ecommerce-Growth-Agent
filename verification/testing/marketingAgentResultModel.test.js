@@ -23,7 +23,7 @@ function test(name, fn) {
   }
 }
 
-test('MARKETING_CAPABILITIES lists exactly the 9 requested capabilities, in the requested order', () => {
+test('MARKETING_CAPABILITIES lists exactly the 10 Marketing specialist capabilities, in the requested order', () => {
   assert.deepStrictEqual(MARKETING_CAPABILITIES, [
     'marketing_strategy',
     'audience_segmentation',
@@ -34,7 +34,19 @@ test('MARKETING_CAPABILITIES lists exactly the 9 requested capabilities, in the 
     'email_strategy',
     'conversion_opportunities',
     'marketing_opportunity_ranking',
+    // Tool-executed via tools/offerRecommendationTool.js, not composed by
+    // marketingAgent.js - see the next test.
+    'offer_recommendation',
   ]);
+});
+
+test('offer_recommendation is a Marketing SPECIALIST capability, not a marketingAgent.js dispatcher capability', () => {
+  const { runMarketingAgent } = require('../../agent/core/marketingAgent');
+  // It is listed above (the specialist can do it) but marketingAgent.js has no handler
+  // for it, because its output is an offerRecommendationModel.js record rather than the
+  // envelope this file describes. Rejecting it honestly is the correct behavior - the
+  // same shape of split SEO_CAPABILITIES/seoAgent.js already has.
+  assert.throws(() => runMarketingAgent({ capability: 'offer_recommendation' }), /Unknown Marketing capability/);
 });
 
 test('every field has a non-empty title and description', () => {

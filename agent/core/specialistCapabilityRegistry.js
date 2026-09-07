@@ -69,8 +69,14 @@
 // EXCLUDED entirely from supported_tasks, matching this project's existing
 // standalone-engine precedent (the same treatment agent/core/growthOpportunityEngine.js
 // itself gets): agent/core/competitorIntelligenceAgent.js (not called from
-// researchAgent.js) and agent/core/offerRecommendationEngine.js (not called from
-// marketingAgent.js).
+// researchAgent.js). agent/core/offerRecommendationEngine.js USED to be excluded here
+// for the same reason and no longer is: it turned out to be a genuinely reusable
+// Marketing specialist capability (one product in, one structured recommendation record
+// out, no workflow sequencing of its own), so it is now the offer_recommendation task
+// below, wrapped by tools/offerRecommendationTool.js. It is still not called from
+// marketingAgent.js - it composes its own offerRecommendationModel.js record rather than
+// that agent's envelope, so it is tool-executed, exactly like SEO's
+// market_question_discovery and seo_content_generation.
 //
 // KNOWN `required` GAPS - observed, deliberately not touched by this pass (which
 // scoped itself to completing missing `optional` arrays only, to keep the diff
@@ -101,6 +107,10 @@ const { QUESTION_EVIDENCE_FIELDS } = require('./questionEvidenceModel');
 const { CONTENT_GENERATION_RESULT_FIELDS } = require('./contentBriefModel');
 const { LISTING_CAPABILITIES, LISTING_AGENT_RESULT_FIELDS } = require('./listingAgentResultModel');
 const { MARKETING_CAPABILITIES, MARKETING_AGENT_RESULT_FIELDS } = require('./marketingAgentResultModel');
+// offer_recommendation is the one Marketing capability that composes no marketingAgent.js
+// envelope - its output is this record instead (same shape of exception as SEO's
+// QUESTION_EVIDENCE_FIELDS/CONTENT_GENERATION_RESULT_FIELDS above).
+const { OFFER_RECOMMENDATION_FIELDS } = require('./offerRecommendationModel');
 const {
   SOCIAL_ADVERTISING_CAPABILITIES,
   SOCIAL_ADVERTISING_AGENT_RESULT_FIELDS,
@@ -1096,6 +1106,40 @@ const MARKETING_TASKS = [
     ],
     model: 'agent/core/marketingAgentResultModel.js',
     fields: fieldIds(MARKETING_AGENT_RESULT_FIELDS),
+  }),
+  buildTask({
+    id: 'offer_recommendation',
+    title: 'Offer recommendation',
+    description:
+      "Audit one product across the 7 offer dimensions (bundle, discount, upsell, cross_sell, incentive, value_proposition, objection_handling) via agent/core/offerRecommendationEngine.js's generateOfferRecommendations(), composing its own offerRecommendationModel.js record. Discount is the one computed dimension - the depth that keeps margin at or above a caller-supplied minMarginPercent, plain arithmetic over supplied cost/price. Distinct from the `offers` capability above, which relays one caller-supplied offer into a marketingAnalysisModel.js record: this is a structural coverage audit over product/pricing data, not a channel message. Tool-executed via tools/offerRecommendationTool.js rather than marketingAgent.js-composed (like SEO's market_question_discovery and seo_content_generation), because its output is not the shared Marketing envelope.",
+    toolIds: ['offer_recommendation'],
+    required: ['productReference'],
+    // relatedProducts/incentiveOptions/valuePropositions/objections are each optional
+    // arrays, but generateOfferRecommendations() throws on a structurally invalid ENTRY -
+    // so each entry's own mandatory sub-fields are listed here (not under `required`,
+    // which would wrongly claim the array itself must be supplied).
+    optional: [
+      'market',
+      'pricing',
+      'discountConstraints',
+      'relatedProducts',
+      'relatedProducts[].productReference',
+      'relatedProducts[].relationship',
+      'relatedProducts[].evidence',
+      'incentiveOptions',
+      'incentiveOptions[].incentive',
+      'incentiveOptions[].evidence',
+      'valuePropositions',
+      'valuePropositions[].statement',
+      'valuePropositions[].evidence',
+      'objections',
+      'objections[].objection',
+      'objections[].response',
+      'objections[].evidence',
+      'researchDate',
+    ],
+    model: 'agent/core/offerRecommendationModel.js',
+    fields: fieldIds(OFFER_RECOMMENDATION_FIELDS),
   }),
 ];
 

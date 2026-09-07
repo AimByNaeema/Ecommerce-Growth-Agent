@@ -24,8 +24,9 @@
 // tools/platformContentTool.js, tools/contentCalendarTool.js,
 // tools/advertisingStrategyTool.js, tools/advertisingPerformanceTool.js,
 // tools/analyticsTool.js, tools/analyticsDataTool.js, and
-// tools/webCompetitorResearchTool.js, and tools/productResearchTool.js) - the other 2
-// tools (memory_retrieval, verification) remain 'not_implemented'.
+// tools/webCompetitorResearchTool.js, tools/productResearchTool.js, and
+// tools/offerRecommendationTool.js) - the other 2 tools (memory_retrieval,
+// verification) remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
@@ -198,6 +199,20 @@ const TOOL_REGISTRY = [
     title: 'Marketing analysis',
     description:
       "Produce agent/core/marketingAnalysisModel.js, agent/core/growthOpportunityModel.js, and agent/core/customerSegmentResearchModel.js records via agent/core/marketingAgent.js's 8 capabilities (marketing strategy, audience segmentation, offers, promotions, retention, campaign planning, email strategy, conversion opportunities) - see tools/marketingAnalysisTool.js.",
+    category: 'marketing',
+    operation: 'write',
+    status: 'implemented',
+  },
+  {
+    // Deliberately narrow wording: this description competes with marketing_analysis's
+    // for the same specialist's objectives under buildPlanStep's word-overlap scoring,
+    // so it names only this tool's own distinctive vocabulary (bundle, discount depth,
+    // upsell, cross-sell, incentive, value proposition, objection, margin floor) and
+    // avoids marketing_analysis's ("marketing", "campaign", "strategy", "segment").
+    id: 'offer_recommendation',
+    title: 'Offer recommendation',
+    description:
+      "Audit one product across 7 offer dimensions - bundle, discount, upsell, cross-sell, incentive, value proposition, objection handling - via agent/core/offerRecommendationEngine.js, producing an agent/core/offerRecommendationModel.js record. Discount is the one computed dimension: the depth that keeps margin at or above a caller-supplied floor, plain arithmetic over supplied cost/price, never a guessed promotional idea. Relays only what the caller supplied, flags absolute claims that no supplied evidence backs, and reports each dimension it had nothing to work with honestly - see tools/offerRecommendationTool.js. Applies or publishes nothing.",
     category: 'marketing',
     operation: 'write',
     status: 'implemented',
