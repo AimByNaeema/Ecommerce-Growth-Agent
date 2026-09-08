@@ -437,10 +437,8 @@
     }
   });
 
-  /* ---------- Overview page: one real status card per specialist ---------- */
-  const agentGrid = document.getElementById('agentGrid');
-  const agentCardEls = {};
-  const agentRunState = {}; // specialistId -> { status, completedRuns }
+  /* ---------- Overview page: compact specialist summary ---------- */
+  const agentRunState = {}; // specialistId -> { status, data } for THIS browser session
   let runsCompletedCount = 0;
 
   function agentSummaryLine(status, data) {
@@ -456,72 +454,16 @@
     return 'Completed — see full result on the Run a Specialist page.';
   }
 
-  SPECIALISTS.forEach((sp) => {
-    const card = document.createElement('div');
-    card.className = 'agent-card';
-    card.innerHTML =
-      '<div class="agent-card-head">' +
-      '<div><div class="agent-name">' + escapeHtml(sp.name) + '</div><div class="agent-desc">' + escapeHtml(sp.desc) + '</div></div>' +
-      '<span class="agent-status idle" data-role="status">Not run yet</span>' +
-      '</div>' +
-      '<div class="agent-summary empty" data-role="summary">No result yet this session.</div>' +
-      '<div data-role="chart"></div>' +
-      '<div class="agent-card-foot">' +
-      '<button class="agent-run-btn" data-role="run" type="button">Run now</button>' +
-      '<a class="agent-open-link" data-role="open">Open in Run a Specialist →</a>' +
-      '</div>';
-
-    const runButton = card.querySelector('[data-role="run"]');
-    const statusBadge = card.querySelector('[data-role="status"]');
-    const summaryEl = card.querySelector('[data-role="summary"]');
-    const chartEl = card.querySelector('[data-role="chart"]');
-    const openLink = card.querySelector('[data-role="open"]');
-
-    openLink.addEventListener('click', () => {
-      selectPage('specialists');
-      const targetCard = Array.from(document.querySelectorAll('.specialist-card')).find(
-        (c, i) => SPECIALISTS[i].id === sp.id
-      );
-      if (targetCard) targetCard.click();
-    });
-
-    runButton.addEventListener('click', async () => {
-      runButton.disabled = true;
-      runButton.textContent = 'Running…';
-      statusBadge.className = 'agent-status running';
-      statusBadge.textContent = 'Running';
-      summaryEl.className = 'agent-summary';
-      summaryEl.textContent = 'Calling your real Shopify/Gemini connection…';
-      chartEl.innerHTML = '';
-
-      try {
-        const { ok, data } = await runSpecialist(sp.id, sp.objective);
-        const label = !ok ? 'error' : data && data.status === 'partial' ? 'partial' : 'success';
-        statusBadge.className = 'agent-status ' + label;
-        statusBadge.textContent = label;
-        summaryEl.className = 'agent-summary';
-        summaryEl.textContent = agentSummaryLine(label, data);
-
-        chartEl.innerHTML = '';
-        const chartData = extractChartPoints(data && data.outputs ? data.outputs : null);
-        if (chartData) renderMetricChart(chartEl, chartData, 'Real data from this run');
-
-        markAgentRun(sp.id, label, data);
-        noteActivity('Ran ' + sp.name + ' just now');
-      } catch (err) {
-        statusBadge.className = 'agent-status error';
-        statusBadge.textContent = 'error';
-        summaryEl.className = 'agent-summary';
-        summaryEl.textContent = 'Could not reach the server. Check that it is running.';
-      } finally {
-        runButton.disabled = false;
-        runButton.textContent = 'Run again';
-      }
-    });
-
-    agentCardEls[sp.id] = card;
-    agentGrid.appendChild(card);
-  });
+  // Opens the existing Run a Specialist page with one specialist selected, by clicking
+  // that page's OWN card - so the objective prefill, the enabled Run button and the
+  // selection state all come from the existing code path, never a parallel one. Nothing
+  // is executed here; the owner still presses Run.
+  function openSpecialistOnRunPage(specialistId) {
+    selectPage('specialists');
+    const index = SPECIALISTS.findIndex((sp) => sp.id === specialistId);
+    const cards = document.querySelectorAll('.specialist-card');
+    if (index >= 0 && cards[index]) cards[index].click();
+  }
 
   function markAgentRun(specialistId, status, data) {
     if (!agentRunState[specialistId]) runsCompletedCount += 1;
@@ -1484,39 +1426,67 @@
     renderPerfChart();
   }
 
-  // Replaces a specialist card's status/summary with its real, persisted last-run
-  // state from GET /overview - but ONLY for a specialist this browser session has
-  // not itself already run (agentRunState). A run the user just triggered in this
-  // tab is always fresher than what was true when the page loaded, so it must
-  // never be overwritten by a stale server snapshot.
-  function hydrateAgentCards(specialists) {
+  // The Overview's compact specialist summary: one row per specialist, showing the real
+  // persisted state GET /overview reported. This replaced seven large cards - the detailed
+  // per-specialist view, the objective box and the Run control all live on the existing
+  // Run a Specialist page, which each row opens with that specialist already selected.
+  //
+  // A run performed in THIS browser session takes precedence over the server snapshot,
+  // because the snapshot was taken before that run happened.
+  function renderSpecialistSummary(specialists) {
+    const area = document.getElementById('specialistSummaryArea');
+    if (!area) return;
+    area.innerHTML = '';
+
     SPECIALISTS.forEach((sp) => {
-      if (agentRunState[sp.id]) return;
-      const card = agentCardEls[sp.id];
-      if (!card) return;
-      const statusBadge = card.querySelector('[data-role="status"]');
-      const summaryEl = card.querySelector('[data-role="summary"]');
+      const session = agentRunState[sp.id];
       const entry = specialists && specialists[sp.id];
 
-      if (!entry) {
-        statusBadge.className = 'agent-status idle';
-        statusBadge.textContent = 'Not run yet';
-        summaryEl.className = 'agent-summary empty';
-        summaryEl.textContent = 'No result yet.';
-        return;
+      let status;
+      let detail;
+      if (session) {
+        status = session.status;
+        detail = 'Run just now, this session';
+      } else if (entry) {
+        status =
+          entry.last_status === 'success' || entry.last_status === 'error' || entry.last_status === 'partial'
+            ? entry.last_status
+            : 'partial';
+        const parts = [];
+        if (entry.last_run_at) parts.push(formatWhen(entry.last_run_at));
+        if (typeof entry.last_result_count === 'number') parts.push(entry.last_result_count + ' record(s)');
+        detail = parts.join(' · ');
+      } else {
+        status = 'idle';
+        detail = 'Never run';
       }
 
-      const label =
-        entry.last_status === 'success' || entry.last_status === 'error' || entry.last_status === 'partial'
-          ? entry.last_status
-          : 'partial';
-      statusBadge.className = 'agent-status ' + label;
-      statusBadge.textContent = label;
-      summaryEl.className = 'agent-summary';
-      const metaParts = [];
-      if (typeof entry.last_result_count === 'number') metaParts.push(entry.last_result_count + ' record(s) retrieved');
-      if (entry.last_run_at) metaParts.push('Last run ' + formatWhen(entry.last_run_at));
-      summaryEl.textContent = (entry.last_summary || 'Completed.') + (metaParts.length ? ' — ' + metaParts.join(' · ') : '');
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'spec-row';
+      row.setAttribute('aria-label', 'Open ' + sp.name + ' in Run a Specialist');
+
+      const main = document.createElement('span');
+      main.className = 'spec-row-main';
+      const name = document.createElement('span');
+      name.className = 'spec-row-name';
+      name.textContent = sp.name;
+      main.appendChild(name);
+      if (detail) {
+        const meta = document.createElement('span');
+        meta.className = 'spec-row-meta';
+        meta.textContent = detail;
+        main.appendChild(meta);
+      }
+      row.appendChild(main);
+
+      const chip = document.createElement('span');
+      chip.className = 'status-chip ' + (status === 'idle' ? 'idle' : status);
+      chip.textContent = status === 'idle' ? 'Not run' : status;
+      row.appendChild(chip);
+
+      row.addEventListener('click', () => openSpecialistOnRunPage(sp.id));
+      area.appendChild(row);
     });
   }
 
@@ -1620,20 +1590,18 @@
       row.appendChild(tile);
     }
 
+    // Trimmed to three for the executive view. #statPendingApprovals and #statRunsCount
+    // keep their original ids, so refreshApprovalBadges() and markAgentRun() (unchanged)
+    // still update them live with no extra wiring.
     addTile(
-      'Specialists run (all-time)',
+      'Specialists run',
       growth && growth.specialists_total ? growth.specialists_run + ' / ' + growth.specialists_total : null
     );
-    addTile('Opportunities found', growth ? growth.opportunities_found : null);
-    addTile('Tasks completed', growth ? growth.runs_completed : null);
     addTile('Approvals pending', approvalLog.filter((a) => a.status === 'pending').length, {
       accent: true,
       id: 'statPendingApprovals',
     });
     addTile('Runs this session', runsCompletedCount + ' / ' + SPECIALISTS.length, { id: 'statRunsCount' });
-    addTile('Last activity (all-time)', growth && growth.last_run_at ? formatWhen(growth.last_run_at) : null, {
-      small: true,
-    });
   }
 
   function statusChip(status) {
@@ -1742,50 +1710,33 @@
   // all-time counts GET /overview derived from saved run records. No second
   // approval mechanism is built here - "Review" always hands off to the real
   // Approval Center page.
+  // Compact approval summary. The list of individual approvals and the Approve/Reject
+  // controls stay on the existing Approval Center page - this is a count and a route to
+  // it, never a second approval surface.
   function renderApprovalsOverview(growth) {
     const area = document.getElementById('approvalsOverviewArea');
     area.innerHTML = '';
 
-    const sessionPending = approvalLog.filter((a) => a.status === 'pending');
+    const sessionPending = approvalLog.filter((a) => a.status === 'pending').length;
+    const savedPending = growth && typeof growth.approvals_pending === 'number' ? growth.approvals_pending : 0;
+    const totalPending = sessionPending + savedPending;
 
-    const summary = document.createElement('div');
-    summary.className = 'panel-empty';
-    const parts = [sessionPending.length + ' approval(s) waiting for you this session'];
+    const headline = document.createElement('div');
+    headline.className = totalPending > 0 ? 'approval-headline approval-headline-pending' : 'approval-headline';
+    headline.textContent =
+      totalPending > 0 ? totalPending + ' approval(s) waiting for you' : 'No approvals pending';
+    area.appendChild(headline);
+
     if (growth && typeof growth.approvals_recorded === 'number') {
-      parts.push(
-        growth.approvals_recorded +
-          ' approval(s) recorded in saved run history (' +
-          (growth.approvals_pending || 0) +
-          ' still pending there)'
-      );
-    }
-    summary.textContent = parts.join(' · ');
-    area.appendChild(summary);
-
-    sessionPending.slice(0, 3).forEach((entry) => {
-      const row = document.createElement('div');
-      row.className = 'activity-row';
-      const main = document.createElement('div');
-      main.className = 'activity-row-main';
-      const title = document.createElement('div');
-      title.className = 'activity-row-title';
-      title.textContent = entry.title || 'Approval';
-      main.appendChild(title);
       const meta = document.createElement('div');
-      meta.className = 'activity-row-meta';
-      meta.textContent = entry.classification || '';
-      main.appendChild(meta);
-      row.appendChild(main);
+      meta.className = 'panel-note';
+      meta.textContent = growth.approvals_recorded + ' approval(s) recorded across saved runs.';
+      area.appendChild(meta);
+    }
 
-      const link = document.createElement('button');
-      link.type = 'button';
-      link.className = 'activity-row-link';
-      link.textContent = 'Review →';
-      link.addEventListener('click', () => selectPage('approvals'));
-      row.appendChild(link);
-
-      area.appendChild(row);
-    });
+    // The link is revealed only when there is genuinely something to review.
+    const link = document.getElementById('reviewApprovalsLink');
+    if (link) link.hidden = totalPending === 0;
   }
 
   // Store Health: renders exactly the checks GET /overview computed from facts
@@ -1857,12 +1808,6 @@
       }
       row.appendChild(track);
 
-      if (!stage.available && stage.reason) {
-        const why = document.createElement('div');
-        why.className = 'funnel-stage-reason';
-        why.textContent = stage.reason;
-        row.appendChild(why);
-      }
       area.appendChild(row);
 
       if (i < funnel.stages.length - 1) {
@@ -1873,6 +1818,20 @@
         area.appendChild(arrow);
       }
     });
+
+    // The unavailable stages all share one reason, so it is stated ONCE and names exactly
+    // which stages it covers - repeating the identical sentence under four stages made the
+    // section tall without making it any more honest.
+    const unavailable = funnel.stages.filter((s) => !s.available);
+    const reasons = [...new Set(unavailable.map((s) => s.reason).filter(Boolean))];
+    if (unavailable.length > 0 && reasons.length > 0) {
+      const note = document.createElement('div');
+      note.className = 'panel-note';
+      const names = unavailable.map((s) => s.label).join(', ');
+      note.textContent =
+        reasons.length === 1 ? names + ': ' + reasons[0] : unavailable.map((s) => s.label + ': ' + s.reason).join(' ');
+      area.appendChild(note);
+    }
 
     // Said plainly, because a funnel whose drop-off cannot be computed must not leave the
     // owner guessing that the gaps are conversion losses.
@@ -1940,6 +1899,11 @@
      Distinct from AI growth status above: that answers "how much has run?", this answers
      "what did it actually produce?". Every tile is a count the server derived from saved
      records; a null value renders "No data" rather than 0. */
+  // Overview shows only the four headline impact figures - the rest of what the server
+  // computed stays in the payload and is reachable through "View AI activity", so this
+  // section answers the question at a glance instead of becoming a metric wall.
+  const OVERVIEW_IMPACT_METRICS = ['products_analyzed', 'opportunities_identified', 'tasks_completed', 'actions_gated'];
+
   function renderAiImpact(metrics) {
     const row = document.getElementById('aiImpactRow');
     row.innerHTML = '';
@@ -1947,7 +1911,8 @@
       row.innerHTML = '<div class="panel-empty">No data available.</div>';
       return;
     }
-    metrics.forEach((metric) => {
+    const shown = metrics.filter((m) => OVERVIEW_IMPACT_METRICS.includes(m.id));
+    (shown.length > 0 ? shown : metrics.slice(0, 4)).forEach((metric) => {
       const tile = document.createElement('div');
       tile.className = 'stat-tile';
       const label = document.createElement('div');
@@ -1976,9 +1941,12 @@
      `basis` states the fact that produced the card, so ordering is never an opaque score.
      Each button navigates to REAL existing functionality - and for a specialist action it
      reuses the Run a Specialist page's own selection, never a parallel run path. */
-  function renderNextActions(actions) {
+  function renderNextActions(allActions) {
     const area = document.getElementById('nextActionsArea');
     area.innerHTML = '';
+    // Top 3 only. There is no existing page that lists every derived action, so no
+    // "view all" link is offered here rather than pointing one at an unrelated page.
+    const actions = Array.isArray(allActions) ? allActions.slice(0, OVERVIEW_ACTION_LIMIT) : allActions;
     if (!Array.isArray(actions) || actions.length === 0) {
       area.innerHTML =
         '<div class="panel-card panel-empty">Nothing is waiting on you right now — no approvals are pending and no saved run has produced an outstanding recommendation.</div>';
@@ -2129,12 +2097,12 @@
       return;
     }
 
+    // Three lines on the executive view; the input/output split and per-run detail remain
+    // in the saved runs themselves, reachable through "View history".
     const rows = [
       ['Total tokens', usage.tokens_total],
-      ['Input tokens', usage.tokens_input],
-      ['Output tokens', usage.tokens_output],
       ['Model calls', usage.model_calls],
-      ['Tool calls', usage.tool_calls],
+      ['Runs covered', usage.runs_with_usage],
     ];
     rows.forEach(([label, value]) => {
       if (value === null || value === undefined) return;
@@ -2152,8 +2120,7 @@
 
     const note = document.createElement('div');
     note.className = 'panel-note';
-    note.textContent =
-      'Covers ' + usage.runs_with_usage + ' saved run(s) that recorded usage. ' + (usage.cost_reason || '');
+    note.textContent = usage.cost_reason || '';
     area.appendChild(note);
   }
 
@@ -2168,14 +2135,23 @@
       renderOverviewBusiness(data.business, data.channels);
       renderChannels(data.channels);
       renderGrowthStatus(data.growth || {});
-      renderOpportunities(data.opportunities || []);
-      hydrateAgentCards(data.specialists || {});
+
+      // Overview is a summary, so each list is capped here and the full record stays on
+      // its existing detailed page. The server already returned more than this - nothing
+      // is re-fetched to show the rest, the "view all" links just navigate there.
+      const allOpportunities = data.opportunities || [];
+      renderOpportunities(allOpportunities.slice(0, OVERVIEW_OPPORTUNITY_LIMIT));
+      const viewAllOpps = document.getElementById('viewAllOpportunitiesLink');
+      if (viewAllOpps) viewAllOpps.hidden = allOpportunities.length <= OVERVIEW_OPPORTUNITY_LIMIT;
+
+      renderSpecialistSummary(data.specialists || {});
+      const activity = data.activity || [];
       renderActivityList(
         'recentActivityArea',
-        data.activity || [],
+        activity.slice(0, OVERVIEW_ACTIVITY_LIMIT),
         'No AI activity recorded yet — run a specialist or ask the Chief something, and it will appear here.'
       );
-      renderActivityList('recentRunsArea', (data.activity || []).slice(0, 4), 'No saved runs yet.');
+      renderActivityList('recentRunsArea', activity.slice(0, OVERVIEW_RUNS_LIMIT), 'No saved runs yet.');
       renderStoreHealth(data.health || []);
       renderApprovalsOverview(data.growth || {});
       renderAiImpact(data.ai_impact || []);
@@ -2212,8 +2188,31 @@
     await loadStoreMetrics();
   }
 
-  const viewAllHistoryBtn = document.getElementById('viewAllHistoryBtn');
-  if (viewAllHistoryBtn) viewAllHistoryBtn.addEventListener('click', () => selectPage('history'));
+  /* ---------- Overview summary limits + "view all" routing ----------
+     Overview is an executive summary: each list is capped, and every link below goes to
+     an EXISTING page (History, Run a Specialist, Approval Center). No new page, no new
+     endpoint, and no destination is invented - a link is only rendered where a real
+     destination exists. */
+  const OVERVIEW_OPPORTUNITY_LIMIT = 3;
+  const OVERVIEW_ACTION_LIMIT = 3;
+  const OVERVIEW_ACTIVITY_LIMIT = 4;
+  const OVERVIEW_RUNS_LIMIT = 3;
+
+  function wireOverviewLink(id, handler) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', handler);
+  }
+
+  wireOverviewLink('viewAllHistoryBtn', () => selectPage('history'));
+  wireOverviewLink('viewAllActivityLink', () => selectPage('history'));
+  wireOverviewLink('viewAiActivityLink', () => selectPage('history'));
+  wireOverviewLink('viewAllOpportunitiesLink', () => selectPage('history'));
+  wireOverviewLink('viewUsageHistoryLink', () => selectPage('history'));
+  wireOverviewLink('reviewApprovalsLink', () => selectPage('approvals'));
+  wireOverviewLink('openSpecialistsLink', () => selectPage('specialists'));
+  // Performance detail = the Analytics & Optimization specialist, which is what actually
+  // produces a deeper store-performance result in this system.
+  wireOverviewLink('perfDetailsLink', () => openSpecialistOnRunPage('analytics'));
 
   // Initial load: Overview starts as the active page (see index.html's
   // `pageOverview` carrying the `active` class by default), so it must hydrate

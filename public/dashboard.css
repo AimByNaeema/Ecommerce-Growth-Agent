@@ -889,11 +889,68 @@
     }
   }
 
+
+  /* ---- Executive Overview layout ----
+     Overview is a summary surface: compact rows and small stat grids instead of large
+     cards, so the whole business + AI picture fits in a short scroll. Existing tokens
+     only. */
+
+  .section-row-right { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+  .panel-heading {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--ink-faint); margin-bottom: 12px;
+  }
+  /* An even 50/50 split for the two AI summary panels, vs .ov-columns' 1.3fr/1fr. */
+  .ov-columns-even { grid-template-columns: 1fr 1fr; }
+
+  /* Small stat cells for the AI summary panels - no card chrome of their own, since they
+     already sit inside a panel-card. */
+  .mini-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 14px 12px; }
+  .mini-stat-grid .stat-tile { background: none; border: none; padding: 0; margin: 0; }
+  .mini-stat-grid .stat-label { font-size: 10px; letter-spacing: 0.05em; }
+  .mini-stat-grid .stat-value { font-size: 20px; }
+  .mini-stat-grid .stat-detail { display: none; }
+
+  /* Compact specialist rows, replacing the seven large agent cards. */
+  .spec-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+    background: none; border: none; border-bottom: 1px solid var(--border);
+    padding: 10px 0; font-family: inherit; text-align: left; cursor: pointer;
+  }
+  .spec-row:last-child { border-bottom: none; }
+  .spec-row:hover .spec-row-name { color: var(--accent); }
+  .spec-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .spec-row-name { font-size: 12.5px; font-weight: 500; color: var(--ink); }
+  .spec-row-meta {
+    font-size: 10.5px; color: var(--ink-faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .approval-headline { font-size: 14px; font-weight: 600; color: var(--ink); }
+  .approval-headline-pending { color: var(--warn); }
+
+  @media (max-width: 900px) {
+    .ov-columns-even { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 620px) {
+    /* Two KPI cards per row stays readable at 360-390px; one per row wastes the screen. */
+    .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mini-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .section-row { flex-wrap: wrap; row-gap: 4px; }
+    .section-row-right { justify-content: flex-start; }
+  }
+
   @media (max-width: 860px) {
     .app-shell { flex-direction: column; }
-    .sidebar { width: 100%; height: auto; position: static; flex-direction: row; overflow-x: auto; padding: 14px; }
-    .brand { padding: 0 10px 0 0; }
-    .nav-group { flex-direction: row; flex: none; }
+    /* Was `overflow-x: auto`, which turned the nav into a sideways-scrolling strip and
+       produced the horizontal scrollbar the dashboard showed on a phone. Wrapping instead
+       keeps every nav item reachable with no horizontal scrolling anywhere on the page. */
+    .sidebar { width: 100%; height: auto; position: static; flex-direction: column; align-items: stretch; overflow-x: visible; padding: 12px 14px; gap: 10px; }
+    .brand { padding: 0; }
+    .nav-group { flex-direction: row; flex-wrap: wrap; flex: none; gap: 6px; }
+    .nav-item { flex: 0 1 auto; padding: 7px 11px; font-size: 12px; }
     .sidebar-foot { display: none; }
     .main { max-height: none; }
     .main-header { padding: 20px 18px 16px; }

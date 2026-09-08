@@ -64,11 +64,11 @@
       </div>
     </header>
 
-    <!-- ============ OVERVIEW PAGE ============ -->
+    <!-- ============ OVERVIEW PAGE ============
+         Executive command center. Every section here is a SUMMARY that links into an
+         existing detailed page (Run a Specialist / Approval Center / History) - the full
+         record lists deliberately live there, not here. -->
     <section class="page active" id="pageOverview">
-      <div class="overview-intro">
-        <p>Everything below is read from your real, connected store and the Chief's own saved run history — nothing here is sample data. Store metrics refresh from Shopify automatically (cached briefly); nothing on this page ever runs a specialist or spends AI budget on its own.</p>
-      </div>
 
       <!-- Business / store identity -->
       <div class="ov-header">
@@ -83,7 +83,7 @@
         </div>
       </div>
 
-      <!-- Store overview metrics -->
+      <!-- Business KPIs -->
       <div class="section-label">Store overview</div>
       <div class="metric-grid" id="storeMetricGrid">
         <div class="metric-tile"><div class="metric-tile-label">Orders</div><div class="metric-tile-value unavailable">Loading…</div></div>
@@ -92,7 +92,10 @@
       <!-- Performance: real trend charts over the orders already pulled -->
       <div class="section-row">
         <div class="section-label">Performance</div>
-        <div class="perf-range" id="perfRange"></div>
+        <div class="section-row-right">
+          <span class="perf-range" id="perfRange"></span>
+          <button class="section-link" id="perfDetailsLink" type="button">View details →</button>
+        </div>
       </div>
       <div class="panel-card perf-card">
         <div class="perf-tabs" id="perfTabs" role="tablist" aria-label="Performance metric"></div>
@@ -112,52 +115,81 @@
         </div>
       </div>
 
-      <!-- AI impact -->
-      <div class="section-label">AI impact</div>
-      <div class="stat-row" id="aiImpactRow"></div>
+      <!-- AI executive summary: impact + growth status, side by side and trimmed to the
+           few figures that answer "what has the AI done for me?" at a glance. -->
+      <div class="section-row">
+        <div class="section-label">AI executive summary</div>
+        <button class="section-link" id="viewAiActivityLink" type="button">View AI activity →</button>
+      </div>
+      <div class="ov-columns ov-columns-even">
+        <div class="panel-card">
+          <div class="panel-heading">Impact</div>
+          <div class="mini-stat-grid" id="aiImpactRow"></div>
+        </div>
+        <div class="panel-card">
+          <div class="panel-heading">Growth status</div>
+          <div class="mini-stat-grid" id="growthStatusRow"></div>
+        </div>
+      </div>
 
-      <!-- AI growth status -->
-      <div class="section-label">AI growth status</div>
-      <div class="stat-row" id="growthStatusRow"></div>
-
-      <!-- Top growth opportunities -->
-      <div class="section-row"><div class="section-label">Top growth opportunities</div></div>
+      <!-- Top growth opportunities (top 3 only) -->
+      <div class="section-row">
+        <div class="section-label">Top growth opportunities</div>
+        <button class="section-link" id="viewAllOpportunitiesLink" type="button" hidden>View all opportunities →</button>
+      </div>
       <div id="opportunityListArea"><div class="panel-card panel-empty">Loading…</div></div>
 
-      <!-- Next best actions -->
+      <!-- Next best actions (top 3 only) -->
       <div class="section-label">Next best actions</div>
       <div id="nextActionsArea"><div class="panel-card panel-empty">Loading…</div></div>
 
-      <!-- AI specialists -->
-      <div class="section-label">AI specialists</div>
-      <div class="agent-grid" id="agentGrid"></div>
+      <!-- AI specialists: compact status list, not seven large cards. Each row opens the
+           existing Run a Specialist page with that specialist selected. -->
+      <div class="section-row">
+        <div class="section-label">AI specialists</div>
+        <button class="section-link" id="openSpecialistsLink" type="button">Open specialists →</button>
+      </div>
+      <div class="panel-card" id="specialistSummaryArea"><div class="panel-empty">Loading…</div></div>
 
       <div class="ov-columns">
         <div>
-          <div class="section-row"><div class="section-label">Recent AI activity</div></div>
+          <div class="section-row">
+            <div class="section-label">Recent AI activity</div>
+            <button class="section-link" id="viewAllActivityLink" type="button">View all activity →</button>
+          </div>
           <div class="panel-card" id="recentActivityArea"><div class="panel-empty">Loading…</div></div>
+
+          <div class="section-row">
+            <div class="section-label">Recent runs</div>
+            <button class="section-link" id="viewAllHistoryBtn" type="button">View all history →</button>
+          </div>
+          <div class="panel-card" id="recentRunsArea"><div class="panel-empty">Loading…</div></div>
         </div>
         <div>
-          <div class="section-label">Connected channels</div>
-          <div class="panel-card" id="channelListArea"><div class="panel-empty">Loading…</div></div>
-
-          <div class="section-row"><div class="section-label">Approvals</div></div>
+          <div class="section-row">
+            <div class="section-label">Approvals</div>
+            <button class="section-link" id="reviewApprovalsLink" type="button" hidden>Review approvals →</button>
+          </div>
           <div class="panel-card" id="approvalsOverviewArea"><div class="panel-empty">Loading…</div></div>
+
+          <div class="section-row">
+            <div class="section-label">Chief Orchestrator</div>
+          </div>
+          <div class="panel-card" id="orchestratorArea"><div class="panel-empty">Loading…</div></div>
 
           <div class="section-label">Store health</div>
           <div class="panel-card" id="storeHealthArea"><div class="panel-empty">Loading…</div></div>
 
-          <div class="section-row"><div class="section-label">Chief Orchestrator</div></div>
-          <div class="panel-card" id="orchestratorArea"><div class="panel-empty">Loading…</div></div>
+          <div class="section-label">Connected channels</div>
+          <div class="panel-card" id="channelListArea"><div class="panel-empty">Loading…</div></div>
 
-          <div class="section-row"><div class="section-label">AI usage</div></div>
+          <div class="section-row">
+            <div class="section-label">AI usage</div>
+            <button class="section-link" id="viewUsageHistoryLink" type="button">View history →</button>
+          </div>
           <div class="panel-card" id="aiUsageArea"><div class="panel-empty">Loading…</div></div>
         </div>
       </div>
-
-      <div class="section-row"><div class="section-label">Recent runs</div></div>
-      <div class="panel-card" id="recentRunsArea"><div class="panel-empty">Loading…</div></div>
-      <button class="link-btn" id="viewAllHistoryBtn" type="button">View all history →</button>
     </section>
 
     <!-- ============ ASK PAGE ============ -->
