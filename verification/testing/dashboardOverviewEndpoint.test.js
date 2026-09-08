@@ -519,6 +519,222 @@ async function main() {
     );
   });
 
+
+  // --- The business + AI visibility sections -------------------------------------------
+
+  await testAsync('GET /overview: AI impact reports null - not 0 - for a metric with no basis yet', async () => {
+    // A dedicated empty store dir: with no saved runs at all, "products analyzed" has no
+    // basis, and 0 would falsely read as "we analyzed nothing".
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-empty-'));
+    const savedDir = process.env.RUN_HISTORY_STORE_DIR;
+    process.env.RUN_HISTORY_STORE_DIR = emptyDir;
+    try {
+      await withServer(async (port) => {
+        const res = await authedGet(port, '/overview');
+        const data = JSON.parse(res.raw);
+        const products = data.ai_impact.find((m) => m.id === 'products_analyzed');
+        assert.strictEqual(products.value, null, 'must be null, never 0, when no Product run exists');
+        const tokens = data.ai_impact.find((m) => m.id === 'model_tokens');
+        assert.strictEqual(tokens.value, null, 'token total must be null when no run recorded usage');
+      });
+    } finally {
+      process.env.RUN_HISTORY_STORE_DIR = savedDir;
+    }
+  });
+
+  await testAsync('GET /overview: AI impact counts come from real saved records, never invented', async () => {
+    seedRunRecord({
+      run_id: 'run-impact-product',
+      kind: 'run',
+      specialist_id: 'product',
+      specialist_name: 'Product',
+      status: 'success',
+      summary: 'Product completed.',
+      created_at: '2026-02-01T00:00:00.000Z',
+      result: { outputs: { status: 'success', result: [{ a: 1 }, { a: 2 }] } },
+    });
+    await withServer(async (port) => {
+      const res = await authedGet(port, '/overview');
+      const data = JSON.parse(res.raw);
+      const products = data.ai_impact.find((m) => m.id === 'products_analyzed');
+      // Exactly the array length the saved record carries - not a sum across runs, which
+      // would double-count a re-read of the same catalog.
+      assert.strictEqual(products.value, 2);
+      const tasks = data.ai_impact.find((m) => m.id === 'tasks_completed');
+      assert.strictEqual(typeof tasks.value, 'number');
+    });
+  });
+
+  await testAsync('GET /overview: AI usage reports real tokens and NEVER a cost figure', async () => {
+    seedRunRecord({
+      run_id: 'run-usage-1',
+      kind: 'orchestrate',
+      status: 'success',
+      summary: 'Orchestrated.',
+      created_at: '2026-02-02T00:00:00.000Z',
+      result: {
+        usage_summary: {
+          total_events: 2,
+          by_category: { model_call: { count: 1, tokens_input: 100, tokens_output: 20, tokens_total: 120 }, tool_call: { count: 3 } },
+        },
+      },
+    });
+    await withServer(async (port) => {
+      const res = await authedGet(port, '/overview');
+      const { ai_usage: usage } = JSON.parse(res.raw);
+      assert.strictEqual(usage.available, true);
+      assert.ok(usage.tokens_total >= 120, 'must include the seeded run\'s real token total');
+      assert.ok(usage.runs_with_usage >= 1);
+      // This project has no price table, so a currency figure would be fabricated.
+      assert.strictEqual(usage.cost, null);
+      assert.ok(typeof usage.cost_reason === 'string' && usage.cost_reason.length > 0);
+    });
+  });
+
+  await testAsync('GET /overview: orchestrator status is read from saved runs and reports "ready" when none exist', async () => {
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-orch-empty-'));
+    const savedDir = process.env.RUN_HISTORY_STORE_DIR;
+    process.env.RUN_HISTORY_STORE_DIR = emptyDir;
+    try {
+      await withServer(async (port) => {
+        const res = await authedGet(port, '/overview');
+        const { orchestrator } = JSON.parse(res.raw);
+        assert.strictEqual(orchestrator.state, 'ready');
+        assert.strictEqual(orchestrator.last_run, null);
+        assert.strictEqual(orchestrator.paused_awaiting_approval, 0);
+        // Says so plainly rather than leaving an unexplained empty panel.
+        assert.ok(typeof orchestrator.detail === 'string' && orchestrator.detail.length > 0);
+      });
+    } finally {
+      process.env.RUN_HISTORY_STORE_DIR = savedDir;
+    }
+  });
+
+  await testAsync('GET /overview: next best actions route only to real pages, and never invent an action', async () => {
+    const VALID_PAGES = ['overview', 'ask', 'specialists', 'orchestrator', 'approvals', 'history'];
+    await withServer(async (port) => {
+      const res = await authedGet(port, '/overview');
+      const data = JSON.parse(res.raw);
+      for (const action of data.next_actions) {
+        assert.ok(VALID_PAGES.includes(action.page), `action "${action.id}" points at a real dashboard page`);
+        assert.ok(typeof action.title === 'string' && action.title.length > 0);
+        // Every card must name the fact that produced it - no opaque scores.
+        assert.ok(typeof action.basis === 'string' && action.basis.length > 0, `action "${action.id}" must state its basis`);
+        assert.ok(['high', 'normal'].includes(action.emphasis));
+        if (action.page === 'history') assert.ok(action.run_id, 'a history action must carry a real run id');
+      }
+    });
+  });
+
+  await testAsync('GET /store/metrics: the funnel reports only stages a real source backs, and never computes drop-off', async () => {
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async ({ analyticsCapability }) =>
+        analyticsCapability === 'sales'
+          ? {
+              status: 'success',
+              error: null,
+              result: {
+                limitations: [],
+                specialized_records: [
+                  {
+                    sales: {
+                      actual_metrics: [
+                        { label: 'order', value: '1.00', unit: 'USD', createdAt: '2026-03-01T00:00:00Z' },
+                        { label: 'order', value: '2.00', unit: 'USD', createdAt: '2026-03-02T00:00:00Z' },
+                      ],
+                    },
+                  },
+                ],
+              },
+            }
+          : { status: 'empty', result: null, error: null },
+      () =>
+        withMocked(shopifyClient, 'getOrders', async () => [], () =>
+          withServer(async (port) => {
+            const res = await authedGet(port, '/store/metrics');
+            const { funnel } = JSON.parse(res.raw);
+            const byId = Object.fromEntries(funnel.stages.map((s) => [s.id, s]));
+
+            // Orders is the ONE stage a read-only Admin API genuinely supports.
+            assert.strictEqual(byId.orders.available, true);
+            assert.strictEqual(byId.orders.value, 2);
+
+            for (const id of ['sessions', 'product_views', 'add_to_cart', 'checkout']) {
+              assert.strictEqual(byId[id].available, false, `${id} must not be reported as measured`);
+              // null, never 0 - a 0 here would read as "nobody visited".
+              assert.strictEqual(byId[id].value, null, `${id} must carry no fabricated number`);
+              assert.ok(typeof byId[id].reason === 'string' && byId[id].reason.length > 0);
+            }
+
+            // A conversion percentage needs a denominator this system does not have.
+            assert.strictEqual(funnel.drop_off_available, false);
+            assert.ok(typeof funnel.drop_off_reason === 'string' && funnel.drop_off_reason.length > 0);
+          })
+        )
+    );
+  });
+
+  await testAsync('GET /store/metrics: top products come from real line items, with revenue explicitly unavailable', async () => {
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async () => ({ status: 'empty', result: null, error: null }),
+      () =>
+        withMocked(
+          shopifyClient,
+          'getOrders',
+          async () => [
+            { test: false, lineItems: [{ title: 'Bundle A', quantity: 4, sku: 'A' }] },
+            { test: false, lineItems: [{ title: 'Bundle B', quantity: 1, sku: 'B' }] },
+            { test: true, lineItems: [{ title: 'Test Bundle', quantity: 50, sku: 'T' }] },
+          ],
+          () =>
+            withServer(async (port) => {
+              const res = await authedGet(port, '/store/metrics');
+              const { top_products: top } = JSON.parse(res.raw);
+              assert.strictEqual(top.available, true);
+              assert.strictEqual(top.products[0].title, 'Bundle A');
+              assert.strictEqual(top.products[0].units, 4);
+              assert.ok(
+                !top.products.some((p) => p.title === 'Test Bundle'),
+                'a Shopify test order must never appear in a real sales ranking'
+              );
+              // Stated as unavailable with a reason rather than apportioned from order totals.
+              assert.strictEqual(top.revenue_available, false);
+              assert.ok(typeof top.revenue_reason === 'string' && top.revenue_reason.length > 0);
+              assert.strictEqual(top.views_available, false);
+            })
+        )
+    );
+  });
+
+  await testAsync('GET /store/metrics: a failed order read degrades Top Products alone, never the whole response', async () => {
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async () => ({ status: 'success', result: { specialized_records: [{}] }, error: null }),
+      () =>
+        withMocked(
+          shopifyClient,
+          'getOrders',
+          async () => {
+            throw new Error('simulated Shopify failure');
+          },
+          () =>
+            withServer(async (port) => {
+              const res = await authedGet(port, '/store/metrics');
+              assert.strictEqual(res.status, 200, 'the rest of the response must still be served');
+              const data = JSON.parse(res.raw);
+              assert.strictEqual(data.top_products.available, false);
+              assert.deepStrictEqual(data.top_products.products, []);
+              assert.ok(data.capabilities, 'the capability results must still be present');
+            })
+        )
+    );
+  });
+
   await testAsync('this test file is registered in the suite runner', () => {
     const { TEST_FILES } = require('./runAllTests');
     assert.ok(TEST_FILES.includes('dashboardOverviewEndpoint.test.js'));

@@ -83,7 +83,7 @@ const analyticsDataTool = require('./tools/analyticsDataTool');
 // (agent/core/analyticsMetricsCalculator.js's calculateSalesTrend). Used below to turn
 // the orders tools/analyticsDataTool.js ALREADY pulled into a revenue/orders trend -
 // no second analytics engine, no extra Shopify call, and no number this server invents.
-const { calculateSalesTrend } = require('./agent/core/analyticsMetricsCalculator');
+const { calculateSalesTrend, calculateTopProductsBySales } = require('./agent/core/analyticsMetricsCalculator');
 
 const BUSINESS_CONFIG_PATH = path.join(__dirname, 'configuration', 'business.yaml');
 
@@ -570,6 +570,77 @@ function countRecordApprovals(record) {
   return { pending, recorded };
 }
 
+// The Sales Funnel's data layer.
+//
+// THIS FUNNEL IS MOSTLY EMPTY ON PURPOSE, AND THAT IS THE HONEST RESULT. Shopify's
+// read-only Admin API exposes ORDERS. It does not expose sessions, product views, or
+// add-to-cart events - that is storefront analytics, a different product surface - and
+// this system has no analytics adapter that reports them (tools/analyticsDataTool.js
+// offers no 'traffic' or 'conversion' capability for exactly this reason).
+//
+// So four of the five stages carry no number and say why. The alternative - deriving
+// "views" from orders, or showing a plausible-looking cart figure - would be fabricating
+// the precise numbers a funnel exists to be trusted on. An owner reading this section
+// learns something real and actionable: which tracking they do not yet have.
+//
+// Because the upper stages are unknown, DROP-OFF BETWEEN STAGES IS NOT COMPUTED. A
+// conversion percentage needs a denominator this system does not have, and inventing one
+// would be the single most misleading number this dashboard could show.
+const FUNNEL_UNAVAILABLE_REASON =
+  "Shopify's read-only Admin API does not expose this, and no connected analytics source in this system reports it.";
+
+function buildFunnel(salesOutcome) {
+  const salesDomain =
+    salesOutcome && salesOutcome.result && Array.isArray(salesOutcome.result.specialized_records)
+      ? salesOutcome.result.specialized_records[0] && salesOutcome.result.specialized_records[0].sales
+      : null;
+  const orderMetrics =
+    salesDomain && Array.isArray(salesDomain.actual_metrics)
+      ? salesDomain.actual_metrics.filter((metric) => metric && metric.label === 'order')
+      : [];
+  const ordersKnown = Boolean(salesOutcome && salesOutcome.status !== 'failed' && salesDomain);
+
+  return {
+    // Stated up front so the section can never be read as "your funnel is broken".
+    drop_off_available: false,
+    drop_off_reason:
+      'Stage-to-stage drop-off needs the upper-funnel counts above, which no connected source reports. It is left uncalculated rather than estimated.',
+    stages: [
+      { id: 'sessions', label: 'Visitors / sessions', value: null, available: false, reason: FUNNEL_UNAVAILABLE_REASON },
+      { id: 'product_views', label: 'Product views', value: null, available: false, reason: FUNNEL_UNAVAILABLE_REASON },
+      { id: 'add_to_cart', label: 'Add to cart', value: null, available: false, reason: FUNNEL_UNAVAILABLE_REASON },
+      { id: 'checkout', label: 'Checkout started', value: null, available: false, reason: FUNNEL_UNAVAILABLE_REASON },
+      {
+        id: 'orders',
+        label: 'Orders',
+        value: ordersKnown ? orderMetrics.length : null,
+        available: ordersKnown,
+        reason: ordersKnown ? null : 'The live order pull did not succeed for this request.',
+      },
+    ],
+  };
+}
+
+// Top Products, from the SAME read-only adapter the rest of this endpoint uses.
+// agent/core/analyticsMetricsCalculator.js's calculateTopProductsBySales() does the
+// counting - no product-ranking engine is introduced here, and no score is computed.
+//
+// Per-product REVENUE is absent by design: getOrders()' line items carry no per-line
+// price (see calculateTopProductsBySales' own header), so it is reported as unavailable
+// rather than apportioned out of each order's total.
+function buildTopProducts(orders) {
+  const products = calculateTopProductsBySales(Array.isArray(orders) ? orders : [], { limit: 5 });
+  return {
+    available: products.length > 0,
+    products,
+    revenue_available: false,
+    revenue_reason:
+      'Shopify order line items carry no per-line price in this read, so per-product revenue would have to be apportioned from the order total - it is left out rather than estimated.',
+    views_available: false,
+    views_reason: "Per-product views and conversion need storefront analytics, which Shopify's read-only Admin API does not expose.",
+  };
+}
+
 // The Performance charts' data layer.
 //
 // SOURCE: the `sales` capability's OWN actual_metrics - the per-order records
@@ -657,6 +728,262 @@ function buildTrends(salesOutcome) {
       { id: 'sessions', label: 'Sessions / traffic', unit: null, available: false, reason: TREND_UNAVAILABLE_REASON, channels: [] },
       { id: 'conversion_rate', label: 'Conversion rate', unit: '%', available: false, reason: TREND_UNAVAILABLE_REASON, channels: [] },
     ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The Overview's business + AI visibility sections. Every one of these is composed
+// from state this process ALREADY holds - saved run records, the audit/approval data
+// those records carry, and each adapter's own connection check. None of them fetches
+// anything, runs a specialist, or spends a model token, so they stay safe on every
+// page load.
+//
+// The standing rule from the sections above applies unchanged here: a figure this
+// project cannot support is ABSENT (null), and the dashboard renders "No data" for it.
+// Nothing below estimates, apportions, or scores.
+// ---------------------------------------------------------------------------
+
+// Which saved-record kinds represent the Chief/orchestration layer rather than a single
+// specialist run. Used by both the orchestrator status panel and the AI-impact counts.
+const ORCHESTRATION_KINDS = ['orchestrate', 'growth_workflow', 'optimization_cycle'];
+
+// "What has the AI actually contributed?" - every entry is a COUNT of real saved records
+// or of the approval/opportunity objects those records already carry. A metric whose
+// basis does not exist yet is emitted with value null rather than 0, because "we have
+// never done this" and "we did this zero times" read identically as a bare 0 and only
+// one of them is true here.
+function buildAiImpact({ summaries, specialists, opportunities, approvals, usage }) {
+  const successful = summaries.filter((summary) => summary.status === 'success');
+  const orchestrationRuns = summaries.filter((summary) => ORCHESTRATION_KINDS.includes(summary.kind));
+  const seoOpportunities = opportunities.filter((opportunity) => opportunity.specialist_id === 'seo');
+
+  // The catalog size the most recent Product run actually retrieved. Deliberately NOT
+  // summed across runs: re-running Product re-reads the same catalog, so a sum would
+  // report 150 "products analyzed" for one 50-product store.
+  const productEntry = specialists.product;
+  const productsAnalyzed = productEntry && typeof productEntry.last_result_count === 'number'
+    ? productEntry.last_result_count
+    : null;
+
+  return [
+    {
+      id: 'products_analyzed',
+      label: 'Products analyzed',
+      value: productsAnalyzed,
+      detail: productsAnalyzed === null ? null : 'in the most recent Product run',
+    },
+    {
+      id: 'opportunities_identified',
+      label: 'Opportunities identified',
+      value: opportunities.length,
+      detail: 'relayed from saved results',
+    },
+    {
+      id: 'seo_opportunities',
+      label: 'SEO opportunities',
+      value: seoOpportunities.length,
+      detail: null,
+    },
+    {
+      id: 'tasks_completed',
+      label: 'Tasks completed',
+      value: successful.length,
+      detail: `of ${summaries.length} saved run(s)`,
+    },
+    {
+      id: 'workflows_run',
+      label: 'Orchestrated runs',
+      value: orchestrationRuns.length,
+      detail: 'Chief / workflow / cycle',
+    },
+    {
+      id: 'actions_gated',
+      label: 'Actions gated for approval',
+      value: approvals.recorded,
+      detail: approvals.pending > 0 ? `${approvals.pending} still pending` : 'none outstanding',
+    },
+    {
+      id: 'model_tokens',
+      label: 'Model tokens used',
+      value: usage.tokens_total,
+      detail: usage.tokens_total === null ? null : `across ${usage.runs_with_usage} run(s) that recorded usage`,
+    },
+  ];
+}
+
+// "What should the owner do next?" - a ROUTER over work this project has already
+// produced, never a second recommendation engine. Each card is triggered by one concrete,
+// checkable fact, and `basis` names that fact so the ordering is never an opaque score
+// the owner has to trust. `page` is an existing dashboard page id, so every button lands
+// on real functionality - there are no decorative buttons here.
+function buildNextActions({ opportunities, specialists, approvals, summaries, channels }) {
+  const actions = [];
+
+  // 1. A human decision that is actually blocking a gated action outranks everything
+  // else: nothing else the owner does will unblock it.
+  if (approvals.pending > 0) {
+    actions.push({
+      id: 'review_approvals',
+      title: `Review ${approvals.pending} action(s) waiting for your approval`,
+      basis: 'These are gated in saved runs and cannot proceed without a human decision.',
+      emphasis: 'high',
+      cta: 'Review',
+      page: 'approvals',
+    });
+  }
+
+  // 2. A store that is not connected makes every other recommendation moot.
+  const shopify = channels.find((channel) => channel.id === 'shopify');
+  if (!shopify || !shopify.configured) {
+    actions.push({
+      id: 'connect_store',
+      title: 'Connect your Shopify store',
+      basis: 'No Shopify credentials are configured, so no specialist can read real store data.',
+      emphasis: 'high',
+      cta: 'View channels',
+      page: 'overview',
+    });
+  }
+
+  // 3. Opportunities the specialists already produced, strongest evidence first. A
+  // 'verified' verification_status is the source record's OWN judgment - relayed, not
+  // assigned here.
+  const rankedOpportunities = [...opportunities].sort((a, b) => {
+    const score = (o) => (o.verification_status === 'verified' ? 1 : 0);
+    return score(b) - score(a);
+  });
+  for (const opportunity of rankedOpportunities.slice(0, 2)) {
+    actions.push({
+      id: `opportunity_${opportunity.run_id}_${actions.length}`,
+      title: opportunity.title,
+      basis:
+        (opportunity.specialist_name ? `${opportunity.specialist_name} produced this` : 'Produced by a saved run') +
+        (opportunity.verification_status === 'verified' ? ', from verified evidence.' : '.'),
+      emphasis: opportunity.verification_status === 'verified' ? 'high' : 'normal',
+      cta: 'View result',
+      page: 'history',
+      run_id: opportunity.run_id,
+    });
+  }
+
+  // 4. A specialist that stopped because the request lacked structured input is a
+  // concrete, fixable gap - the run's own summary already says exactly what was missing.
+  const blocked = summaries.find((summary) => summary.status === 'partial' && summary.specialist_id);
+  if (blocked) {
+    const dashboardId = INTERNAL_TO_DASHBOARD_SPECIALIST_ID[blocked.specialist_id];
+    actions.push({
+      id: 'unblock_specialist',
+      title: `Give ${blocked.specialist_name || dashboardId || 'a specialist'} the input it asked for`,
+      basis: blocked.summary || 'This run stopped because a required input was missing.',
+      emphasis: 'normal',
+      cta: 'Open',
+      page: 'specialists',
+      specialist_id: dashboardId || null,
+    });
+  }
+
+  // 5. A specialist that has genuinely never run is real unused capability.
+  const neverRun = Object.keys(specialists).filter((id) => !specialists[id]);
+  if (neverRun.length > 0) {
+    actions.push({
+      id: 'run_unused_specialist',
+      title: `Run ${SPECIALIST_DISPLAY_NAMES[neverRun[0]] || neverRun[0]} for the first time`,
+      basis: `${neverRun.length} of ${Object.keys(specialists).length} specialists have never been run.`,
+      emphasis: 'normal',
+      cta: 'Run',
+      page: 'specialists',
+      specialist_id: neverRun[0],
+    });
+  }
+
+  return actions.slice(0, 5);
+}
+
+// The Chief/orchestration layer's real state, read from what it already saved. This adds
+// no status system of its own: `last_*` comes from the newest orchestration record, and
+// `paused_awaiting_approval` is the live count of runs THIS server process is holding
+// mid-flight for a human decision (server.js's orchestratorRuns and the two workflow
+// Maps - see their own comments on why that state is deliberately per-process).
+//
+// 'ready' means idle, not "healthy": with no orchestration record saved yet there is
+// simply nothing to report, and that is said plainly rather than dressed up as a status.
+function buildOrchestratorStatus({ summaries, pausedCount }) {
+  const latest = summaries.find((summary) => ORCHESTRATION_KINDS.includes(summary.kind)) || null;
+
+  let state;
+  if (pausedCount > 0) state = 'waiting_for_approval';
+  else if (!latest) state = 'ready';
+  else if (latest.status === 'success') state = 'completed';
+  else if (latest.status === 'error') state = 'error';
+  else state = 'incomplete';
+
+  return {
+    state,
+    paused_awaiting_approval: pausedCount,
+    last_run: latest
+      ? {
+          run_id: latest.run_id,
+          kind: latest.kind,
+          objective: latest.objective || null,
+          status: latest.status || null,
+          summary: latest.summary || null,
+          created_at: latest.created_at || null,
+        }
+      : null,
+    // Said explicitly so an empty panel is never mistaken for a broken orchestrator.
+    detail: latest ? null : 'The Chief Orchestrator has no saved run yet.',
+  };
+}
+
+// Real model/tool usage, summed from the usage ledgers usage/usageTracker.js already
+// wrote into saved run records. Nothing is estimated.
+//
+// COST IS DELIBERATELY ABSENT. This project has no price table anywhere - usage/
+// usageRecordModel.js's own comment calls a pricing engine a FUTURE addition - so any
+// currency figure here would be invented. Tokens are reported; cost is not, and the
+// dashboard says why rather than showing a plausible-looking number.
+//
+// Coverage is reported honestly too: today only the orchestration endpoints thread a
+// usage ledger into what they save, so `runs_with_usage` is usually smaller than the
+// total run count. Presenting the token sum without that denominator would imply the
+// figure covers every run, which it does not.
+function buildAiUsage(records) {
+  let tokensInput = 0;
+  let tokensOutput = 0;
+  let tokensTotal = 0;
+  let modelCalls = 0;
+  let toolCalls = 0;
+  let runsWithUsage = 0;
+  let sawAnyTokens = false;
+
+  for (const record of records) {
+    const summary = record && record.result && record.result.usage_summary;
+    if (!summary || typeof summary !== 'object' || !summary.by_category) continue;
+    runsWithUsage += 1;
+
+    const model = summary.by_category.model_call;
+    if (model && typeof model === 'object') {
+      if (Number.isFinite(model.tokens_input)) { tokensInput += model.tokens_input; sawAnyTokens = true; }
+      if (Number.isFinite(model.tokens_output)) { tokensOutput += model.tokens_output; sawAnyTokens = true; }
+      if (Number.isFinite(model.tokens_total)) { tokensTotal += model.tokens_total; sawAnyTokens = true; }
+      if (Number.isFinite(model.count)) modelCalls += model.count;
+    }
+    const tool = summary.by_category.tool_call;
+    if (tool && Number.isFinite(tool.count)) toolCalls += tool.count;
+  }
+
+  return {
+    available: runsWithUsage > 0,
+    runs_with_usage: runsWithUsage,
+    // null rather than 0 when no run recorded a token count - see this file's standing rule.
+    tokens_input: sawAnyTokens ? tokensInput : null,
+    tokens_output: sawAnyTokens ? tokensOutput : null,
+    tokens_total: sawAnyTokens ? tokensTotal : null,
+    model_calls: runsWithUsage > 0 ? modelCalls : null,
+    tool_calls: runsWithUsage > 0 ? toolCalls : null,
+    cost: null,
+    cost_reason:
+      'This project has no model price table, so an AI cost figure would have to be invented. Tokens are reported; cost is not.',
   };
 }
 
@@ -1389,6 +1716,7 @@ function createApp() {
     // One pass over the same bounded listing, reading each record once for the details a
     // summary does not carry (opportunities, approvals, result size). A record that has
     // gone missing or unreadable is skipped rather than faked.
+    const loadedRecords = [];
     for (const summary of summaries) {
       if (!summary.run_id) continue;
       let record;
@@ -1398,6 +1726,7 @@ function createApp() {
         continue;
       }
       if (!record) continue;
+      loadedRecords.push(record);
 
       opportunities.push(...extractOpportunities(record, summary));
 
@@ -1413,6 +1742,15 @@ function createApp() {
     }
 
     const specialistsRun = Object.values(specialists).filter(Boolean).length;
+
+    // Real, live count of runs THIS process is holding mid-flight for a human decision.
+    // Per-process by the same deliberate design documented on these Maps above - it is
+    // not a scheduler and is never presented as one.
+    const pausedCount = orchestratorRuns.size + growthWorkflowRuns.size + optimizationCycleRuns.size;
+    const aiUsage = buildAiUsage(loadedRecords);
+    const aiImpact = buildAiImpact({ summaries, specialists, opportunities, approvals, usage: aiUsage });
+    const nextActions = buildNextActions({ opportunities, specialists, approvals, summaries, channels });
+    const orchestrator = buildOrchestratorStatus({ summaries, pausedCount });
 
     res.json({
       business: {
@@ -1444,6 +1782,10 @@ function createApp() {
         last_run_at: summaries.length > 0 ? summaries[0].created_at || null : null,
       },
       opportunities: opportunities.slice(0, OVERVIEW_OPPORTUNITY_LIMIT),
+      ai_impact: aiImpact,
+      next_actions: nextActions,
+      orchestrator,
+      ai_usage: aiUsage,
       health: buildHealthChecks({ channels, summaries, historyReadable, approvals }),
       history_readable: historyReadable,
     });
@@ -1480,17 +1822,34 @@ function createApp() {
       // missing Shopify scope (e.g. read_customers) never blanks out the others - the
       // graceful degradation analyticsDataTool.js already implements per source.
       const capabilities = ['sales', 'products', 'inventory', 'customers'];
-      const outcomes = await Promise.all(
-        capabilities.map((analyticsCapability) =>
-          analyticsDataTool.runAnalyticsDataTool({ analyticsCapability, limit: 50 })
-        )
-      );
+      // Top Products needs per-order LINE ITEMS, which the analytics tool's own return
+      // shape does not carry (it reports order totals). So one read-only getOrders() runs
+      // alongside the capabilities - the same adapter, the same read, resolved in the same
+      // round of requests and covered by the same cache below, so it costs one extra
+      // Shopify read per TTL window rather than one per page load. A failure here degrades
+      // Top Products alone and never blanks out the rest of the response.
+      const [outcomes, ordersForProducts] = await Promise.all([
+        Promise.all(
+          capabilities.map((analyticsCapability) =>
+            analyticsDataTool.runAnalyticsDataTool({ analyticsCapability, limit: 50 })
+          )
+        ),
+        shopifyClient.getOrders({ limit: 50 }).catch((err) => {
+          console.error('GET /store/metrics could not read orders for Top Products:', err.message);
+          return null;
+        }),
+      ]);
 
+      const salesOutcome = outcomes[capabilities.indexOf('sales')];
       const payload = {
         fetched_at: new Date().toISOString(),
         capabilities: Object.fromEntries(capabilities.map((name, index) => [name, outcomes[index]])),
         // Built from the sales pull above - no additional Shopify request (see buildTrends).
-        trends: buildTrends(outcomes[capabilities.indexOf('sales')]),
+        trends: buildTrends(salesOutcome),
+        funnel: buildFunnel(salesOutcome),
+        top_products: ordersForProducts
+          ? buildTopProducts(ordersForProducts)
+          : { available: false, products: [], revenue_available: false, revenue_reason: null, views_available: false, views_reason: null },
       };
       metricsCache = { payload, cachedAtMs: Date.now() };
       res.json({ ...payload, cached: false });

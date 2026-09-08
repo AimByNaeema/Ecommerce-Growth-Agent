@@ -1814,6 +1814,349 @@
     });
   }
 
+  /* ---------- Sales funnel ----------
+     RELAY ONLY. Stage values and unavailability reasons both come from
+     GET /store/metrics's `funnel` block. A stage the server marked unavailable shows the
+     server's own reason - never a 0, a dash, or a bar of arbitrary width, any of which
+     would read as a measurement. Bar widths are drawn ONLY for stages that have a real
+     number, scaled against the largest real number present. */
+  function renderFunnel(funnel) {
+    const area = document.getElementById('funnelArea');
+    area.innerHTML = '';
+    if (!funnel || !Array.isArray(funnel.stages) || funnel.stages.length === 0) {
+      area.innerHTML = '<div class="panel-empty">No data available.</div>';
+      return;
+    }
+
+    const known = funnel.stages.filter((s) => s.available && typeof s.value === 'number');
+    const maxValue = known.length > 0 ? Math.max.apply(null, known.map((s) => s.value)) : 0;
+
+    funnel.stages.forEach((stage, i) => {
+      const row = document.createElement('div');
+      row.className = 'funnel-stage' + (stage.available ? '' : ' funnel-stage-unavailable');
+
+      const head = document.createElement('div');
+      head.className = 'funnel-stage-head';
+      const label = document.createElement('span');
+      label.className = 'funnel-stage-label';
+      label.textContent = stage.label;
+      const value = document.createElement('span');
+      value.className = 'funnel-stage-value';
+      value.textContent = stage.available && typeof stage.value === 'number' ? String(stage.value) : 'Not available';
+      head.appendChild(label);
+      head.appendChild(value);
+      row.appendChild(head);
+
+      const track = document.createElement('div');
+      track.className = 'funnel-bar-track';
+      if (stage.available && typeof stage.value === 'number' && maxValue > 0) {
+        const bar = document.createElement('div');
+        bar.className = 'funnel-bar';
+        bar.style.width = Math.max((stage.value / maxValue) * 100, 2) + '%';
+        track.appendChild(bar);
+      }
+      row.appendChild(track);
+
+      if (!stage.available && stage.reason) {
+        const why = document.createElement('div');
+        why.className = 'funnel-stage-reason';
+        why.textContent = stage.reason;
+        row.appendChild(why);
+      }
+      area.appendChild(row);
+
+      if (i < funnel.stages.length - 1) {
+        const arrow = document.createElement('div');
+        arrow.className = 'funnel-arrow';
+        arrow.textContent = '↓';
+        arrow.setAttribute('aria-hidden', 'true');
+        area.appendChild(arrow);
+      }
+    });
+
+    // Said plainly, because a funnel whose drop-off cannot be computed must not leave the
+    // owner guessing that the gaps are conversion losses.
+    if (funnel.drop_off_available === false && funnel.drop_off_reason) {
+      const note = document.createElement('div');
+      note.className = 'panel-note';
+      note.textContent = funnel.drop_off_reason;
+      area.appendChild(note);
+    }
+  }
+
+  /* ---------- Top products ----------
+     Rows come from GET /store/metrics's `top_products`, ranked by
+     agent/core/analyticsMetricsCalculator.js's calculateTopProductsBySales() over real
+     order line items. Revenue and views columns are deliberately absent - the server
+     states why, and that reason is shown rather than an empty or apportioned column. */
+  function renderTopProducts(topProducts) {
+    const area = document.getElementById('topProductsArea');
+    area.innerHTML = '';
+    if (!topProducts || !topProducts.available || !topProducts.products || topProducts.products.length === 0) {
+      area.innerHTML = '<div class="panel-empty">No data available — no real (non-test) order line items have been retrieved yet.</div>';
+      return;
+    }
+
+    const table = document.createElement('div');
+    table.className = 'product-table';
+    const header = document.createElement('div');
+    header.className = 'product-row product-row-head';
+    header.innerHTML =
+      '<span>Product</span><span class="product-num">Units</span><span class="product-num">Orders</span>';
+    table.appendChild(header);
+
+    topProducts.products.forEach((product) => {
+      const row = document.createElement('div');
+      row.className = 'product-row';
+      const name = document.createElement('span');
+      name.className = 'product-name';
+      name.textContent = product.title;
+      name.title = product.title;
+      const units = document.createElement('span');
+      units.className = 'product-num';
+      units.textContent = String(product.units);
+      const orders = document.createElement('span');
+      orders.className = 'product-num';
+      orders.textContent = String(product.orders);
+      row.appendChild(name);
+      row.appendChild(units);
+      row.appendChild(orders);
+      table.appendChild(row);
+    });
+    area.appendChild(table);
+
+    const notes = [];
+    if (topProducts.revenue_available === false && topProducts.revenue_reason) notes.push(topProducts.revenue_reason);
+    if (topProducts.views_available === false && topProducts.views_reason) notes.push(topProducts.views_reason);
+    if (notes.length > 0) {
+      const note = document.createElement('div');
+      note.className = 'panel-note';
+      note.textContent = notes.join(' ');
+      area.appendChild(note);
+    }
+  }
+
+  /* ---------- AI impact ----------
+     Distinct from AI growth status above: that answers "how much has run?", this answers
+     "what did it actually produce?". Every tile is a count the server derived from saved
+     records; a null value renders "No data" rather than 0. */
+  function renderAiImpact(metrics) {
+    const row = document.getElementById('aiImpactRow');
+    row.innerHTML = '';
+    if (!Array.isArray(metrics) || metrics.length === 0) {
+      row.innerHTML = '<div class="panel-empty">No data available.</div>';
+      return;
+    }
+    metrics.forEach((metric) => {
+      const tile = document.createElement('div');
+      tile.className = 'stat-tile';
+      const label = document.createElement('div');
+      label.className = 'stat-label';
+      label.textContent = metric.label;
+      const value = document.createElement('div');
+      value.className = 'stat-value';
+      const hasValue = metric.value !== null && metric.value !== undefined;
+      value.textContent = hasValue ? Number(metric.value).toLocaleString() : 'No data';
+      if (!hasValue) value.classList.add('stat-value-empty');
+      tile.appendChild(label);
+      tile.appendChild(value);
+      if (metric.detail) {
+        const detail = document.createElement('div');
+        detail.className = 'stat-detail';
+        detail.textContent = metric.detail;
+        tile.appendChild(detail);
+      }
+      row.appendChild(tile);
+    });
+  }
+
+  /* ---------- Next best actions ----------
+     Every card is routed by the server from work that already exists (a pending approval,
+     a relayed opportunity, a run that stopped for missing input, an unused specialist).
+     `basis` states the fact that produced the card, so ordering is never an opaque score.
+     Each button navigates to REAL existing functionality - and for a specialist action it
+     reuses the Run a Specialist page's own selection, never a parallel run path. */
+  function renderNextActions(actions) {
+    const area = document.getElementById('nextActionsArea');
+    area.innerHTML = '';
+    if (!Array.isArray(actions) || actions.length === 0) {
+      area.innerHTML =
+        '<div class="panel-card panel-empty">Nothing is waiting on you right now — no approvals are pending and no saved run has produced an outstanding recommendation.</div>';
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'action-list';
+    actions.forEach((action, index) => {
+      const card = document.createElement('div');
+      card.className = 'action-card' + (action.emphasis === 'high' ? ' action-card-high' : '');
+
+      const num = document.createElement('div');
+      num.className = 'action-num';
+      num.textContent = String(index + 1);
+      card.appendChild(num);
+
+      const body = document.createElement('div');
+      body.className = 'action-body';
+      const title = document.createElement('div');
+      title.className = 'action-title';
+      title.textContent = action.title;
+      body.appendChild(title);
+      if (action.basis) {
+        const basis = document.createElement('div');
+        basis.className = 'action-basis';
+        basis.textContent = action.basis;
+        body.appendChild(basis);
+      }
+      if (action.emphasis === 'high') {
+        const tag = document.createElement('span');
+        tag.className = 'action-tag';
+        tag.textContent = 'High impact';
+        body.appendChild(tag);
+      }
+      card.appendChild(body);
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'action-btn';
+      btn.textContent = action.cta || 'Open';
+      btn.addEventListener('click', () => {
+        if (action.page === 'history' && action.run_id) {
+          selectPage('history');
+          loadHistoryDetail(action.run_id);
+          return;
+        }
+        if (action.page === 'specialists' && action.specialist_id) {
+          selectPage('specialists');
+          // Reuses the existing specialist card's own click handler, so the objective is
+          // prefilled exactly as it would be if the owner clicked it themselves. Nothing
+          // is executed here - the owner still presses Run.
+          const index = SPECIALISTS.findIndex((sp) => sp.id === action.specialist_id);
+          const cards = document.querySelectorAll('.specialist-card');
+          if (index >= 0 && cards[index]) cards[index].click();
+          return;
+        }
+        selectPage(action.page || 'overview');
+      });
+      card.appendChild(btn);
+
+      list.appendChild(card);
+    });
+    area.appendChild(list);
+  }
+
+  /* ---------- Chief Orchestrator status ----------
+     Reads GET /overview's `orchestrator` block, which the server derived from saved
+     orchestration records plus the live count of runs this server process is holding for
+     a human decision. Nothing here starts, resumes, or polls a run. */
+  const ORCHESTRATOR_STATE_LABELS = {
+    ready: 'Ready',
+    running: 'Running',
+    completed: 'Completed',
+    waiting_for_approval: 'Waiting for approval',
+    incomplete: 'Incomplete',
+    error: 'Error',
+  };
+
+  function renderOrchestrator(orchestrator) {
+    const area = document.getElementById('orchestratorArea');
+    area.innerHTML = '';
+    if (!orchestrator) {
+      area.innerHTML = '<div class="panel-empty">No data available.</div>';
+      return;
+    }
+
+    const head = document.createElement('div');
+    head.className = 'orch-head';
+    const state = document.createElement('span');
+    const cls =
+      orchestrator.state === 'completed' || orchestrator.state === 'ready'
+        ? 'ok'
+        : orchestrator.state === 'error'
+          ? 'error'
+          : 'warn';
+    state.className = 'status-chip ' + cls;
+    state.textContent = ORCHESTRATOR_STATE_LABELS[orchestrator.state] || orchestrator.state;
+    head.appendChild(state);
+    if (orchestrator.paused_awaiting_approval > 0) {
+      const paused = document.createElement('span');
+      paused.className = 'orch-paused';
+      paused.textContent = orchestrator.paused_awaiting_approval + ' run(s) paused for your decision';
+      head.appendChild(paused);
+    }
+    area.appendChild(head);
+
+    if (orchestrator.last_run) {
+      const run = orchestrator.last_run;
+      const meta = document.createElement('div');
+      meta.className = 'orch-meta';
+      meta.textContent =
+        (run.objective || run.kind || 'Last run') + ' · ' + (run.created_at ? formatWhen(run.created_at) : 'unknown time');
+      area.appendChild(meta);
+      if (run.summary) {
+        const summary = document.createElement('div');
+        summary.className = 'orch-summary';
+        summary.textContent = run.summary;
+        area.appendChild(summary);
+      }
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'link-btn';
+      link.textContent = 'View run →';
+      link.addEventListener('click', () => {
+        selectPage('history');
+        loadHistoryDetail(run.run_id);
+      });
+      area.appendChild(link);
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'panel-empty';
+      empty.textContent = orchestrator.detail || 'No orchestrated run has been saved yet.';
+      area.appendChild(empty);
+    }
+  }
+
+  /* ---------- AI usage ----------
+     Real token/call counts summed by the server from the usage ledgers saved runs already
+     carry. COST IS NOT SHOWN: this project has no model price table, so a currency figure
+     would be invented - the server says so and that reason is displayed instead. */
+  function renderAiUsage(usage) {
+    const area = document.getElementById('aiUsageArea');
+    area.innerHTML = '';
+    if (!usage || !usage.available) {
+      area.innerHTML =
+        '<div class="panel-empty">No usage recorded yet — a run records token usage only when it goes through the Chief Orchestrator or a workflow.</div>';
+      return;
+    }
+
+    const rows = [
+      ['Total tokens', usage.tokens_total],
+      ['Input tokens', usage.tokens_input],
+      ['Output tokens', usage.tokens_output],
+      ['Model calls', usage.model_calls],
+      ['Tool calls', usage.tool_calls],
+    ];
+    rows.forEach(([label, value]) => {
+      if (value === null || value === undefined) return;
+      const row = document.createElement('div');
+      row.className = 'usage-row';
+      const name = document.createElement('span');
+      name.textContent = label;
+      const val = document.createElement('span');
+      val.className = 'usage-value';
+      val.textContent = Number(value).toLocaleString();
+      row.appendChild(name);
+      row.appendChild(val);
+      area.appendChild(row);
+    });
+
+    const note = document.createElement('div');
+    note.className = 'panel-note';
+    note.textContent =
+      'Covers ' + usage.runs_with_usage + ' saved run(s) that recorded usage. ' + (usage.cost_reason || '');
+    area.appendChild(note);
+  }
+
   async function loadOverviewState() {
     try {
       const res = await apiFetch('/overview');
@@ -1835,6 +2178,10 @@
       renderActivityList('recentRunsArea', (data.activity || []).slice(0, 4), 'No saved runs yet.');
       renderStoreHealth(data.health || []);
       renderApprovalsOverview(data.growth || {});
+      renderAiImpact(data.ai_impact || []);
+      renderNextActions(data.next_actions || []);
+      renderOrchestrator(data.orchestrator || null);
+      renderAiUsage(data.ai_usage || null);
     } catch (err) {
       document.getElementById('ovBusinessName').textContent = 'Could not reach the server';
     }
@@ -1846,9 +2193,13 @@
       const data = await res.json().catch(() => ({}));
       renderStoreMetrics(res.ok ? data : null);
       renderPerformance(res.ok ? data.trends : null);
+      renderFunnel(res.ok ? data.funnel : null);
+      renderTopProducts(res.ok ? data.top_products : null);
     } catch (err) {
       renderStoreMetrics(null);
       renderPerformance(null);
+      renderFunnel(null);
+      renderTopProducts(null);
     }
   }
 

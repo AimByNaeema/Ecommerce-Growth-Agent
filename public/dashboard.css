@@ -785,6 +785,94 @@
     .perf-range { white-space: normal; }
   }
 
+
+  /* ---- Business + AI visibility sections ----
+     Funnel, Top products, AI impact, Next best actions, Orchestrator, AI usage. Existing
+     tokens only - no new palette, no gradient. */
+
+  .panel-note { font-size: 11px; color: var(--ink-faint); line-height: 1.5; margin-top: 12px; }
+  .stat-detail { font-size: 10.5px; color: var(--ink-faint); margin-top: 4px; line-height: 1.4; }
+  /* A "No data" value must never look like a measured figure, so it drops the mono
+     numeral treatment the real values use. */
+  .stat-value-empty { font-family: inherit; font-size: 13px; font-weight: 400; color: var(--ink-faint); font-style: italic; }
+
+  .funnel-stage { padding: 2px 0; }
+  .funnel-stage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .funnel-stage-label { font-size: 12.5px; color: var(--ink); }
+  .funnel-stage-value { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--ink); white-space: nowrap; }
+  .funnel-bar-track {
+    height: 8px; border-radius: 4px; background: var(--surface-raised);
+    border: 1px solid var(--border); margin-top: 6px; overflow: hidden;
+  }
+  .funnel-bar { height: 100%; background: var(--accent); border-radius: 4px; }
+  /* An unmeasured stage is visibly inert: muted label, italic "Not available", and an
+     empty track that draws no bar at all. */
+  .funnel-stage-unavailable .funnel-stage-label { color: var(--ink-faint); }
+  .funnel-stage-unavailable .funnel-stage-value { font-family: inherit; font-size: 11.5px; font-style: italic; color: var(--ink-faint); }
+  .funnel-stage-reason { font-size: 10.5px; color: var(--ink-faint); line-height: 1.45; margin-top: 5px; }
+  .funnel-arrow { text-align: center; color: var(--ink-faint); font-size: 12px; line-height: 1; padding: 6px 0; }
+
+  .product-table { display: flex; flex-direction: column; }
+  .product-row {
+    display: grid; grid-template-columns: 1fr 54px 54px; gap: 8px; align-items: center;
+    padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--ink);
+  }
+  .product-row:last-child { border-bottom: none; }
+  .product-row-head {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--ink-faint); padding-bottom: 7px;
+  }
+  .product-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .product-num { font-family: "IBM Plex Mono", monospace; text-align: right; }
+  .product-row-head .product-num { font-family: inherit; }
+
+  .action-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 26px; }
+  .action-card {
+    display: flex; align-items: flex-start; gap: 12px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 13px 15px;
+  }
+  /* The one visual difference for a blocking/verified action - a left accent edge, not a
+     different card design, so emphasis never reads as a separate category of thing. */
+  .action-card-high { border-left: 2px solid var(--accent); }
+  .action-num {
+    flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--surface-raised); border: 1px solid var(--border);
+    font-size: 10.5px; font-family: "IBM Plex Mono", monospace; color: var(--ink-soft);
+    display: flex; align-items: center; justify-content: center; margin-top: 1px;
+  }
+  .action-body { min-width: 0; flex: 1; }
+  .action-title { font-size: 13px; font-weight: 600; color: var(--ink); line-height: 1.4; }
+  .action-basis { font-size: 11.5px; color: var(--ink-soft); line-height: 1.5; margin-top: 4px; }
+  .action-tag {
+    display: inline-block; margin-top: 7px; background: var(--accent-soft); color: var(--accent);
+    border-radius: 100px; padding: 2px 9px; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .action-btn {
+    flex-shrink: 0; background: none; border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; font-family: inherit; font-size: 11.5px; color: var(--ink-soft);
+    cursor: pointer; transition: color 0.15s ease, border-color 0.15s ease;
+  }
+  .action-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+  .orch-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .orch-paused { font-size: 11px; color: var(--warn); }
+  .orch-meta { font-size: 11.5px; color: var(--ink-soft); margin-top: 9px; line-height: 1.45; }
+  .orch-summary { font-size: 11.5px; color: var(--ink-faint); margin-top: 5px; line-height: 1.5; }
+
+  .usage-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--ink-soft);
+  }
+  .usage-row:last-of-type { border-bottom: none; }
+  .usage-value { font-family: "IBM Plex Mono", monospace; color: var(--ink); }
+
+  @media (max-width: 620px) {
+    .action-card { flex-wrap: wrap; }
+    .action-btn { margin-left: 32px; }
+    .product-row { grid-template-columns: 1fr 46px 46px; }
+  }
+
   @media (max-width: 900px) {
     .ov-columns { grid-template-columns: 1fr; }
   }

@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const {
   calculateSalesMetrics,
   calculateSalesTrend,
+  calculateTopProductsBySales,
   calculateProductMetrics,
   calculateInventoryMetrics,
   estimateProjectedMonthlyRevenue,
@@ -258,6 +259,58 @@ test('calculateSalesTrend skips an unusable order without discarding the usable 
   assert.strictEqual(trend.order_count, 1);
   assert.strictEqual(trend.points[0].revenue, 5);
   assert.strictEqual(trend.points[0].orders, 1);
+});
+
+
+// --- calculateTopProductsBySales ------------------------------------------------------
+// Backs the dashboard's Top Products table (see server.js's buildTopProducts). Counts
+// only - no ranking model, no score, and nothing derived that the line items do not
+// literally contain.
+
+test('calculateTopProductsBySales returns [] - never a placeholder row - when nothing is usable', () => {
+  assert.deepStrictEqual(calculateTopProductsBySales([]), []);
+  assert.deepStrictEqual(calculateTopProductsBySales(null), []);
+  assert.deepStrictEqual(calculateTopProductsBySales([{ lineItems: [] }]), []);
+  assert.deepStrictEqual(calculateTopProductsBySales([{ lineItems: [{ title: '', quantity: 3 }] }]), []);
+  assert.deepStrictEqual(calculateTopProductsBySales([{ lineItems: [{ title: 'X', quantity: 'not-a-number' }] }]), []);
+});
+
+test('calculateTopProductsBySales counts units and orders exactly as the line items state them', () => {
+  const ranked = calculateTopProductsBySales([
+    { lineItems: [{ title: 'Halloween SVG', quantity: 2, sku: 'H1' }, { title: 'Ghost PNG', quantity: 1, sku: 'G1' }] },
+    { lineItems: [{ title: 'Halloween SVG', quantity: 3, sku: 'H1' }] },
+  ]);
+  assert.deepStrictEqual(ranked, [
+    { title: 'Halloween SVG', sku: 'H1', units: 5, orders: 2 },
+    { title: 'Ghost PNG', sku: 'G1', units: 1, orders: 1 },
+  ]);
+});
+
+test('calculateTopProductsBySales excludes Shopify test orders, which are not real sales', () => {
+  const ranked = calculateTopProductsBySales([
+    { test: true, lineItems: [{ title: 'Gateway Test Bundle', quantity: 99, sku: 'T' }] },
+    { test: false, lineItems: [{ title: 'Real Bundle', quantity: 1, sku: 'R' }] },
+  ]);
+  assert.strictEqual(ranked.length, 1);
+  assert.strictEqual(ranked[0].title, 'Real Bundle');
+});
+
+test('calculateTopProductsBySales never reports a revenue field - line items carry no price', () => {
+  const ranked = calculateTopProductsBySales([{ lineItems: [{ title: 'A', quantity: 1 }] }]);
+  assert.ok(!('revenue' in ranked[0]), 'per-product revenue must be absent, not apportioned from the order total');
+  assert.deepStrictEqual(Object.keys(ranked[0]).sort(), ['orders', 'sku', 'title', 'units']);
+});
+
+test('calculateTopProductsBySales honors the limit and orders results deterministically', () => {
+  const orders = [
+    { lineItems: [{ title: 'B', quantity: 5 }, { title: 'A', quantity: 5 }, { title: 'C', quantity: 9 }] },
+  ];
+  const ranked = calculateTopProductsBySales(orders, { limit: 2 });
+  assert.strictEqual(ranked.length, 2);
+  assert.strictEqual(ranked[0].title, 'C');
+  // A and B tie on units and orders, so the tie breaks on title - a stable list, never a
+  // shuffling one between reloads.
+  assert.strictEqual(ranked[1].title, 'A');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

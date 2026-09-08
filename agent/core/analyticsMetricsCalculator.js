@@ -263,6 +263,55 @@ function calculateSalesTrend(orders = [], { granularity = null } = {}) {
   };
 }
 
+// calculated_metrics for "which products actually sold": ranks products by the units
+// and orders the supplied orders literally contain. Same discipline as every other
+// calculate*() function here - mechanical counting over already-retrieved orders, no
+// fetch, no ranking model, no score. This is what lets the dashboard show a real Top
+// Products table without a separate product-ranking engine.
+//
+// WHAT IT CANNOT REPORT, AND WHY IT SAYS SO RATHER THAN GUESSING: per-product REVENUE.
+// integrations/adapters/shopifyClient.js's getOrders() line items carry title, quantity,
+// sku and inventoryItemId - no per-line price - so splitting an order's total across its
+// lines would require apportioning a number Shopify never gave us. Units sold and order
+// count are counted exactly; revenue per product is simply absent, and the caller is
+// expected to label it unavailable rather than derive it.
+//
+// A TEST order (Shopify's own `test: true` flag) is excluded, because a payment-gateway
+// test is not a real sale and would silently inflate a "top product" ranking - the same
+// signal integrations/shopifyInventoryCorrection.js already treats as non-real.
+//
+// Ties are broken by units, then by title, so the same orders always produce the same
+// order - a stable list, never a shuffling one.
+//
+// Returns [] when no order line is usable - the caller then shows "no data", never an
+// empty table implying the store sold nothing.
+function calculateTopProductsBySales(orders = [], { limit = 5 } = {}) {
+  const byProduct = new Map();
+
+  for (const order of Array.isArray(orders) ? orders : []) {
+    if (!order || order.test === true) continue;
+    for (const lineItem of Array.isArray(order.lineItems) ? order.lineItems : []) {
+      if (!lineItem) continue;
+      const title = typeof lineItem.title === 'string' && lineItem.title.trim() ? lineItem.title.trim() : null;
+      if (!title) continue;
+      const quantity = toNumber(lineItem.quantity);
+      if (!isFiniteNonNegativeNumber(quantity)) continue;
+
+      const entry = byProduct.get(title) || { title, sku: lineItem.sku || null, units: 0, orders: 0 };
+      entry.units += quantity;
+      entry.orders += 1;
+      if (!entry.sku && lineItem.sku) entry.sku = lineItem.sku;
+      byProduct.set(title, entry);
+    }
+  }
+
+  const ranked = [...byProduct.values()].sort(
+    (a, b) => b.units - a.units || b.orders - a.orders || a.title.localeCompare(b.title)
+  );
+  const max = Number.isInteger(limit) && limit > 0 ? limit : 5;
+  return ranked.slice(0, max);
+}
+
 // estimated_metrics for the `sales` category: projects the actual revenue observed
 // over `periodDays` out to a 30-day month, assuming a steady sales rate. `periodDays`
 // is always caller-supplied (the number of days the retrieved `orders` batch actually
@@ -312,6 +361,7 @@ function estimateDaysOfInventoryRemaining(inventoryItems = [], averageDailyUnits
 module.exports = {
   calculateSalesMetrics,
   calculateSalesTrend,
+  calculateTopProductsBySales,
   calculateProductMetrics,
   calculateInventoryMetrics,
   estimateProjectedMonthlyRevenue,
