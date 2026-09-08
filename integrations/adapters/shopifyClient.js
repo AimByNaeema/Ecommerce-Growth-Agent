@@ -81,6 +81,14 @@ const TOKEN_EXPIRY_SAFETY_MARGIN_MS = 60000;
 // test) can check it without restating the string.
 const REQUIRED_PUBLISH_SCOPE = 'write_content';
 
+// The Admin API scopes updateProductVendor() and addProductsToCollection() genuinely
+// need (Shopify groups product-field mutations and collection-membership mutations
+// under the same 'write_products' scope), and adjustInventoryQuantities() needs
+// separately. Same preflight discipline as REQUIRED_PUBLISH_SCOPE: checked against
+// genuinely granted scopes before any mutation is built, never assumed from .env.
+const REQUIRED_PRODUCT_WRITE_SCOPE = 'write_products';
+const REQUIRED_INVENTORY_WRITE_SCOPE = 'write_inventory';
+
 // Which scopes the configured app was ACTUALLY granted, cached per resolved credential
 // set exactly like the token above (same cacheKey derivation, same "never written to
 // disk" rule). Scope grants change only when the app is re-installed/re-deployed, so one
@@ -463,14 +471,18 @@ async function getProducts({ limit = 50, businessId = null } = {}) {
 }
 
 // Runs one GraphQL query covering orders (id, name/order number, created date,
-// financial/fulfillment status, total price, and line items) - read-only, most-recent
-// first. This is the raw data source agent/core/analyticsMetricsCalculator.js's
-// calculateSalesMetrics()/estimateProjectedMonthlyRevenue() compute sales figures
-// from - this layer itself performs no arithmetic.
+// financial/fulfillment status, total price, whether Shopify itself flags the order as
+// a TEST order, and line items) - read-only, most-recent first. This is the raw data
+// source agent/core/analyticsMetricsCalculator.js's calculateSalesMetrics()/
+// estimateProjectedMonthlyRevenue() compute sales figures from - this layer itself
+// performs no arithmetic. `test` and `lineItems[].inventoryItemId` are additive fields
+// (added for integrations/shopifyInventoryCorrection.js's test-order reconciliation) -
+// no existing field was removed or renamed, so this remains a strict superset of the
+// previous shape.
 //
 // Returns: an array of normalized order objects: { id, name, createdAt,
-// financialStatus, fulfillmentStatus, totalPrice, currency, lineItems: [{title,
-// quantity, sku}] }
+// financialStatus, fulfillmentStatus, totalPrice, currency, test, lineItems: [{title,
+// quantity, sku, inventoryItemId}] }
 // Throws: same conditions as getShopInfo(). Never returns fabricated order data.
 async function getOrders({ limit = 50, businessId = null } = {}) {
   const query = `{
@@ -482,7 +494,13 @@ async function getOrders({ limit = 50, businessId = null } = {}) {
         displayFinancialStatus
         displayFulfillmentStatus
         currentTotalPriceSet { shopMoney { amount currencyCode } }
-        lineItems(first: 20) { edges { node { title quantity sku } } }
+        test
+        lineItems(first: 20) { edges { node {
+          title
+          quantity
+          sku
+          variant { id inventoryItem { id } }
+        } } }
       } }
     }
   }`;
@@ -502,13 +520,36 @@ async function getOrders({ limit = 50, businessId = null } = {}) {
       fulfillmentStatus: node.displayFulfillmentStatus,
       totalPrice: node.currentTotalPriceSet.shopMoney.amount,
       currency: node.currentTotalPriceSet.shopMoney.currencyCode,
+      test: Boolean(node.test),
       lineItems: node.lineItems.edges.map(({ node: lineItem }) => ({
         title: lineItem.title,
         quantity: lineItem.quantity,
         sku: lineItem.sku,
+        inventoryItemId: lineItem.variant && lineItem.variant.inventoryItem ? lineItem.variant.inventoryItem.id : null,
       })),
     }))
   );
+}
+
+// Sums line-item quantities from orders Shopify itself flags `test: true` (an order
+// placed through a test/sandbox payment gateway), grouped by the inventory item those
+// line items decremented. This is the SOLE signal integrations/shopifyInventoryCorrection.js
+// uses to identify how much of a negative inventory balance is attributable to dummy/test
+// orders - no tag, title, or date-range heuristic is used anywhere. Pure function: no I/O,
+// operates only on what getOrders() already returned.
+//
+// Returns: Map<inventoryItemId, quantity>. A line item with no resolvable inventory item
+// (e.g. a removed variant) is skipped rather than guessed.
+function sumTestOrderQuantitiesByInventoryItem(orders) {
+  const totals = new Map();
+  for (const order of Array.isArray(orders) ? orders : []) {
+    if (!order || !order.test) continue;
+    for (const lineItem of Array.isArray(order.lineItems) ? order.lineItems : []) {
+      if (!lineItem || !lineItem.inventoryItemId) continue;
+      totals.set(lineItem.inventoryItemId, (totals.get(lineItem.inventoryItemId) || 0) + lineItem.quantity);
+    }
+  }
+  return totals;
 }
 
 // Runs one GraphQL query covering customers - deliberately only account-level
@@ -807,13 +848,307 @@ async function createBlogArticle({
   return payload.article;
 }
 
+// ---------------------------------------------------------------------------------
+// PRODUCT/INVENTORY/COLLECTION CORRECTIONS: three more mutations, and the scope
+// preflight in front of each, following createBlogArticle()'s exact shape above.
+// ---------------------------------------------------------------------------------
+
+// Looks up specific inventory items by id, requesting only `location { id }` (never
+// `name`) - this store's app has not been granted the `read_locations` scope that
+// `name` requires, and getInventoryLevels() above already requests `name` for its own
+// store-wide use, so this is a separate, narrower query rather than a change to that
+// tested function. Used by integrations/shopifyInventoryCorrection.js to build its
+// reconciliation and to independently re-read a correction after it is made.
+//
+// Returns: an array of { id, sku, tracked, levels: [{locationId, available}] } - the
+// same per-item shape as getInventoryLevels(), minus locationName. Items that no longer
+// exist are simply absent from the result, never fabricated.
+async function getInventoryItemsByIds({ inventoryItemIds, businessId = null } = {}) {
+  if (!Array.isArray(inventoryItemIds) || inventoryItemIds.length === 0) {
+    throw new Error('getInventoryItemsByIds requires a non-empty array of inventoryItemIds.');
+  }
+
+  const query = `query GetInventoryItemsByIds($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on InventoryItem {
+        id
+        sku
+        tracked
+        inventoryLevels(first: 5) { edges { node {
+          location { id }
+          quantities(names: ["available"]) { name quantity }
+        } } }
+      }
+    }
+  }`;
+
+  const { raw } = await runAdminGraphqlQuery(query, 'getInventoryItemsByIds', businessId, { ids: inventoryItemIds });
+
+  if (!raw || !raw.data || !Array.isArray(raw.data.nodes)) {
+    throw new Error('Shopify Admin API response did not include inventory item data.');
+  }
+
+  return reshapeOrThrow('getInventoryItemsByIds', () =>
+    raw.data.nodes
+      .filter((node) => node && node.id)
+      .map((node) => ({
+        id: node.id,
+        sku: node.sku,
+        tracked: node.tracked,
+        levels: node.inventoryLevels.edges.map(({ node: level }) => {
+          const availableQuantity = level.quantities.find((quantity) => quantity.name === 'available');
+          return { locationId: level.location.id, available: availableQuantity ? availableQuantity.quantity : undefined };
+        }),
+      }))
+  );
+}
+
+// Corrects ONE product's vendor field via the real Admin API `productUpdate` mutation.
+// Sends and requests back only `id`/`vendor` - no other product field (title,
+// description, price, images, status, collections) is ever read or written by this
+// function.
+//
+//   productId - the product's gid://shopify/Product/... id. Required.
+//   vendor    - the new vendor value. Required, non-empty.
+//   businessId - optional, selects that business's own Shopify credentials.
+//
+// Returns: { id, vendor } - Shopify's own values, relayed unchanged.
+// Throws: when not configured, when REQUIRED_PRODUCT_WRITE_SCOPE is missing (BEFORE
+// sending any mutation), on a network/transport failure, on GraphQL errors, or when
+// Shopify returns userErrors. Never a fabricated vendor value.
+async function updateProductVendor({ productId, vendor, businessId = null } = {}) {
+  for (const [name, value] of [['productId', productId], ['vendor', vendor]]) {
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new Error(`updateProductVendor requires a non-empty ${name}. No Shopify mutation was attempted.`);
+    }
+  }
+
+  if (!isConfigured({ businessId })) {
+    throw new Error(
+      businessId
+        ? `Business '${businessId}' has no configured Shopify credentials. Create ` +
+          `configuration/businesses/${businessId}/.env with either SHOPIFY_ADMIN_API_ACCESS_TOKEN ` +
+          'or SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET (plus SHOPIFY_STORE_DOMAIN) before calling updateProductVendor().'
+        : 'SHOPIFY_STORE_DOMAIN is not set, or neither SHOPIFY_ADMIN_API_ACCESS_TOKEN nor ' +
+          'SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET is set. Copy .env.example to .env and add real ' +
+          "values for the owner's Shopify store before calling updateProductVendor()."
+    );
+  }
+
+  const granted = await getGrantedAccessScopes({ businessId });
+  if (!granted.includes(REQUIRED_PRODUCT_WRITE_SCOPE)) {
+    throw new Error(
+      `Shopify vendor correction is not permitted: this store's app has not been granted the '${REQUIRED_PRODUCT_WRITE_SCOPE}' ` +
+        `Admin API scope (granted: ${granted.join(', ') || 'none'}). Add '${REQUIRED_PRODUCT_WRITE_SCOPE}' to the app's ` +
+        'access scopes and re-deploy/re-install it, then try again. No Shopify mutation was attempted.'
+    );
+  }
+
+  const mutation = `mutation UpdateProductVendor($input: ProductInput!) {
+    productUpdate(input: $input) {
+      product { id vendor }
+      userErrors { field message }
+    }
+  }`;
+
+  const { raw } = await runAdminGraphqlQuery(mutation, 'updateProductVendor', businessId, {
+    input: { id: productId.trim(), vendor: vendor.trim() },
+  });
+
+  const payload = raw && raw.data && raw.data.productUpdate;
+  if (!payload) {
+    throw new Error('Shopify Admin API response did not include a productUpdate result.');
+  }
+  if (Array.isArray(payload.userErrors) && payload.userErrors.length > 0) {
+    const details = payload.userErrors
+      .map((entry) => `${Array.isArray(entry.field) ? entry.field.join('.') : entry.field || 'product'}: ${entry.message}`)
+      .join('; ');
+    throw new Error(`Shopify refused to update the product vendor: ${details}`);
+  }
+  if (!payload.product || !payload.product.id) {
+    throw new Error('Shopify reported no error but returned no product - refusing to report an unconfirmed vendor update as a success.');
+  }
+
+  return payload.product;
+}
+
+// Adds one or more existing products to one existing collection via the real Admin API
+// `collectionAddProducts` mutation. Never creates a collection, never removes a product
+// from any collection, never touches any other field.
+//
+//   collectionId - the target collection's gid://shopify/Collection/... id. Required.
+//   productIds   - non-empty array of gid://shopify/Product/... ids to add. Required.
+//   businessId   - optional, selects that business's own Shopify credentials.
+//
+// Returns: { id, title } - the collection Shopify actually applied the mutation to.
+// Membership itself is confirmed by the caller's own independent re-read, never assumed
+// from a successful mutation response alone.
+// Throws: same conditions as updateProductVendor() above (REQUIRED_PRODUCT_WRITE_SCOPE).
+async function addProductsToCollection({ collectionId, productIds, businessId = null } = {}) {
+  if (typeof collectionId !== 'string' || collectionId.trim() === '') {
+    throw new Error('addProductsToCollection requires a non-empty collectionId. No Shopify mutation was attempted.');
+  }
+  if (!Array.isArray(productIds) || productIds.length === 0 || productIds.some((id) => typeof id !== 'string' || id.trim() === '')) {
+    throw new Error('addProductsToCollection requires a non-empty array of non-empty productIds. No Shopify mutation was attempted.');
+  }
+
+  if (!isConfigured({ businessId })) {
+    throw new Error(
+      businessId
+        ? `Business '${businessId}' has no configured Shopify credentials. Create ` +
+          `configuration/businesses/${businessId}/.env with either SHOPIFY_ADMIN_API_ACCESS_TOKEN ` +
+          'or SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET (plus SHOPIFY_STORE_DOMAIN) before calling addProductsToCollection().'
+        : 'SHOPIFY_STORE_DOMAIN is not set, or neither SHOPIFY_ADMIN_API_ACCESS_TOKEN nor ' +
+          'SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET is set. Copy .env.example to .env and add real ' +
+          "values for the owner's Shopify store before calling addProductsToCollection()."
+    );
+  }
+
+  const granted = await getGrantedAccessScopes({ businessId });
+  if (!granted.includes(REQUIRED_PRODUCT_WRITE_SCOPE)) {
+    throw new Error(
+      `Shopify collection membership update is not permitted: this store's app has not been granted the '${REQUIRED_PRODUCT_WRITE_SCOPE}' ` +
+        `Admin API scope (granted: ${granted.join(', ') || 'none'}). Add '${REQUIRED_PRODUCT_WRITE_SCOPE}' to the app's ` +
+        'access scopes and re-deploy/re-install it, then try again. No Shopify mutation was attempted.'
+    );
+  }
+
+  const mutation = `mutation AddProductsToCollection($id: ID!, $productIds: [ID!]!) {
+    collectionAddProducts(id: $id, productIds: $productIds) {
+      collection { id title }
+      userErrors { field message }
+    }
+  }`;
+
+  const { raw } = await runAdminGraphqlQuery(mutation, 'addProductsToCollection', businessId, {
+    id: collectionId.trim(),
+    productIds: productIds.map((id) => id.trim()),
+  });
+
+  const payload = raw && raw.data && raw.data.collectionAddProducts;
+  if (!payload) {
+    throw new Error('Shopify Admin API response did not include a collectionAddProducts result.');
+  }
+  if (Array.isArray(payload.userErrors) && payload.userErrors.length > 0) {
+    const details = payload.userErrors
+      .map((entry) => `${Array.isArray(entry.field) ? entry.field.join('.') : entry.field || 'collection'}: ${entry.message}`)
+      .join('; ');
+    throw new Error(`Shopify refused to add the product(s) to the collection: ${details}`);
+  }
+  if (!payload.collection || !payload.collection.id) {
+    throw new Error('Shopify reported no error but returned no collection - refusing to report an unconfirmed membership update as a success.');
+  }
+
+  return payload.collection;
+}
+
+// Restores inventory `available` quantity via the real Admin API
+// `inventoryAdjustQuantities` mutation. Every change is a caller-supplied, already-
+// computed delta - this function invents no quantity of its own; the reconciliation
+// that decides each delta lives in integrations/shopifyInventoryCorrection.js.
+//
+//   changes - non-empty array of { inventoryItemId, locationId, delta } (delta a
+//             non-zero integer; only positive restorations are used by this project's
+//             own correction flow, but the mutation itself is direction-agnostic).
+//   reason  - a non-empty reason string Shopify's inventoryAdjustQuantities accepts
+//             (e.g. 'correction'). Required - never defaulted, so every adjustment
+//             names why it happened.
+//   businessId - optional, selects that business's own Shopify credentials.
+//
+// Returns: Shopify's own inventoryAdjustmentGroup (carries quantityAfterChange per
+// item), relayed unchanged.
+// Throws: same conditions as updateProductVendor() above (REQUIRED_INVENTORY_WRITE_SCOPE).
+async function adjustInventoryQuantities({ changes, reason, businessId = null } = {}) {
+  if (typeof reason !== 'string' || reason.trim() === '') {
+    throw new Error('adjustInventoryQuantities requires a non-empty reason. No Shopify mutation was attempted.');
+  }
+  if (!Array.isArray(changes) || changes.length === 0) {
+    throw new Error('adjustInventoryQuantities requires a non-empty changes array. No Shopify mutation was attempted.');
+  }
+  for (const change of changes) {
+    const isPlain = typeof change === 'object' && change !== null && !Array.isArray(change);
+    const idsOk =
+      isPlain &&
+      typeof change.inventoryItemId === 'string' &&
+      change.inventoryItemId.trim() !== '' &&
+      typeof change.locationId === 'string' &&
+      change.locationId.trim() !== '';
+    const deltaOk = isPlain && Number.isInteger(change.delta) && change.delta !== 0;
+    if (!idsOk || !deltaOk) {
+      throw new Error(
+        'adjustInventoryQuantities requires every change to have a non-empty inventoryItemId, a non-empty locationId, and a non-zero integer delta. No Shopify mutation was attempted.'
+      );
+    }
+  }
+
+  if (!isConfigured({ businessId })) {
+    throw new Error(
+      businessId
+        ? `Business '${businessId}' has no configured Shopify credentials. Create ` +
+          `configuration/businesses/${businessId}/.env with either SHOPIFY_ADMIN_API_ACCESS_TOKEN ` +
+          'or SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET (plus SHOPIFY_STORE_DOMAIN) before calling adjustInventoryQuantities().'
+        : 'SHOPIFY_STORE_DOMAIN is not set, or neither SHOPIFY_ADMIN_API_ACCESS_TOKEN nor ' +
+          'SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET is set. Copy .env.example to .env and add real ' +
+          "values for the owner's Shopify store before calling adjustInventoryQuantities()."
+    );
+  }
+
+  const granted = await getGrantedAccessScopes({ businessId });
+  if (!granted.includes(REQUIRED_INVENTORY_WRITE_SCOPE)) {
+    throw new Error(
+      `Shopify inventory correction is not permitted: this store's app has not been granted the '${REQUIRED_INVENTORY_WRITE_SCOPE}' ` +
+        `Admin API scope (granted: ${granted.join(', ') || 'none'}). Add '${REQUIRED_INVENTORY_WRITE_SCOPE}' to the app's ` +
+        'access scopes and re-deploy/re-install it, then try again. No Shopify mutation was attempted.'
+    );
+  }
+
+  const mutation = `mutation AdjustInventoryQuantities($input: InventoryAdjustQuantitiesInput!) {
+    inventoryAdjustQuantities(input: $input) {
+      inventoryAdjustmentGroup {
+        changes { name delta quantityAfterChange item { id } location { id } }
+      }
+      userErrors { field message code }
+    }
+  }`;
+
+  const { raw } = await runAdminGraphqlQuery(mutation, 'adjustInventoryQuantities', businessId, {
+    input: {
+      reason: reason.trim(),
+      name: 'available',
+      changes: changes.map((change) => ({
+        inventoryItemId: change.inventoryItemId.trim(),
+        locationId: change.locationId.trim(),
+        delta: change.delta,
+      })),
+    },
+  });
+
+  const payload = raw && raw.data && raw.data.inventoryAdjustQuantities;
+  if (!payload) {
+    throw new Error('Shopify Admin API response did not include an inventoryAdjustQuantities result.');
+  }
+  if (Array.isArray(payload.userErrors) && payload.userErrors.length > 0) {
+    const details = payload.userErrors
+      .map((entry) => `${Array.isArray(entry.field) ? entry.field.join('.') : entry.field || 'inventory'}: ${entry.message}`)
+      .join('; ');
+    throw new Error(`Shopify refused to adjust inventory: ${details}`);
+  }
+  if (!payload.inventoryAdjustmentGroup) {
+    throw new Error('Shopify reported no error but returned no inventoryAdjustmentGroup - refusing to report an unconfirmed inventory correction as a success.');
+  }
+
+  return payload.inventoryAdjustmentGroup;
+}
+
 module.exports = {
   getShopInfo,
   getProducts,
   getOrders,
   getCustomers,
   getInventoryLevels,
+  getInventoryItemsByIds,
   getCollections,
+  sumTestOrderQuantitiesByInventoryItem,
   isConfigured,
   loadEnvOnce,
   resolveCredentials,
@@ -829,6 +1164,12 @@ module.exports = {
   createBlogArticle,
   getConfiguredBlogId,
   getConfiguredArticleAuthor,
+  // Product/inventory/collection corrections and the scope preflights in front of them.
+  REQUIRED_PRODUCT_WRITE_SCOPE,
+  REQUIRED_INVENTORY_WRITE_SCOPE,
+  updateProductVendor,
+  addProductsToCollection,
+  adjustInventoryQuantities,
 };
 
 if (require.main === module) {

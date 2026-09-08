@@ -383,9 +383,14 @@ test('AUTHORIZATION PUBLISHES NOTHING', () => {
   for (const forbidden of ['published', 'destination', 'live_url', 'platform_response']) {
     assert.ok(!serialized.includes(forbidden), `an authorization outcome must not carry '${forbidden}'`);
   }
-  // And still no tool in the registry can execute externally.
-  for (const tool of TOOL_REGISTRY) {
-    assert.notStrictEqual(tool.operation, 'execute', `${tool.id} would be an externally-executing tool`);
+  // Externally-executing tools DO now exist (the 2026-09-08 Shopify vendor/inventory/
+  // collection corrections), but none of them is reachable from THIS module: it imports
+  // no adapter and returns only a verdict. What this test now pins is that every such
+  // tool is gated rather than that none exists.
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'approvals', 'publishAuthorization.js'), 'utf8');
+  assert.ok(!source.includes('shopifyClient'), 'the authorization boundary must import no platform adapter');
+  for (const tool of TOOL_REGISTRY.filter((entry) => entry.operation === 'execute')) {
+    assert.strictEqual(TOOL_CLASSIFICATIONS[tool.id], 'externally_executable', `${tool.id} must be externally_executable`);
   }
 });
 

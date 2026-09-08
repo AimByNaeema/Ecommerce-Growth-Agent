@@ -195,6 +195,10 @@ const TEST_FILES = [
   'publishAuthorization.test.js',
   'etsyPublishing.test.js',
   'shopifyBlogPublishing.test.js',
+  'shopifyClientWriteMutations.test.js',
+  'shopifyVendorCorrection.test.js',
+  'shopifyInventoryCorrection.test.js',
+  'shopifyCollectionMembership.test.js',
 ];
 
 function runAll() {

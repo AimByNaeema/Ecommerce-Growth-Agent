@@ -153,8 +153,10 @@ async function withMockedProviders({ provider = 'claude', text = EMPTY_FINDINGS_
 
   test('PERMISSIONS ARE NOT WEAKENED: no role ceiling changed to accommodate this tool', () => {
     // The role table is the ceiling. Adding Compliance must not have widened any of it.
+    // product's ['read', 'execute'] is a separate, unrelated 2026-09-08 decision (the
+    // three shopify_* write tools) - not something this compliance_check addition caused.
     assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.research, ['read']);
-    assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.product, ['read']);
+    assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.product, ['read', 'execute']);
     assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.seo, ['read', 'write']);
     assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.listing, ['write']);
     assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.marketing, ['write']);

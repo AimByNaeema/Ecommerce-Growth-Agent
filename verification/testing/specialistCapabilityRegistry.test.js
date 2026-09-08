@@ -111,12 +111,18 @@ test('every permissions.tool_access element deep-equals a fresh direct checkTool
 test('known-decision spot checks: product_research is now allowed, market_research is allowed', () => {
   // product_research used to be this file's stock example of an 'unavailable' decision.
   // It is now implemented (tools/productResearchTool.js), so the honest assertion is the
-  // closed state: every tool in Product's own category is reachable by Product.
+  // closed state: every READ tool in Product's own category is reachable by Product
+  // without approval. The three shopify_* 'execute' tools (added 2026-09-08) are the one
+  // deliberate exception: each calls the external Shopify store directly, so each is
+  // correctly 'approval_required', never auto-allowed - the whole point of classifying
+  // them 'externally_executable' in agent/core/toolPermissions.js.
   const productEntry = getSpecialistCapabilityById('product');
   const productResearchAccess = productEntry.permissions.tool_access.find((a) => a.tool_id === 'product_research');
   assert.strictEqual(productResearchAccess.decision, 'allowed');
+  const EXTERNALLY_EXECUTABLE_TOOL_IDS = ['shopify_vendor_correction', 'shopify_inventory_correction', 'shopify_collection_membership_update'];
   for (const access of productEntry.permissions.tool_access) {
-    assert.strictEqual(access.decision, 'allowed', `product should now be allowed ${access.tool_id}`);
+    const expected = EXTERNALLY_EXECUTABLE_TOOL_IDS.includes(access.tool_id) ? 'approval_required' : 'allowed';
+    assert.strictEqual(access.decision, expected, `product's decision for ${access.tool_id} should be ${expected}`);
   }
 
   const researchEntry = getSpecialistCapabilityById('research');

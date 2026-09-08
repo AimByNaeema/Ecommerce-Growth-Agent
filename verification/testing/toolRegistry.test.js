@@ -46,6 +46,9 @@ const EXPECTED_ORDER = [
   'compliance_check',
   'seo_quality_check',
   'listing_quality_check',
+  'shopify_vendor_correction',
+  'shopify_inventory_correction',
+  'shopify_collection_membership_update',
 ];
 
 const IMPLEMENTED_IDS = [
@@ -87,6 +90,15 @@ const IMPLEMENTED_IDS = [
   // dispatch - the same gap tools/offerRecommendationTool.js closed for Marketing.
   'seo_quality_check',
   'listing_quality_check',
+  // The first three 'execute'-operation tools: each calls the external Shopify store
+  // directly, once authorized through the full compliance -> approval -> publish-
+  // authorization chain (see integrations/shopifyVendorCorrection.js,
+  // integrations/shopifyInventoryCorrection.js, and
+  // integrations/shopifyCollectionMembership.js). Added 2026-09-08, by explicit user
+  // decision, to execute confirmed store-growth corrections.
+  'shopify_vendor_correction',
+  'shopify_inventory_correction',
+  'shopify_collection_membership_update',
 ];
 
 let passed = 0;
@@ -104,7 +116,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 33 required tools, in the requested order', () => {
+test('the registry has exactly the 36 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER
@@ -135,8 +147,13 @@ test('TOOL_OPERATIONS is exactly read/write/execute', () => {
   assert.deepStrictEqual(TOOL_OPERATIONS, ['read', 'write', 'execute']);
 });
 
-test('no tool is "execute" today - no tool is wired to an external mutation yet', () => {
-  assert.strictEqual(getToolsByOperation('execute').length, 0);
+test('exactly the three Shopify write tools are "execute" - each calls the external store directly, once authorized', () => {
+  assert.deepStrictEqual(
+    getToolsByOperation('execute')
+      .map((tool) => tool.id)
+      .sort(),
+    ['shopify_collection_membership_update', 'shopify_inventory_correction', 'shopify_vendor_correction']
+  );
 });
 
 test('getToolsByOperation() filters correctly', () => {

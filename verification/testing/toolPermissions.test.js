@@ -210,9 +210,13 @@ test('SPECIALIST_ROLE_PERMISSIONS declares a role for every specialist in specia
   }
 });
 
-test('no specialist role grants "execute" today - no tool is externally_executable yet, matching approvals/approvalArchitecture.js', () => {
-  for (const role of Object.values(SPECIALIST_ROLE_PERMISSIONS)) {
-    assert.ok(!role.includes('execute'), 'no specialist role should include execute yet');
+test('only the Product specialist role grants "execute" today, scoped to the three Shopify write tools', () => {
+  for (const [specialistId, role] of Object.entries(SPECIALIST_ROLE_PERMISSIONS)) {
+    if (specialistId === 'product') {
+      assert.ok(role.includes('execute'), "product's role must include execute (2026-09-08 decision)");
+    } else {
+      assert.ok(!role.includes('execute'), `${specialistId} should not include execute`);
+    }
   }
   assert.ok(!SHARED_INFRASTRUCTURE_ROLE_PERMISSIONS.includes('execute'));
 });

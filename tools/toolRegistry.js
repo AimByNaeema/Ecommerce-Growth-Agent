@@ -12,8 +12,9 @@
 // social_content_planning, paid_advertising_planning, social_media_strategy_generation,
 // platform_content_generation, content_calendar_generation,
 // advertising_strategy_planning, advertising_performance_analysis, analytics,
-// analytics_data_retrieval, and live_competitor_research are the twenty-three entries
-// actually implemented (see tools/businessConfigurationRetrieval.js,
+// analytics_data_retrieval, live_competitor_research, shopify_vendor_correction,
+// shopify_inventory_correction, and shopify_collection_membership_update are the
+// twenty-six entries actually implemented (see tools/businessConfigurationRetrieval.js,
 // tools/aiReasoningCompletion.js, tools/marketResearchTool.js,
 // tools/customerResearchTool.js, tools/globalMarketOpportunityTool.js,
 // tools/competitorResearchTool.js, tools/productDataRetrievalTool.js,
@@ -23,9 +24,11 @@
 // tools/paidAdvertisingTool.js, tools/socialMediaStrategyTool.js,
 // tools/platformContentTool.js, tools/contentCalendarTool.js,
 // tools/advertisingStrategyTool.js, tools/advertisingPerformanceTool.js,
-// tools/analyticsTool.js, tools/analyticsDataTool.js, and
-// tools/webCompetitorResearchTool.js, tools/productResearchTool.js, and
-// tools/offerRecommendationTool.js) - the other 2 tools (memory_retrieval,
+// tools/analyticsTool.js, tools/analyticsDataTool.js,
+// tools/webCompetitorResearchTool.js, tools/productResearchTool.js,
+// tools/offerRecommendationTool.js, tools/shopifyVendorCorrectionTool.js,
+// tools/shopifyInventoryCorrectionTool.js, and
+// tools/shopifyCollectionMembershipTool.js) - the other 2 tools (memory_retrieval,
 // verification) remain 'not_implemented'.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
@@ -70,10 +73,12 @@ const TOOL_STATUSES = ['not_implemented', 'implemented'];
 //   - 'write'   - composes new content/drafts/deliverables a human would review
 //                 (listing content, marketing/social/ad content and strategy,
 //                 campaign/content-calendar entries, the raw AI reasoning completion).
-//   - 'execute' - would call or change an external system directly. No tool is
-//                 'execute' today - none is wired to any external mutation yet (see
+//   - 'execute' - calls or changes an external system directly, once authorized. The
+//                 three shopify_vendor_correction/shopify_inventory_correction/
+//                 shopify_collection_membership_update tools below are the first (see
 //                 approvals/approvalArchitecture.js's 'externally_executable' class,
-//                 which is in the same honest position) - reserved for when one is.
+//                 which every one of them is classified under in
+//                 agent/core/toolPermissions.js's TOOL_CLASSIFICATIONS).
 const TOOL_OPERATIONS = ['read', 'write', 'execute'];
 
 const TOOL_REGISTRY = [
@@ -385,6 +390,33 @@ const TOOL_REGISTRY = [
       "Audit one already-built listing content record across its quality dimensions - completeness, clarity, accuracy, conversion quality, SEO compatibility, customer objection coverage, missing information, unsupported claims - via agent/core/listingQualityChecker.js's checkListingQuality(), composing an agent/core/listingQualityCheckModel.js record. Relays only what the caller supplied, flags absolute claims that no supplied evidence backs, never rewrites content. See tools/listingQualityCheckTool.js.",
     category: 'listing',
     operation: 'write',
+    status: 'implemented',
+  },
+  {
+    id: 'shopify_vendor_correction',
+    title: 'Shopify product vendor correction',
+    description:
+      "Correct one product's vendor field via integrations/adapters/shopifyClient.js's productUpdate-backed updateProductVendor(), reached only through integrations/shopifyVendorCorrection.js's correctProductVendor() and its compliance/approval/publish-authorization re-check. Changes ONLY the vendor field - no other field, no price, no content. See tools/shopifyVendorCorrectionTool.js. The first 'execute' tool: it calls the external Shopify store directly once authorized, unlike every 'write' tool above which only composes a draft for a human to review.",
+    category: 'products',
+    operation: 'execute',
+    status: 'implemented',
+  },
+  {
+    id: 'shopify_inventory_correction',
+    title: 'Shopify inventory deficit correction',
+    description:
+      "Restore inventory available quantity via integrations/adapters/shopifyClient.js's inventoryAdjustQuantities-backed adjustInventoryQuantities(), reached only through integrations/shopifyInventoryCorrection.js's correctInventoryDeficit(). The restored amount is always exactly the sum of quantities decremented by Shopify's own test:true orders for that inventory item (planInventoryCorrections()) - never an invented or guessed figure; an item whose deficit does not fully reconcile against test orders is reported unresolved, not corrected. See tools/shopifyInventoryCorrectionTool.js.",
+    category: 'products',
+    operation: 'execute',
+    status: 'implemented',
+  },
+  {
+    id: 'shopify_collection_membership_update',
+    title: 'Shopify collection membership update',
+    description:
+      "Add one product to one existing Shopify collection via integrations/adapters/shopifyClient.js's collectionAddProducts-backed addProductsToCollection(), reached only through integrations/shopifyCollectionMembership.js's addProductToFreeDesignsCollection(). Never creates a collection, never touches any other collection or field. See tools/shopifyCollectionMembershipTool.js.",
+    category: 'products',
+    operation: 'execute',
     status: 'implemented',
   },
 ];

@@ -366,7 +366,9 @@ test('AUDIT redaction still applies - the gate opened no secret path', () => {
 
 test('PERMISSIONS ARE PRESERVED: no role ceiling and no classification changed', () => {
   assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.research, ['read']);
-  assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.product, ['read']);
+  // product's ['read', 'execute'] is a separate, unrelated 2026-09-08 decision (the three
+  // shopify_* write tools) - nothing this gate did widened it.
+  assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.product, ['read', 'execute']);
   assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.seo, ['read', 'write']);
   assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.listing, ['write']);
   assert.deepStrictEqual(SPECIALIST_ROLE_PERMISSIONS.marketing, ['write']);
@@ -431,9 +433,25 @@ test('REJECTED IS NOT PUBLISHED, and authorizes nothing', () => {
   assert.strictEqual(isAuthorizedForPublishing(decided.decided_request), false);
 });
 
-test('NO PUBLISHING STAGE EXISTS TO BYPASS: no tool in the registry publishes', () => {
+test('THE ONLY EXTERNALLY-EXECUTING TOOLS ARE THE THREE GATED SHOPIFY CORRECTIONS, and each still requires approval', () => {
+  // This test previously asserted that NO tool was 'execute' at all. Three now are (the
+  // 2026-09-08 Shopify vendor/inventory/collection corrections), so the honest assertion
+  // is the property that actually matters and is unchanged: nothing reaches the store
+  // without approval. Each is classified 'externally_executable', which
+  // approvals/approvalArchitecture.js never auto-approves, and each is reachable only
+  // through an integrations/shopify*.js wrapper that re-runs authorizePublishing() first.
+  const EXPECTED_EXECUTE_TOOL_IDS = ['shopify_collection_membership_update', 'shopify_inventory_correction', 'shopify_vendor_correction'];
+  const executeTools = TOOL_REGISTRY.filter((tool) => tool.operation === 'execute');
+  assert.deepStrictEqual(executeTools.map((tool) => tool.id).sort(), EXPECTED_EXECUTE_TOOL_IDS);
+  for (const tool of executeTools) {
+    assert.strictEqual(TOOL_CLASSIFICATIONS[tool.id], 'externally_executable', `${tool.id} must be externally_executable`);
+    assert.strictEqual(
+      checkToolAccess({ specialistId: 'product', toolId: tool.id }).approval_required,
+      true,
+      `${tool.id} must never be auto-approved`
+    );
+  }
   for (const tool of TOOL_REGISTRY) {
-    assert.notStrictEqual(tool.operation, 'execute', `${tool.id} would be an externally-executing tool`);
     assert.ok(!/^publish/.test(tool.id), `${tool.id} looks like a publishing tool`);
   }
 });

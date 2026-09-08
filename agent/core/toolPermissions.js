@@ -149,6 +149,18 @@ const TOOL_CLASSIFICATIONS = {
   // reasoning offer_recommendation documents above for Marketing's identical
   // write-only role - the classification itself is unaffected by that operation type.
   listing_quality_check: 'analysis_only',
+  // Each calls the external Shopify store directly, once authorized - exactly
+  // approvals/approvalArchitecture.js's own definition of 'externally_executable'
+  // ("would call/change an external system"), the most consequential class: always
+  // approval-required, never auto-approved. Added 2026-09-08, by explicit user
+  // decision, alongside SPECIALIST_ROLE_PERMISSIONS.product's 'execute' entry below -
+  // see integrations/shopifyVendorCorrection.js, integrations/shopifyInventoryCorrection.js,
+  // and integrations/shopifyCollectionMembership.js, which reach these mutations only
+  // through the same compliance -> approval -> publish-authorization chain every other
+  // consequential action in this project goes through.
+  shopify_vendor_correction: 'externally_executable',
+  shopify_inventory_correction: 'externally_executable',
+  shopify_collection_membership_update: 'externally_executable',
 };
 
 // Which tools/toolRegistry.js `operation` types ('read'/'write'/'execute') each of
@@ -164,7 +176,20 @@ const SPECIALIST_ROLE_PERMISSIONS = {
   research: ['read'],
   // Product: catalog/opportunity analysis and scoring - reads and evaluates existing
   // product data; authoring new listing content is Listing's role, not Product's.
-  product: ['read'],
+  //
+  // 'execute' was added deliberately, by explicit user decision, on 2026-09-08, scoped
+  // to exactly the three shopify_vendor_correction/shopify_inventory_correction/
+  // shopify_collection_membership_update tools (the only 'execute'-operation tools in
+  // the 'products' category today). It is 'execute', not 'write': per
+  // tools/toolRegistry.js's own TOOL_OPERATIONS definitions, 'write' means composing a
+  // draft a human reviews (what Listing/Marketing/SEO's 'write' entries do), while
+  // 'execute' means calling/changing an external system directly once authorized -
+  // which is exactly and only what these three tools do. Product's role otherwise
+  // remains read-only over catalog *analysis*, and every 'execute' call still passes
+  // through the full compliance -> approval -> publish-authorization chain before
+  // anything reaches the store - this permission removes the blanket role-level denial
+  // that would otherwise refuse all three tools outright, nothing more.
+  product: ['read', 'execute'],
   // SEO: keyword research, on-page SEO analysis, and information-gap discovery
   // ('read'), plus authoring the website content that closes an identified information
   // gap ('write' - tools/seoContentGenerationTool.js).
