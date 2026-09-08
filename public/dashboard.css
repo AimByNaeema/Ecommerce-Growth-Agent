@@ -263,14 +263,27 @@
     border-radius: 12px;
     padding: 14px 16px;
   }
-  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); margin-bottom: 6px; }
-  .stat-value { font-family: "IBM Plex Mono", monospace; font-size: 20px; font-weight: 500; color: var(--ink); }
+  .stat-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; font-weight: 600;
+    color: var(--ink-faint); margin-bottom: 8px;
+  }
+  .stat-value {
+    font-family: "IBM Plex Mono", monospace; font-size: 21px; font-weight: 500; color: var(--ink);
+    letter-spacing: -0.02em; line-height: 1.1;
+  }
   .stat-value.accent { color: var(--accent); }
 
   .section-label {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-faint);
-    margin: 4px 0 12px;
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600;
+    color: var(--ink-soft); margin: 4px 0 12px;
   }
+  /* Section headers sit on a hairline so the page reads as distinct bands of information
+     rather than one continuous scroll. */
+  .section-row {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 9px; margin-bottom: 13px;
+  }
+  .section-row .section-label { margin: 0; }
 
   .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 
@@ -653,14 +666,36 @@
   }
   .section-link:hover { color: var(--accent); }
 
-  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 26px; }
+  /* Fixed 4-up rather than auto-fit: there are 8 KPIs, so 4 columns give two balanced
+     rows. auto-fit packed 7 across and left a single orphan tile on its own row. */
+  .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 26px; }
   .metric-tile {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 15px 16px 16px;
+    /* Equal heights across the row: a KPI with a detail line must not make its neighbours
+       look misaligned. */
+    display: flex; flex-direction: column; min-height: 104px;
+    transition: border-color 0.15s ease, transform 0.15s ease;
   }
-  .metric-tile-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); margin-bottom: 6px; }
-  .metric-tile-value { font-family: "IBM Plex Mono", monospace; font-size: 19px; font-weight: 500; color: var(--ink); }
-  .metric-tile-value.unavailable { font-family: inherit; font-size: 13px; font-weight: 400; color: var(--ink-faint); font-style: italic; }
-  .metric-tile-detail { font-size: 11px; color: var(--ink-faint); margin-top: 5px; line-height: 1.4; }
+  .metric-tile:hover { border-color: var(--ink-faint); transform: translateY(-1px); }
+  .metric-tile-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; font-weight: 600;
+    color: var(--ink-faint); margin-bottom: 10px;
+  }
+  .metric-tile-value {
+    font-family: "IBM Plex Mono", monospace; font-size: 23px; font-weight: 500; color: var(--ink);
+    letter-spacing: -0.02em; line-height: 1.1; margin-top: auto;
+  }
+  /* An unavailable metric reads as deliberately empty, not broken: no mono numerals, a
+     muted well instead of a solid card, and the honest sentence kept verbatim. */
+  .metric-tile-value.unavailable {
+    font-family: inherit; font-size: 12px; font-weight: 400; color: var(--ink-faint);
+    font-style: normal; line-height: 1.45; letter-spacing: 0;
+  }
+  .metric-tile:has(.metric-tile-value.unavailable) {
+    background: transparent; border-style: dashed;
+  }
+  .metric-tile:has(.metric-tile-value.unavailable):hover { transform: none; border-color: var(--border); }
+  .metric-tile-detail { font-size: 10.5px; color: var(--ink-faint); margin-top: 6px; line-height: 1.4; }
 
   .opportunity-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 26px; }
   .opportunity-card {
@@ -712,7 +747,13 @@
   .status-chip.not-connected { background: var(--surface-raised); color: var(--ink-faint); border: 1px solid var(--border); }
   .status-chip.unavailable { background: var(--surface-raised); color: var(--ink-faint); border: 1px solid var(--border); opacity: 0.7; }
 
-  .panel-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; margin-bottom: 26px; }
+  .panel-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 16px 18px; margin-bottom: 26px;
+    /* One hairline of depth - enough to lift a panel off the ground colour without a
+       drop-shadow that would read as a floating box. */
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  }
   .panel-empty { color: var(--ink-faint); font-size: 13px; padding: 4px 0; }
 
   .link-btn {
@@ -870,11 +911,151 @@
   @media (max-width: 620px) {
     .action-card { flex-wrap: wrap; }
     .action-btn { margin-left: 32px; }
-    .product-row { grid-template-columns: 1fr 46px 46px; }
+    /* 46px could not hold the "ORDERS" header at its own font size, so the head row
+       overflowed its table by 3px. Wider numeric columns, and the product name truncates
+       into whatever space is left. */
+    .product-row { grid-template-columns: minmax(0, 1fr) 46px 54px; }
+    .product-row-head { font-size: 9.5px; letter-spacing: 0.04em; }
+
   }
+
+
+  /* ============================================================================
+     Premium polish pass. Refinement only - same palette, same tokens, same
+     structure. Everything below adjusts typography, spacing, state clarity and
+     hover/focus feedback; no rule here changes what data is shown or hides an
+     honest "not available" message.
+     ============================================================================ */
+
+  /* ---- Executive hero ---- */
+  .ov-header {
+    align-items: center;
+    padding-bottom: 22px;
+    margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ov-business-name { font-size: 27px; letter-spacing: -0.02em; line-height: 1.15; }
+  .ov-business-sub {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.13em; font-weight: 600;
+    color: var(--ink-faint); margin-top: 7px;
+  }
+  .ov-business-url { margin-top: 9px; }
+  .ov-business-url a { text-decoration: none; border-bottom: 1px solid var(--border); padding-bottom: 1px; }
+  .ov-business-url a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  /* The connection chip is the one piece of status in the hero, so it gets a soft ring
+     rather than more colour - present without competing with the store name. */
+  .ov-channel-chip {
+    padding: 8px 14px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  }
+
+  /* ---- Section header affordances ---- */
+  .section-link {
+    font-size: 11px; font-weight: 500; letter-spacing: 0.01em;
+    transition: color 0.15s ease;
+  }
+  .section-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+  /* ---- Performance ---- */
+  .perf-card { padding: 16px 18px 18px; }
+  .perf-tabs { gap: 4px; margin-bottom: 16px; padding-bottom: 12px; }
+  .perf-tab { padding: 6px 13px; font-size: 11.5px; font-weight: 500; }
+  /* The selected metric carries a faint ring in addition to its fill, so which series is
+     on screen stays obvious at a glance on a dense page. */
+  .perf-tab[aria-selected="true"] { box-shadow: inset 0 0 0 1px rgba(249, 115, 22, 0.28); }
+  .perf-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .perf-line { stroke-width: 2.25; }
+  .perf-area { opacity: 0.13; }
+  .perf-dot { stroke-width: 2; }
+  .perf-grid { stroke-dasharray: 2 4; opacity: 0.75; }
+  .perf-range { font-family: "IBM Plex Mono", monospace; font-size: 11px; }
+  .perf-note { border-top: 1px solid var(--border); padding-top: 11px; margin-top: 14px; }
+  .perf-unavailable { padding: 34px 4px; }
+
+  /* ---- Funnel ---- */
+  .funnel-stage-label { font-weight: 500; }
+  .funnel-stage-value { font-size: 14px; letter-spacing: -0.01em; }
+  .funnel-bar-track { height: 9px; border-radius: 5px; }
+  .funnel-bar { transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1); }
+  /* An unmeasured stage keeps an empty, dashed track - visibly "no reading taken" rather
+     than a bar of zero length that could be misread as a measured zero. */
+  .funnel-stage-unavailable .funnel-bar-track { border-style: dashed; background: none; }
+  .funnel-arrow { padding: 5px 0; opacity: 0.5; }
+
+  /* ---- Top products ---- */
+  .product-row { padding: 10px 0; }
+  .product-row-head { letter-spacing: 0.09em; font-weight: 600; padding-bottom: 9px; }
+  .product-name { font-weight: 500; }
+  .product-num { font-size: 12.5px; letter-spacing: -0.01em; }
+
+  /* ---- AI executive summary ---- */
+  .panel-heading {
+    font-size: 10px; letter-spacing: 0.11em; font-weight: 600; color: var(--ink-soft);
+    padding-bottom: 11px; margin-bottom: 14px; border-bottom: 1px solid var(--border);
+  }
+  .mini-stat-grid { gap: 16px 14px; }
+  .mini-stat-grid .stat-value { font-size: 21px; }
+
+  /* ---- Opportunity cards ---- */
+  .opportunity-card { padding: 15px 17px; transition: border-color 0.15s ease; }
+  .opportunity-card:hover { border-color: var(--ink-faint); }
+  .opportunity-title { font-size: 13.5px; line-height: 1.45; }
+  .opportunity-meta { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .opportunity-tag { font-size: 10px; letter-spacing: 0.03em; text-transform: uppercase; }
+
+  /* ---- Next best actions ---- */
+  .action-card { padding: 14px 16px; transition: border-color 0.15s ease; }
+  .action-card:hover { border-color: var(--ink-faint); }
+  /* The rank numeral is the priority signal, so the top action's is filled rather than
+     outlined - hierarchy without a second badge competing for attention. */
+  .action-card-high .action-num { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+  .action-title { font-size: 13.5px; }
+  .action-btn { padding: 7px 13px; font-weight: 500; }
+  .action-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---- Specialist workforce panel ---- */
+  .spec-row { padding: 11px 8px; margin: 0 -8px; border-radius: 8px; transition: background 0.15s ease; }
+  .spec-row:hover { background: var(--surface-raised); }
+  .spec-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .spec-row-name { font-size: 13px; }
+  .spec-row-meta { font-size: 10.5px; }
+
+  /* ---- Activity / runs ---- */
+  .activity-row { padding: 11px 0; }
+  .activity-row-title { font-size: 12.5px; }
+  .activity-row-meta { font-size: 10.5px; margin-top: 3px; }
+  .activity-row-link { font-weight: 500; }
+  .activity-row-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  /* ---- Status chips: one consistent language everywhere ---- */
+  .status-chip { font-size: 9.5px; letter-spacing: 0.06em; padding: 4px 9px; }
+  /* A health WARN here is almost always a data limitation, not an incident, so it stays
+     amber-on-muted rather than shouting. */
+  .health-row .status-chip.warn { background: none; color: var(--warn); border: 1px solid var(--warn-soft); }
+  .health-row { padding: 11px 0; }
+
+  /* ---- Approvals ---- */
+  .approval-headline { font-size: 15px; letter-spacing: -0.01em; }
+
+  /* ---- Channels: a control panel, evenly ruled so a future channel slots in ---- */
+  .channel-row { padding: 11px 0; font-weight: 500; color: var(--ink); }
+
+  /* ---- Orchestrator ---- */
+  .orch-head { gap: 10px; }
+  .orch-meta { font-size: 12px; color: var(--ink); line-height: 1.5; }
+  .orch-summary { margin-top: 6px; }
+
+  /* ---- AI usage ---- */
+  .usage-row { padding: 9px 0; }
+  .usage-value { font-size: 13px; letter-spacing: -0.01em; }
+
+  /* ---- Shared focus treatment for the whole Overview ---- */
+  .link-btn:focus-visible,
+  .opportunity-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
 
   @media (max-width: 900px) {
     .ov-columns { grid-template-columns: 1fr; }
+    .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 
   @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -955,4 +1136,41 @@
     .main { max-height: none; }
     .main-header { padding: 20px 18px 16px; }
     .page { padding: 20px 18px 32px; }
+  }
+
+  /* ============================================================================
+     Mobile legibility floor. Deliberately the LAST block in this file: the polish
+     rules above set .status-chip to 9.5px unconditionally, and at equal specificity
+     the later rule wins - so an earlier media query setting 10.5px was being
+     overridden and phones kept rendering 9.5px chips. Ordering is the right lever
+     here; !important would work but would make every future override fight it.
+     ============================================================================ */
+  @media (max-width: 620px) {
+    /* A 9.5px uppercase chip reads fine on a desktop monitor and is genuinely hard to
+       read in the hand. */
+    .status-chip { font-size: 10.5px; padding: 4px 8px; }
+    .metric-tile-label,
+    .stat-label,
+    .opportunity-tag,
+    .action-tag,
+    .panel-heading { font-size: 10.5px; }
+    /* Two-class selector, to beat `.mini-stat-grid .stat-label` above at equal weight. */
+    .mini-stat-grid .stat-label { font-size: 10.5px; }
+    /* The head row's first cell is an unclassed <span>, so it inherits this size. Column
+       widths below give "ORDERS" room at the larger size. */
+    .product-row-head { font-size: 10.5px; letter-spacing: 0.05em; }
+    .product-row { grid-template-columns: minmax(0, 1fr) 48px 60px; }
+    .spec-row-meta,
+    .activity-row-meta,
+    .metric-tile-detail { font-size: 11px; }
+
+    /* Text links are the primary way out of each section, so on touch they get a real
+       tap target instead of a 15px-tall line of text. */
+    .section-link,
+    .opportunity-link,
+    .activity-row-link,
+    .link-btn {
+      min-height: 34px; display: inline-flex; align-items: center; font-size: 12px;
+    }
+    .section-row-right { gap: 8px; }
   }

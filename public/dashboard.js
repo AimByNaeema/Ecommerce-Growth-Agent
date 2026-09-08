@@ -1240,8 +1240,10 @@
   // its container width (CSS sets width:100%, height:auto), so it stays readable on a
   // phone without a charting library or a resize listener.
   function buildTrendSvg(metric, granularity) {
-    const VB_W = 720;
-    const VB_H = 240;
+    // Aspect only: a 4:1 box keeps the chart prominent without it towering over the
+    // page at desktop width. The plotted values are untouched.
+    const VB_W = 1000;
+    const VB_H = 250;
     const PAD_L = 54;
     const PAD_R = 14;
     const PAD_T = 14;
