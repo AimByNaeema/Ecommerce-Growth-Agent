@@ -262,10 +262,15 @@ function stubbedFetch({ scopes, onMutation, onNodes, onOrders }) {
   await testAsync('adjustInventoryQuantities: invalid changes -> throws before any fetch', async () => {
     let fetchCalls = 0;
     await withMockedFetch(async () => { fetchCalls += 1; return jsonResponse(200, {}); }, async () => {
-      await assert.rejects(() => adjustInventoryQuantities({ changes: [], reason: 'correction' }), /non-empty changes array/);
-      await assert.rejects(() => adjustInventoryQuantities({ changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 0 }], reason: 'correction' }), /non-zero integer delta/);
-      await assert.rejects(() => adjustInventoryQuantities({ changes: [{ inventoryItemId: '', locationId: 'gid://shopify/Location/1', delta: 1 }], reason: 'correction' }), /non-empty locationId/);
-      await assert.rejects(() => adjustInventoryQuantities({ changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1 }], reason: '' }), /non-empty reason/);
+      const KEY = 'placeholder-idempotency-key';
+      await assert.rejects(() => adjustInventoryQuantities({ changes: [], reason: 'correction', idempotencyKey: KEY }), /non-empty changes array/);
+      await assert.rejects(() => adjustInventoryQuantities({ changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 0 }], reason: 'correction', idempotencyKey: KEY }), /non-zero integer delta/);
+      await assert.rejects(() => adjustInventoryQuantities({ changes: [{ inventoryItemId: '', locationId: 'gid://shopify/Location/1', delta: 1 }], reason: 'correction', idempotencyKey: KEY }), /non-empty locationId/);
+      await assert.rejects(() => adjustInventoryQuantities({ changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1 }], reason: '', idempotencyKey: KEY }), /non-empty reason/);
+      // The @idempotent directive is mandatory on this mutation, so a missing or
+      // whitespace-only key refuses before anything leaves the process.
+      await assert.rejects(() => adjustInventoryQuantities({ changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1 }], reason: 'correction' }), /non-empty idempotencyKey/);
+      await assert.rejects(() => adjustInventoryQuantities({ changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1 }], reason: 'correction', idempotencyKey: '   ' }), /non-empty idempotencyKey/);
     });
     assert.strictEqual(fetchCalls, 0);
   });
@@ -282,6 +287,7 @@ function stubbedFetch({ scopes, onMutation, onNodes, onOrders }) {
               adjustInventoryQuantities({
                 changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1 }],
                 reason: 'correction',
+                idempotencyKey: 'placeholder-idempotency-key',
               }),
             new RegExp(REQUIRED_INVENTORY_WRITE_SCOPE)
           );
@@ -318,10 +324,20 @@ function stubbedFetch({ scopes, onMutation, onNodes, onOrders }) {
           const result = await adjustInventoryQuantities({
             changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1 }],
             reason: 'correction',
+                idempotencyKey: 'placeholder-idempotency-key',
           });
           assert.strictEqual(result.changes[0].quantityAfterChange, 0);
         }
       );
+      // This API version REFUSES inventoryAdjustQuantities outright without the
+      // @idempotent directive ("The @idempotent directive is required for this mutation
+      // but was not provided", BAD_REQUEST), so its presence is the property under test.
+      assert.ok(
+        /inventoryAdjustQuantities\(input: \$input\)\s*@idempotent\(key: \$idempotencyKey\)/.test(mutationBody.query),
+        'the mandatory @idempotent directive must be on the mutation field'
+      );
+      assert.strictEqual(mutationBody.variables.idempotencyKey, 'placeholder-idempotency-key');
+      assert.ok(!mutationBody.query.includes('placeholder-idempotency-key'), 'the key travels as a variable, never interpolated into the query');
       assert.strictEqual(mutationBody.variables.input.reason, 'correction');
       assert.strictEqual(mutationBody.variables.input.name, 'available');
       assert.deepStrictEqual(mutationBody.variables.input.changes, [
@@ -329,6 +345,83 @@ function stubbedFetch({ scopes, onMutation, onNodes, onOrders }) {
       ]);
       clearAccessScopesCache();
     });
+  });
+
+  await testAsync('adjustInventoryQuantities: changeFromQuantity is sent EXACTLY as supplied when given', async () => {
+    await withEnvConfigured(async () => {
+      clearAccessScopesCache();
+      let mutationBody = null;
+      await withMockedFetch(
+        stubbedFetch({
+          scopes: [REQUIRED_INVENTORY_WRITE_SCOPE],
+          onMutation: (body) => {
+            mutationBody = body;
+            return jsonResponse(200, {
+              data: { inventoryAdjustQuantities: { inventoryAdjustmentGroup: { changes: [{ name: 'available', delta: 1, quantityAfterChange: 0, item: { id: 'gid://shopify/InventoryItem/1' }, location: { id: 'gid://shopify/Location/1' } }] }, userErrors: [] } },
+            });
+          },
+        }),
+        async () => {
+          await adjustInventoryQuantities({
+            // -1 is the live quantity the plan was computed from: a current quantity, not
+            // a delta, so a negative value must survive untouched.
+            changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1, changeFromQuantity: -1 }],
+            reason: 'correction',
+                idempotencyKey: 'placeholder-idempotency-key',
+          });
+        }
+      );
+      assert.deepStrictEqual(mutationBody.variables.input.changes, [
+        { inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1, changeFromQuantity: -1 },
+      ]);
+      clearAccessScopesCache();
+    });
+  });
+
+  await testAsync('adjustInventoryQuantities: changeFromQuantity is ABSENT from the payload when not supplied', async () => {
+    await withEnvConfigured(async () => {
+      clearAccessScopesCache();
+      let mutationBody = null;
+      await withMockedFetch(
+        stubbedFetch({
+          scopes: [REQUIRED_INVENTORY_WRITE_SCOPE],
+          onMutation: (body) => {
+            mutationBody = body;
+            return jsonResponse(200, {
+              data: { inventoryAdjustQuantities: { inventoryAdjustmentGroup: { changes: [] }, userErrors: [] } },
+            });
+          },
+        }),
+        async () => {
+          await adjustInventoryQuantities({
+            changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1 }],
+            reason: 'correction',
+                idempotencyKey: 'placeholder-idempotency-key',
+          });
+        }
+      );
+      assert.ok(
+        !('changeFromQuantity' in mutationBody.variables.input.changes[0]),
+        'omitting it must send exactly the request this function sent before the field was supported'
+      );
+      clearAccessScopesCache();
+    });
+  });
+
+  await testAsync('adjustInventoryQuantities: a non-integer changeFromQuantity -> throws before any fetch', async () => {
+    let fetchCalls = 0;
+    await withMockedFetch(async () => { fetchCalls += 1; return jsonResponse(200, {}); }, async () => {
+      await assert.rejects(
+        () =>
+          adjustInventoryQuantities({
+            changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1, changeFromQuantity: 1.5 }],
+            reason: 'correction',
+                idempotencyKey: 'placeholder-idempotency-key',
+          }),
+        /changeFromQuantity, when supplied, to be an integer/
+      );
+    });
+    assert.strictEqual(fetchCalls, 0);
   });
 
   await testAsync('adjustInventoryQuantities: userErrors is a FAILURE, never a fabricated adjustment', async () => {
@@ -346,6 +439,7 @@ function stubbedFetch({ scopes, onMutation, onNodes, onOrders }) {
               adjustInventoryQuantities({
                 changes: [{ inventoryItemId: 'gid://shopify/InventoryItem/1', locationId: 'gid://shopify/Location/1', delta: 1 }],
                 reason: 'correction',
+                idempotencyKey: 'placeholder-idempotency-key',
               }),
             /Invalid delta \(placeholder\)/
           );

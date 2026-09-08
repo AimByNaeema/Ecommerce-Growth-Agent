@@ -117,6 +117,7 @@ const OTHER_CONTENT_REFERENCE = 'inventory-correction-(a-completely-different-it
 const INVENTORY_ITEM_ID = 'gid://shopify/InventoryItem/000000001 (placeholder)';
 const LOCATION_ID = 'gid://shopify/Location/000000001 (placeholder)';
 const DELTA = 1;
+const IDEMPOTENCY_KEY = 'placeholder-idempotency-key';
 
 const PASSING_CONTENT = `Restore ${DELTA} unit(s) to inventory item ${INVENTORY_ITEM_ID} (SKU PLACEHOLDER-1, product '(placeholder)'), matching the exact quantity decremented by Shopify's own test orders flagged test:true for this item.`;
 
@@ -180,6 +181,7 @@ function correct(requests, overrides = {}) {
     inventoryItemId: INVENTORY_ITEM_ID,
     locationId: LOCATION_ID,
     delta: DELTA,
+    idempotencyKey: IDEMPOTENCY_KEY,
     ...overrides,
   });
 }
@@ -251,6 +253,9 @@ function correct(requests, overrides = {}) {
       assert.strictEqual((await correct(requests, { locationId: '' })).status, 'refused');
       assert.strictEqual((await correct(requests, { delta: 0 })).status, 'refused');
       assert.strictEqual((await correct(requests, { delta: -1 })).status, 'refused');
+      // The @idempotent directive is mandatory for this mutation, so a missing key is
+      // refused here too rather than reaching the client.
+      assert.strictEqual((await correct(requests, { idempotencyKey: '' })).status, 'refused');
       assert.strictEqual(calls.length, 0);
     });
   });
@@ -265,7 +270,24 @@ function correct(requests, overrides = {}) {
       assert.strictEqual(calls.length, 1, 'exactly one Shopify mutation');
       assert.deepStrictEqual(calls[0].changes, [{ inventoryItemId: INVENTORY_ITEM_ID, locationId: LOCATION_ID, delta: DELTA }]);
       assert.strictEqual(calls[0].reason, 'correction');
+      assert.strictEqual(calls[0].idempotencyKey, IDEMPOTENCY_KEY, 'the caller-owned idempotency key must reach the client unchanged');
       assertFetchUntouched();
+    });
+  });
+
+  await testAsync('changeFromQuantity is passed through to the client unchanged, and omitted when not given', async () => {
+    await withMockedShopify({ rereadAvailable: 0 }, async (calls) => {
+      // Supplied: it must reach the client exactly, negative value intact - it is the
+      // live quantity the plan was computed from, and Shopify uses it to refuse a
+      // second application of an already-applied correction.
+      await correct(pipeline(), { changeFromQuantity: -1 });
+      assert.deepStrictEqual(calls[0].changes, [
+        { inventoryItemId: INVENTORY_ITEM_ID, locationId: LOCATION_ID, delta: DELTA, changeFromQuantity: -1 },
+      ]);
+    });
+    await withMockedShopify({ rereadAvailable: 0 }, async (calls) => {
+      await correct(pipeline());
+      assert.ok(!('changeFromQuantity' in calls[0].changes[0]), 'omitted when the caller does not supply one');
     });
   });
 

@@ -1050,17 +1050,38 @@ async function addProductsToCollection({ collectionId, productIds, businessId = 
 //   changes - non-empty array of { inventoryItemId, locationId, delta } (delta a
 //             non-zero integer; only positive restorations are used by this project's
 //             own correction flow, but the mutation itself is direction-agnostic).
+//             Each change MAY also carry `changeFromQuantity` - the quantity the caller
+//             believes is currently live. It is InventoryChangeInput's own optional
+//             optimistic-concurrency guard (confirmed by introspecting this store's real
+//             2026-07 schema, not assumed): Shopify rejects the whole adjustment if the
+//             live quantity is not that value, so an already-applied correction can never
+//             be applied twice. Untracked items also need it as an explicit baseline.
+//             It is a CURRENT QUANTITY, not a delta, so zero and negative are both valid.
 //   reason  - a non-empty reason string Shopify's inventoryAdjustQuantities accepts
 //             (e.g. 'correction'). Required - never defaulted, so every adjustment
 //             names why it happened.
+//   idempotencyKey - required, non-empty. This API version REFUSES the mutation outright
+//             ("The @idempotent directive is required for this mutation but was not
+//             provided", BAD_REQUEST) unless the @idempotent(key:) directive is present,
+//             so it is a required argument here rather than an optional extra. Confirmed
+//             by introspecting this store's real schema: @idempotent is a FIELD directive
+//             taking `key: String!`, and the key may not be empty or whitespace-only.
+//             The CALLER owns the value, exactly as it owns delta: a key that is stable
+//             for one logical correction is what makes a repeated run safe, and a
+//             randomly generated one would silently defeat that.
 //   businessId - optional, selects that business's own Shopify credentials.
 //
 // Returns: Shopify's own inventoryAdjustmentGroup (carries quantityAfterChange per
 // item), relayed unchanged.
 // Throws: same conditions as updateProductVendor() above (REQUIRED_INVENTORY_WRITE_SCOPE).
-async function adjustInventoryQuantities({ changes, reason, businessId = null } = {}) {
+async function adjustInventoryQuantities({ changes, reason, idempotencyKey, businessId = null } = {}) {
   if (typeof reason !== 'string' || reason.trim() === '') {
     throw new Error('adjustInventoryQuantities requires a non-empty reason. No Shopify mutation was attempted.');
+  }
+  if (typeof idempotencyKey !== 'string' || idempotencyKey.trim() === '') {
+    throw new Error(
+      'adjustInventoryQuantities requires a non-empty idempotencyKey for the @idempotent directive this mutation mandates. No Shopify mutation was attempted.'
+    );
   }
   if (!Array.isArray(changes) || changes.length === 0) {
     throw new Error('adjustInventoryQuantities requires a non-empty changes array. No Shopify mutation was attempted.');
@@ -1077,6 +1098,14 @@ async function adjustInventoryQuantities({ changes, reason, businessId = null } 
     if (!idsOk || !deltaOk) {
       throw new Error(
         'adjustInventoryQuantities requires every change to have a non-empty inventoryItemId, a non-empty locationId, and a non-zero integer delta. No Shopify mutation was attempted.'
+      );
+    }
+    // Optional, and only validated when actually supplied. It is a current quantity
+    // rather than a delta, so 0 and negative values are both legitimate - only a
+    // non-integer is refused.
+    if (change.changeFromQuantity !== undefined && change.changeFromQuantity !== null && !Number.isInteger(change.changeFromQuantity)) {
+      throw new Error(
+        'adjustInventoryQuantities requires changeFromQuantity, when supplied, to be an integer (it is a current quantity, not a delta). No Shopify mutation was attempted.'
       );
     }
   }
@@ -1102,8 +1131,11 @@ async function adjustInventoryQuantities({ changes, reason, businessId = null } 
     );
   }
 
-  const mutation = `mutation AdjustInventoryQuantities($input: InventoryAdjustQuantitiesInput!) {
-    inventoryAdjustQuantities(input: $input) {
+  // The @idempotent directive is mandatory for this mutation on this API version. The key
+  // travels as a GraphQL VARIABLE rather than being interpolated into the query string -
+  // the same discipline createBlogArticle() applies to article content.
+  const mutation = `mutation AdjustInventoryQuantities($input: InventoryAdjustQuantitiesInput!, $idempotencyKey: String!) {
+    inventoryAdjustQuantities(input: $input) @idempotent(key: $idempotencyKey) {
       inventoryAdjustmentGroup {
         changes { name delta quantityAfterChange item { id } location { id } }
       }
@@ -1112,14 +1144,22 @@ async function adjustInventoryQuantities({ changes, reason, businessId = null } 
   }`;
 
   const { raw } = await runAdminGraphqlQuery(mutation, 'adjustInventoryQuantities', businessId, {
+    idempotencyKey: idempotencyKey.trim(),
     input: {
       reason: reason.trim(),
       name: 'available',
-      changes: changes.map((change) => ({
-        inventoryItemId: change.inventoryItemId.trim(),
-        locationId: change.locationId.trim(),
-        delta: change.delta,
-      })),
+      // changeFromQuantity is added ONLY when the caller supplied one, so a call that
+      // omits it sends exactly the request this function sent before the field was
+      // supported - no existing behaviour changes.
+      changes: changes.map((change) => {
+        const entry = {
+          inventoryItemId: change.inventoryItemId.trim(),
+          locationId: change.locationId.trim(),
+          delta: change.delta,
+        };
+        if (Number.isInteger(change.changeFromQuantity)) entry.changeFromQuantity = change.changeFromQuantity;
+        return entry;
+      }),
     },
   });
 

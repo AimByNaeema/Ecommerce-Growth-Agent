@@ -91,6 +91,16 @@ function planInventoryCorrections({ inventoryItems, testOrderTotals } = {}) {
 //   delta           - the exact positive integer quantity to restore. Required. This
 //     function never computes or guesses a delta itself - planInventoryCorrections()
 //     already decided it from Shopify's own test-order data.
+//   changeFromQuantity - optional; the quantity the caller's plan was computed from
+//     (planInventoryCorrections()'s currentAvailable). Passed straight through to the
+//     client as InventoryChangeInput's own optimistic-concurrency guard: Shopify refuses
+//     the adjustment if the live quantity is no longer that value, so a correction that
+//     has already been applied cannot be applied a second time. Like delta, it is never
+//     computed here - this wrapper performs no read of its own before the mutation.
+//   idempotencyKey  - required, non-empty. This API version mandates the @idempotent
+//     directive on inventoryAdjustQuantities. The caller supplies a key that is STABLE
+//     for one logical correction, so re-running a correction that already succeeded is
+//     absorbed by Shopify instead of applying a second time.
 //   reason          - a non-empty Shopify inventoryAdjustQuantities reason string.
 //     Defaults to 'correction'.
 //
@@ -102,6 +112,8 @@ async function correctInventoryDeficit({
   inventoryItemId,
   locationId,
   delta,
+  changeFromQuantity = null,
+  idempotencyKey,
   reason = 'correction',
   specialistId = 'product',
   businessId = null,
@@ -131,6 +143,7 @@ async function correctInventoryDeficit({
   if (!isNonEmptyString(inventoryItemId)) missing.push('an inventoryItemId');
   if (!isNonEmptyString(locationId)) missing.push('a locationId');
   if (!Number.isInteger(delta) || delta <= 0) missing.push('a positive integer delta');
+  if (!isNonEmptyString(idempotencyKey)) missing.push('a non-empty idempotencyKey (this mutation mandates the @idempotent directive)');
   if (missing.length > 0) {
     const refuseReason = `Nothing was corrected: ${missing.join('; ')}. Nothing here is substituted or invented.`;
     appendAuditEvent(auditTracker, {
@@ -153,8 +166,13 @@ async function correctInventoryDeficit({
   let result;
   try {
     result = await shopifyClient.adjustInventoryQuantities({
-      changes: [{ inventoryItemId, locationId, delta }],
+      changes: [
+        Number.isInteger(changeFromQuantity)
+          ? { inventoryItemId, locationId, delta, changeFromQuantity }
+          : { inventoryItemId, locationId, delta },
+      ],
       reason,
+      idempotencyKey,
       businessId,
     });
   } catch (err) {
