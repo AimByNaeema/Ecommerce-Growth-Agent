@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const {
   calculateSalesMetrics,
+  calculateSalesTrend,
   calculateProductMetrics,
   calculateInventoryMetrics,
   estimateProjectedMonthlyRevenue,
@@ -150,6 +151,113 @@ test('estimateDaysOfInventoryRemaining is omitted entirely when averageDailyUnit
 
 test('estimateDaysOfInventoryRemaining is omitted when total_available_units itself cannot be calculated', () => {
   assert.deepStrictEqual(estimateDaysOfInventoryRemaining([], 5), []);
+});
+
+
+// --- calculateSalesTrend -------------------------------------------------------------
+// The pure time-bucketing behind the dashboard's Performance charts (see server.js's
+// buildTrends and public/dashboard.js's renderPerformance). Every assertion below exists
+// to pin the one property that matters most for those charts: a point is only ever drawn
+// from an order that genuinely exists in the supplied array.
+
+test('calculateSalesTrend returns null - never an empty chart - when nothing usable was supplied', () => {
+  assert.strictEqual(calculateSalesTrend([]), null);
+  assert.strictEqual(calculateSalesTrend(null), null);
+  assert.strictEqual(calculateSalesTrend(undefined), null);
+  // Unparseable date and non-numeric price are both skipped, leaving nothing to plot.
+  assert.strictEqual(calculateSalesTrend([{ totalPrice: 'abc', currency: 'USD', createdAt: 'not-a-date' }]), null);
+  assert.strictEqual(calculateSalesTrend([{ totalPrice: '5.00', currency: 'USD', createdAt: 'not-a-date' }]), null);
+  assert.strictEqual(calculateSalesTrend([{ totalPrice: 'abc', currency: 'USD', createdAt: '2026-01-01T00:00:00Z' }]), null);
+});
+
+test('calculateSalesTrend buckets real orders by day and sums only what they contain', () => {
+  const trend = calculateSalesTrend([
+    { totalPrice: '2.00', currency: 'USD', createdAt: '2026-03-01T09:00:00Z' },
+    { totalPrice: '3.00', currency: 'USD', createdAt: '2026-03-01T18:30:00Z' },
+    { totalPrice: '4.00', currency: 'USD', createdAt: '2026-03-03T10:00:00Z' },
+  ]);
+  assert.strictEqual(trend.granularity, 'day');
+  assert.strictEqual(trend.currency, 'USD');
+  assert.strictEqual(trend.order_count, 3);
+  assert.strictEqual(trend.points.length, 3);
+  assert.deepStrictEqual(
+    trend.points.map((p) => [p.bucket_start.slice(0, 10), p.revenue, p.orders]),
+    [
+      ['2026-03-01', 5, 2],
+      // A day with no order inside the real range is a genuine zero, not a gap the chart
+      // silently closes - and it is never confused with "we have no data for this day".
+      ['2026-03-02', 0, 0],
+      ['2026-03-03', 4, 1],
+    ]
+  );
+  // Bucket revenue must reconcile exactly with the flat total the metric tiles show.
+  const summed = trend.points.reduce((total, p) => total + p.revenue, 0);
+  assert.strictEqual(summed, 9);
+});
+
+test('calculateSalesTrend reports the range the ORDERS actually cover, never an assumed period', () => {
+  const trend = calculateSalesTrend([
+    { totalPrice: '1.00', currency: 'USD', createdAt: '2026-03-05T23:59:00Z' },
+    { totalPrice: '1.00', currency: 'USD', createdAt: '2026-03-01T00:00:01Z' },
+  ]);
+  assert.strictEqual(trend.range.from, '2026-03-01T00:00:01.000Z');
+  assert.strictEqual(trend.range.to, '2026-03-05T23:59:00.000Z');
+});
+
+test('calculateSalesTrend derives granularity from the real span, and honors an explicit one', () => {
+  const spanning = (fromIso, toIso) => [
+    { totalPrice: '1.00', currency: 'USD', createdAt: fromIso },
+    { totalPrice: '1.00', currency: 'USD', createdAt: toIso },
+  ];
+  assert.strictEqual(calculateSalesTrend(spanning('2026-03-01T00:00:00Z', '2026-03-20T00:00:00Z')).granularity, 'day');
+  assert.strictEqual(calculateSalesTrend(spanning('2026-01-01T00:00:00Z', '2026-04-01T00:00:00Z')).granularity, 'week');
+  assert.strictEqual(calculateSalesTrend(spanning('2025-01-01T00:00:00Z', '2026-06-01T00:00:00Z')).granularity, 'month');
+  // An explicit granularity wins over the derived one.
+  assert.strictEqual(
+    calculateSalesTrend(spanning('2026-03-01T00:00:00Z', '2026-03-05T00:00:00Z'), { granularity: 'month' }).granularity,
+    'month'
+  );
+});
+
+test('calculateSalesTrend never sums incompatible currencies into one line', () => {
+  const trend = calculateSalesTrend([
+    { totalPrice: '10.00', currency: 'USD', createdAt: '2026-03-01T00:00:00Z' },
+    { totalPrice: '20.00', currency: 'USD', createdAt: '2026-03-02T00:00:00Z' },
+    { totalPrice: '999.00', currency: 'GBP', createdAt: '2026-03-01T00:00:00Z' },
+  ]);
+  // The most-represented currency carries the line; the other is named, not folded in.
+  assert.strictEqual(trend.currency, 'USD');
+  assert.deepStrictEqual(trend.ignored_currencies, ['GBP']);
+  assert.strictEqual(trend.order_count, 2);
+  assert.strictEqual(
+    trend.points.reduce((total, p) => total + p.revenue, 0),
+    30,
+    'the GBP order must not appear in the USD trend total'
+  );
+});
+
+test('calculateSalesTrend treats a genuine zero-revenue order as an order, not as missing data', () => {
+  // Real case for this store: free-product orders are 0.00 but are still real orders.
+  const trend = calculateSalesTrend([
+    { totalPrice: '0.00', currency: 'USD', createdAt: '2026-03-01T09:00:00Z' },
+    { totalPrice: '0.00', currency: 'USD', createdAt: '2026-03-01T10:00:00Z' },
+  ]);
+  assert.strictEqual(trend.points.length, 1);
+  assert.strictEqual(trend.points[0].revenue, 0);
+  assert.strictEqual(trend.points[0].orders, 2);
+  assert.strictEqual(trend.order_count, 2);
+});
+
+test('calculateSalesTrend skips an unusable order without discarding the usable ones', () => {
+  const trend = calculateSalesTrend([
+    { totalPrice: '5.00', currency: 'USD', createdAt: '2026-03-01T00:00:00Z' },
+    { totalPrice: null, currency: 'USD', createdAt: '2026-03-01T01:00:00Z' },
+    { totalPrice: '7.00', currency: 'USD', createdAt: 'garbage' },
+    null,
+  ]);
+  assert.strictEqual(trend.order_count, 1);
+  assert.strictEqual(trend.points[0].revenue, 5);
+  assert.strictEqual(trend.points[0].orders, 1);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

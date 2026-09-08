@@ -145,6 +145,124 @@ function calculateInventoryMetrics(inventoryItems = []) {
   return metrics;
 }
 
+// calculated_metrics over TIME for the `sales` category: buckets an already-retrieved
+// array of orders into a revenue-and-order-count trend. Same discipline as every other
+// calculate*() function above - mechanical arithmetic over the actual orders supplied,
+// no fetch, no extrapolation, and nothing invented. This is what makes a real revenue/
+// orders trend chart possible without a second analytics engine: the dashboard passes
+// in the orders tools/analyticsDataTool.js ALREADY pulled, and gets back only what
+// those orders literally say.
+//
+// WHAT IS AND IS NOT CLAIMED. The returned range is the actual first-to-last order
+// timestamp among the supplied orders - never a calendar period this module assumes.
+// Buckets with no order inside that range are emitted with 0, which is a real fact
+// about the supplied set (no order fell in that bucket), NOT a guess. What this module
+// cannot know is whether the supplied array was capped/paginated - so it never claims
+// completeness, exactly as this file's header states; tools/analyticsDataTool.js's own
+// limitation about the record count pulled remains the authority on that.
+//
+// `granularity` is optional. Supplied, it is honored ('day' | 'week' | 'month').
+// Omitted, it is derived from the span the orders actually cover, so the chart
+// preserves the real available resolution instead of forcing a fixed one.
+//
+// Orders missing a parseable createdAt, or whose totalPrice is not a finite
+// non-negative number, are skipped entirely rather than counted at 0. A mixed-currency
+// batch reports the currency that carries the most orders and states the others in
+// `ignored_currencies`, because summing incompatible currencies into one trend line
+// would be a fabricated number - the same rule sumRevenueByCurrency() already applies.
+//
+// Returns null when no order in the array is usable - the caller then shows "no data",
+// never an empty chart implying zero sales.
+const TREND_GRANULARITIES = ['day', 'week', 'month'];
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function startOfUtcBucket(date, granularity) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  if (granularity === 'month') return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  if (granularity === 'week') {
+    // ISO-style weeks starting Monday, so a "week" is a real, stable calendar unit
+    // rather than a rolling 7-day window anchored on whenever the data happens to start.
+    const day = (d.getUTCDay() + 6) % 7;
+    return new Date(d.getTime() - day * MS_PER_DAY);
+  }
+  return d;
+}
+
+function advanceUtcBucket(date, granularity) {
+  if (granularity === 'month') return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1));
+  if (granularity === 'week') return new Date(date.getTime() + 7 * MS_PER_DAY);
+  return new Date(date.getTime() + MS_PER_DAY);
+}
+
+function calculateSalesTrend(orders = [], { granularity = null } = {}) {
+  const usable = [];
+  const currencyCounts = {};
+  for (const order of Array.isArray(orders) ? orders : []) {
+    if (!order) continue;
+    const amount = toNumber(order.totalPrice);
+    if (!isFiniteNonNegativeNumber(amount)) continue;
+    const placedAt = new Date(order.createdAt);
+    if (Number.isNaN(placedAt.getTime())) continue;
+    const currency = order.currency || '(unknown currency)';
+    currencyCounts[currency] = (currencyCounts[currency] || 0) + 1;
+    usable.push({ amount, placedAt, currency });
+  }
+  if (usable.length === 0) return null;
+
+  // One trend line, one currency. The most-represented currency wins and every other is
+  // named in ignored_currencies, so a mixed batch is reported honestly instead of being
+  // summed into a meaningless total.
+  const currencies = Object.keys(currencyCounts);
+  const primaryCurrency = currencies.reduce((a, b) => (currencyCounts[b] > currencyCounts[a] ? b : a), currencies[0]);
+  const inCurrency = usable.filter((entry) => entry.currency === primaryCurrency);
+  const ignoredCurrencies = currencies.filter((c) => c !== primaryCurrency);
+
+  inCurrency.sort((a, b) => a.placedAt - b.placedAt);
+  const firstAt = inCurrency[0].placedAt;
+  const lastAt = inCurrency[inCurrency.length - 1].placedAt;
+
+  // Derived from the span the data actually covers, so the chart never implies a finer
+  // or coarser resolution than the orders support.
+  const spanDays = (lastAt - firstAt) / MS_PER_DAY;
+  const resolved = TREND_GRANULARITIES.includes(granularity)
+    ? granularity
+    : spanDays <= 31
+      ? 'day'
+      : spanDays <= 182
+        ? 'week'
+        : 'month';
+
+  const totals = new Map();
+  for (const entry of inCurrency) {
+    const key = startOfUtcBucket(entry.placedAt, resolved).toISOString();
+    const bucket = totals.get(key) || { revenue: 0, orders: 0 };
+    bucket.revenue += entry.amount;
+    bucket.orders += 1;
+    totals.set(key, bucket);
+  }
+
+  // Walk the real range so gaps inside it appear as genuine zero-order buckets rather
+  // than the chart silently closing the gap and implying continuous sales.
+  const points = [];
+  let cursor = startOfUtcBucket(firstAt, resolved);
+  const end = startOfUtcBucket(lastAt, resolved);
+  while (cursor <= end && points.length < 400) {
+    const key = cursor.toISOString();
+    const bucket = totals.get(key) || { revenue: 0, orders: 0 };
+    points.push({ bucket_start: key, revenue: round(bucket.revenue), orders: bucket.orders });
+    cursor = advanceUtcBucket(cursor, resolved);
+  }
+
+  return {
+    granularity: resolved,
+    currency: primaryCurrency,
+    range: { from: firstAt.toISOString(), to: lastAt.toISOString() },
+    order_count: inCurrency.length,
+    ignored_currencies: ignoredCurrencies,
+    points,
+  };
+}
+
 // estimated_metrics for the `sales` category: projects the actual revenue observed
 // over `periodDays` out to a 30-day month, assuming a steady sales rate. `periodDays`
 // is always caller-supplied (the number of days the retrieved `orders` batch actually
@@ -193,6 +311,7 @@ function estimateDaysOfInventoryRemaining(inventoryItems = [], averageDailyUnits
 
 module.exports = {
   calculateSalesMetrics,
+  calculateSalesTrend,
   calculateProductMetrics,
   calculateInventoryMetrics,
   estimateProjectedMonthlyRevenue,

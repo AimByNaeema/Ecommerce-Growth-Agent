@@ -1,0 +1,531 @@
+'use strict';
+
+// Tests for the two new dashboard read-only endpoints (server.js: GET /overview,
+// GET /store/metrics) - the backend surface behind the Overview control-center
+// upgrade (public/index.html + dashboard.js). Follows verification/testing/server.test.js's
+// harness exactly: real HTTP requests against a locally started createApp() instance,
+// a throwaway RUN_HISTORY_STORE_DIR so this suite never touches this project's own
+// memory/state/runs/, and monkey-patched module functions so neither suite ever makes
+// a real network call to Shopify or a model provider.
+
+const assert = require('node:assert');
+const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+process.env.RUN_HISTORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-overview-test-'));
+
+const TEST_API_KEY = 'test-agent-api-key-do-not-use-in-production';
+process.env.AGENT_API_KEY = TEST_API_KEY;
+process.env.RATE_LIMIT_MAX_REQUESTS = '10000';
+
+const { createApp } = require('../../server');
+const runHistoryStore = require('../../agent/core/runHistoryStore');
+const shopifyClient = require('../../integrations/adapters/shopifyClient');
+const etsyClient = require('../../integrations/adapters/etsyClient');
+const analyticsDataTool = require('../../tools/analyticsDataTool');
+
+let passed = 0;
+let failed = 0;
+
+async function testAsync(name, fn) {
+  try {
+    await fn();
+    console.log(`PASS: ${name}`);
+    passed += 1;
+  } catch (err) {
+    console.error(`FAIL: ${name}`);
+    console.error(`  ${err.message}`);
+    failed += 1;
+  }
+}
+
+function request(port, { method, path: reqPath, headers } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: '127.0.0.1', port, path: reqPath, method: method || 'GET', headers: headers || {} },
+      (res) => {
+        let raw = '';
+        res.on('data', (chunk) => {
+          raw += chunk;
+        });
+        res.on('end', () => resolve({ status: res.statusCode, raw }));
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function withServer(fn) {
+  const app = createApp();
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once('listening', resolve));
+  const { port } = server.address();
+  try {
+    await fn(port);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+function authedGet(port, reqPath) {
+  return request(port, { method: 'GET', path: reqPath, headers: { Authorization: `Bearer ${TEST_API_KEY}` } });
+}
+
+// Monkey-patches an adapter/tool's exported function for the duration of `fn`, the same
+// convention verification/testing/server.test.js's withMockedSendMessage/
+// withMockedBuildPlanStep already establish - restores the original unconditionally.
+function withMocked(moduleObj, fnName, mockImpl, fn) {
+  const saved = moduleObj[fnName];
+  moduleObj[fnName] = mockImpl;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      moduleObj[fnName] = saved;
+    });
+}
+
+function seedRunRecord(overrides) {
+  const record = Object.assign(
+    {
+      run_id: `run-test-${Math.random().toString(36).slice(2, 10)}`,
+      kind: 'run',
+      status: 'success',
+      summary: 'A test summary.',
+      created_at: new Date().toISOString(),
+      result: {},
+    },
+    overrides
+  );
+  runHistoryStore.saveRunRecord(record);
+  return record;
+}
+
+async function main() {
+  await testAsync('GET /overview requires the API key', async () => {
+    await withServer(async (port) => {
+      const res = await request(port, { method: 'GET', path: '/overview' });
+      // AGENT_API_KEY IS set in this suite (see top of file) - an unauthenticated
+      // request is refused with 401, not the 503 fail-closed status
+      // security/serverAccessControl.test.js covers for an unset key entirely.
+      assert.strictEqual(res.status, 401);
+    });
+  });
+
+  await testAsync('GET /store/metrics requires the API key', async () => {
+    await withServer(async (port) => {
+      const res = await request(port, { method: 'GET', path: '/store/metrics' });
+      assert.strictEqual(res.status, 401);
+    });
+  });
+
+  await testAsync('GET /overview never calls Shopify, Etsy, or the analytics tool - local state only', async () => {
+    let shopifyCalled = false;
+    let etsyCalled = false;
+    let analyticsCalled = false;
+    await withMocked(
+      shopifyClient,
+      'isConfigured',
+      () => {
+        shopifyCalled = true;
+        return true;
+      },
+      () =>
+        withMocked(
+          etsyClient,
+          'isConfigured',
+          () => {
+            etsyCalled = true;
+            return false;
+          },
+          () =>
+            withMocked(
+              analyticsDataTool,
+              'runAnalyticsDataTool',
+              async () => {
+                analyticsCalled = true;
+                return { status: 'failed', result: null, error: 'should not be called' };
+              },
+              () =>
+                withServer(async (port) => {
+                  const res = await authedGet(port, '/overview');
+                  assert.strictEqual(res.status, 200);
+                  // isConfigured() IS the local, zero-network credential-presence check
+                  // GET /overview is documented to use - it is expected to run.
+                  assert.strictEqual(shopifyCalled, true);
+                  assert.strictEqual(etsyCalled, true);
+                  // The live-data tool must NEVER be reached from this endpoint.
+                  assert.strictEqual(analyticsCalled, false);
+                })
+            )
+        )
+    );
+  });
+
+  await testAsync('GET /overview reports Shopify connected and Etsy not connected from real adapter checks', async () => {
+    await withMocked(
+      shopifyClient,
+      'isConfigured',
+      () => true,
+      () =>
+        withMocked(etsyClient, 'isConfigured', () => false, () =>
+          withServer(async (port) => {
+            const res = await authedGet(port, '/overview');
+            const data = JSON.parse(res.raw);
+            const shopify = data.channels.find((c) => c.id === 'shopify');
+            const etsy = data.channels.find((c) => c.id === 'etsy');
+            const amazon = data.channels.find((c) => c.id === 'amazon');
+            assert.strictEqual(shopify.configured, true);
+            assert.strictEqual(shopify.adapter_exists, true);
+            assert.strictEqual(etsy.configured, false);
+            assert.strictEqual(etsy.adapter_exists, true);
+            // A platform with no real adapter in this repo must never be reported as
+            // connectable - adapter_exists false, configured false, always.
+            assert.strictEqual(amazon.adapter_exists, false);
+            assert.strictEqual(amazon.configured, false);
+          })
+        )
+    );
+  });
+
+  await testAsync('GET /overview: a specialist with no saved run is reported as null, never a fabricated status', async () => {
+    await withServer(async (port) => {
+      const res = await authedGet(port, '/overview');
+      const data = JSON.parse(res.raw);
+      // This suite's own throwaway RUN_HISTORY_STORE_DIR starts empty for this request
+      // (no seed has run yet in this process at this point in file order... but other
+      // tests above have already seeded nothing yet either - assert every specialist is
+      // null OR, if a later test already seeded one, that a genuinely never-run one
+      // (e.g. "marketing") stays null unless this test itself seeded it).
+      assert.strictEqual(data.specialists.marketing, null);
+    });
+  });
+
+  await testAsync('GET /overview: specialist rollup matches seeded run records exactly', async () => {
+    const record = seedRunRecord({
+      run_id: 'run-seed-product-1',
+      kind: 'run',
+      specialist_id: 'product',
+      specialist_name: 'Product',
+      status: 'success',
+      summary: 'Product completed this request successfully.',
+      created_at: '2026-01-01T00:00:00.000Z',
+      result: { outputs: { status: 'success', result: [{ a: 1 }, { a: 2 }, { a: 3 }] } },
+    });
+    await withServer(async (port) => {
+      const res = await authedGet(port, '/overview');
+      const data = JSON.parse(res.raw);
+      const entry = data.specialists.product;
+      assert.ok(entry, 'expected a rollup entry for product');
+      assert.strictEqual(entry.last_run_id, record.run_id);
+      assert.strictEqual(entry.last_status, 'success');
+      assert.strictEqual(entry.last_summary, record.summary);
+      assert.strictEqual(entry.last_run_at, record.created_at);
+      // outputs.result is a real 3-element array on this seeded record - the record
+      // count must be read from it exactly, never estimated.
+      assert.strictEqual(entry.last_result_count, 3);
+      assert.strictEqual(entry.run_count, 1);
+    });
+  });
+
+  await testAsync('GET /overview: opportunities are relayed verbatim from growth_opportunity_drafts, never re-derived', async () => {
+    seedRunRecord({
+      run_id: 'run-seed-orch-opportunities',
+      kind: 'orchestrate',
+      status: 'success',
+      summary: 'Research completed.',
+      created_at: '2026-01-02T00:00:00.000Z',
+      result: {
+        growth_opportunity_drafts: [
+          {
+            opportunity: 'Bundle the top 3 Halloween SVGs at a 10% discount',
+            category: 'pricing',
+            reason: 'Segment: crafters',
+            requiredAction: 'Create a bundle listing',
+            verificationStatus: 'verified',
+          },
+        ],
+      },
+    });
+    await withServer(async (port) => {
+      const res = await authedGet(port, '/overview');
+      const data = JSON.parse(res.raw);
+      const found = data.opportunities.find((o) => o.title === 'Bundle the top 3 Halloween SVGs at a 10% discount');
+      assert.ok(found, 'expected the seeded opportunity draft to be relayed');
+      assert.strictEqual(found.source_kind, 'growth_opportunity_draft');
+      assert.strictEqual(found.verification_status, 'verified');
+      assert.strictEqual(found.run_id, 'run-seed-orch-opportunities');
+      // No scoring/ranking field is invented - only what the source record carried.
+      assert.strictEqual(found.category, 'pricing');
+    });
+  });
+
+  await testAsync('GET /overview: a business with no growth_opportunity_drafts and no recommendations yields no opportunities for it', async () => {
+    const record = seedRunRecord({
+      run_id: 'run-seed-no-opportunities',
+      kind: 'run',
+      specialist_id: 'listing',
+      status: 'partial',
+      summary: 'Listing needs more input.',
+      created_at: '2026-01-03T00:00:00.000Z',
+      result: { outputs: { status: 'failed', result: null, error: 'missing input' } },
+    });
+    await withServer(async (port) => {
+      const res = await authedGet(port, '/overview');
+      const data = JSON.parse(res.raw);
+      const fromThisRecord = data.opportunities.filter((o) => o.run_id === record.run_id);
+      assert.deepStrictEqual(fromThisRecord, []);
+    });
+  });
+
+  await testAsync('GET /overview: an unconfigured Shopify is reported honestly, never as a connected channel', async () => {
+    await withMocked(shopifyClient, 'isConfigured', () => false, () =>
+      withServer(async (port) => {
+        const res = await authedGet(port, '/overview');
+        const data = JSON.parse(res.raw);
+        const shopify = data.channels.find((c) => c.id === 'shopify');
+        assert.strictEqual(shopify.configured, false);
+        const shopifyHealth = data.health.find((h) => h.id === 'shopify_connection');
+        assert.strictEqual(shopifyHealth.status, 'warn');
+      })
+    );
+  });
+
+  await testAsync('GET /overview payload carries no token, key, or credential field', async () => {
+    await withServer(async (port) => {
+      const res = await authedGet(port, '/overview');
+      assert.ok(!/accessToken|access_token|apiKey|api_key|password|secret/i.test(res.raw));
+    });
+  });
+
+  await testAsync('GET /store/metrics: Shopify not configured yields the tool\'s own honest failure, not zeros', async () => {
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async ({ analyticsCapability }) => ({
+        status: 'failed',
+        result: null,
+        error: 'SHOPIFY_STORE_DOMAIN and/or SHOPIFY_ADMIN_API_ACCESS_TOKEN are not set.',
+      }),
+      () =>
+        withServer(async (port) => {
+          const res = await authedGet(port, '/store/metrics');
+          assert.strictEqual(res.status, 200);
+          const data = JSON.parse(res.raw);
+          assert.strictEqual(data.capabilities.sales.status, 'failed');
+          assert.strictEqual(data.capabilities.sales.result, null);
+          assert.ok(typeof data.capabilities.sales.error === 'string' && data.capabilities.sales.error.length > 0);
+        })
+    );
+  });
+
+  await testAsync('GET /store/metrics: a second call within the TTL is served from cache, never re-invoking the tool', async () => {
+    let callCount = 0;
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async ({ analyticsCapability }) => {
+        callCount += 1;
+        return { status: 'success', result: { specialized_records: [{}] }, error: null };
+      },
+      () =>
+        withServer(async (port) => {
+          const first = await authedGet(port, '/store/metrics');
+          const firstData = JSON.parse(first.raw);
+          assert.strictEqual(firstData.cached, false);
+          const callsAfterFirst = callCount;
+          assert.strictEqual(callsAfterFirst, 4); // sales, products, inventory, customers
+
+          const second = await authedGet(port, '/store/metrics');
+          const secondData = JSON.parse(second.raw);
+          assert.strictEqual(secondData.cached, true);
+          assert.strictEqual(callCount, callsAfterFirst, 'the tool must not be re-invoked on a cached request');
+        })
+    );
+  });
+
+  await testAsync('GET /store/metrics payload carries no token, key, or credential field', async () => {
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async () => ({ status: 'success', result: { specialized_records: [{}] }, error: null }),
+      () =>
+        withServer(async (port) => {
+          const res = await authedGet(port, '/store/metrics');
+          assert.ok(!/accessToken|access_token|apiKey|api_key|password|secret/i.test(res.raw));
+        })
+    );
+  });
+
+
+  // --- GET /store/metrics: the Performance charts' data layer --------------------------
+  // Builds one fake `sales` outcome shaped exactly like tools/analyticsDataTool.js's real
+  // return value, so these assertions pin the contract the dashboard's chart renderer
+  // actually consumes.
+  function salesOutcomeWithOrders(actualMetrics, limitations) {
+    return {
+      status: 'success',
+      error: null,
+      result: {
+        limitations: limitations || [],
+        specialized_records: [{ sales: { actual_metrics: actualMetrics } }],
+      },
+    };
+  }
+
+  await testAsync('GET /store/metrics builds trends from the SAME orders it already pulled - no extra Shopify call', async () => {
+    let salesCalls = 0;
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async ({ analyticsCapability }) => {
+        if (analyticsCapability !== 'sales') return { status: 'empty', result: null, error: null };
+        salesCalls += 1;
+        return salesOutcomeWithOrders([
+          { label: 'order', value: '2.00', unit: 'USD', createdAt: '2026-03-01T09:00:00Z' },
+          { label: 'order', value: '3.00', unit: 'USD', createdAt: '2026-03-01T18:00:00Z' },
+          { label: 'order', value: '4.00', unit: 'USD', createdAt: '2026-03-03T10:00:00Z' },
+        ]);
+      },
+      () =>
+        withServer(async (port) => {
+          const res = await authedGet(port, '/store/metrics');
+          const { trends } = JSON.parse(res.raw);
+          // The sales capability is requested exactly once for the whole response - the
+          // trend is derived from that one pull, never from a second round trip.
+          assert.strictEqual(salesCalls, 1);
+          assert.strictEqual(trends.available, true);
+          assert.strictEqual(trends.granularity, 'day');
+          assert.strictEqual(trends.currency, 'USD');
+          assert.strictEqual(trends.order_count, 3);
+
+          const revenue = trends.metrics.find((m) => m.id === 'revenue');
+          assert.strictEqual(revenue.available, true);
+          assert.strictEqual(revenue.channels.length, 1);
+          assert.strictEqual(revenue.channels[0].id, 'shopify');
+          assert.deepStrictEqual(
+            revenue.channels[0].points.map((p) => p.value),
+            [5, 0, 4],
+            'points must equal the supplied orders exactly, including the genuine zero day'
+          );
+
+          const orders = trends.metrics.find((m) => m.id === 'orders');
+          assert.deepStrictEqual(orders.channels[0].points.map((p) => p.value), [2, 0, 1]);
+        })
+    );
+  });
+
+  await testAsync('GET /store/metrics reports sessions and conversion rate as unavailable with a real reason, never a zero series', async () => {
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async ({ analyticsCapability }) =>
+        analyticsCapability === 'sales'
+          ? salesOutcomeWithOrders([{ label: 'order', value: '1.00', unit: 'USD', createdAt: '2026-03-01T09:00:00Z' }])
+          : { status: 'empty', result: null, error: null },
+      () =>
+        withServer(async (port) => {
+          const res = await authedGet(port, '/store/metrics');
+          const { trends } = JSON.parse(res.raw);
+          for (const id of ['sessions', 'conversion_rate']) {
+            const metric = trends.metrics.find((m) => m.id === id);
+            assert.strictEqual(metric.available, false, `${id} must never be reported as available`);
+            // No series at all - an empty array a chart could draw as a flat zero line
+            // would read as "we measured zero traffic", which is a fabricated claim.
+            assert.deepStrictEqual(metric.channels, [], `${id} must carry no series`);
+            assert.ok(
+              typeof metric.reason === 'string' && metric.reason.length > 0,
+              `${id} must state why it is unavailable`
+            );
+          }
+        })
+    );
+  });
+
+  await testAsync('GET /store/metrics: no usable orders yields available:false and a null range, never an invented one', async () => {
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async () => ({ status: 'empty', result: null, error: null }),
+      () =>
+        withServer(async (port) => {
+          const res = await authedGet(port, '/store/metrics');
+          const { trends } = JSON.parse(res.raw);
+          assert.strictEqual(trends.available, false);
+          assert.strictEqual(trends.range, null);
+          assert.strictEqual(trends.granularity, null);
+          assert.strictEqual(trends.order_count, 0);
+          for (const metric of trends.metrics) {
+            assert.deepStrictEqual(metric.channels, [], `${metric.id} must carry no fabricated series`);
+          }
+        })
+    );
+  });
+
+  await testAsync("GET /store/metrics passes the pull's own capped-read limitation through to the chart", async () => {
+    const cap = 'Pulled 50 order(s) from Shopify (limit 50, most recent first) - a capped read, not necessarily every order in the reporting period.';
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async ({ analyticsCapability }) =>
+        analyticsCapability === 'sales'
+          ? salesOutcomeWithOrders(
+              [{ label: 'order', value: '1.00', unit: 'USD', createdAt: '2026-03-01T09:00:00Z' }],
+              [cap]
+            )
+          : { status: 'empty', result: null, error: null },
+      () =>
+        withServer(async (port) => {
+          const res = await authedGet(port, '/store/metrics');
+          const { trends } = JSON.parse(res.raw);
+          // Verbatim, so the dashboard can never present a partial pull as a full history.
+          assert.ok(trends.limitations.includes(cap));
+        })
+    );
+  });
+
+  await testAsync('GET /store/metrics: every trend metric exposes a channels array, so a future channel needs no restructuring', async () => {
+    await withMocked(
+      analyticsDataTool,
+      'runAnalyticsDataTool',
+      async ({ analyticsCapability }) =>
+        analyticsCapability === 'sales'
+          ? salesOutcomeWithOrders([{ label: 'order', value: '1.00', unit: 'USD', createdAt: '2026-03-01T09:00:00Z' }])
+          : { status: 'empty', result: null, error: null },
+      () =>
+        withServer(async (port) => {
+          const res = await authedGet(port, '/store/metrics');
+          const { trends } = JSON.parse(res.raw);
+          assert.deepStrictEqual(
+            trends.metrics.map((m) => m.id),
+            ['revenue', 'orders', 'sessions', 'conversion_rate']
+          );
+          for (const metric of trends.metrics) {
+            assert.ok(Array.isArray(metric.channels), `${metric.id}.channels must be an array`);
+            for (const channel of metric.channels) {
+              // Each series names the channel it came from - the property that lets a real
+              // Etsy/eBay adapter append a second series later without a rebuild.
+              assert.ok(typeof channel.id === 'string' && channel.id.length > 0);
+              assert.ok(typeof channel.name === 'string' && channel.name.length > 0);
+              assert.ok(Array.isArray(channel.points));
+            }
+          }
+          // Only genuinely connected channels appear - today that is Shopify alone.
+          const seriesChannels = trends.metrics.flatMap((m) => m.channels.map((c) => c.id));
+          assert.deepStrictEqual([...new Set(seriesChannels)], ['shopify']);
+        })
+    );
+  });
+
+  await testAsync('this test file is registered in the suite runner', () => {
+    const { TEST_FILES } = require('./runAllTests');
+    assert.ok(TEST_FILES.includes('dashboardOverviewEndpoint.test.js'));
+  });
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  if (failed > 0) process.exitCode = 1;
+}
+
+main();

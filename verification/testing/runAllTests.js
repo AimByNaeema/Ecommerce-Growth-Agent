@@ -181,6 +181,10 @@ const TEST_FILES = [
   'server.test.js',
   'orchestratorEndpoints.test.js',
   'workflowOrchestratorEndpoints.test.js',
+  // The dashboard Overview control-center's two new read-only endpoints
+  // (GET /overview, GET /store/metrics) - see server.js's own header comments on
+  // both routes.
+  'dashboardOverviewEndpoint.test.js',
   // What survives a server restart for those same two surfaces (and what deliberately
   // does not) - see agent/core/runHistoryStore.js and server.js's saveWorkflowRunRecord.
   'workflowRunHistoryPersistence.test.js',

@@ -344,6 +344,23 @@ async function run() {
     });
   });
 
+  // public/index.html was split into three static files (index.html, dashboard.css,
+  // dashboard.js) as part of the Overview control-center upgrade - both new files stay
+  // on the same public boundary as index.html itself (plain markup/styling/client
+  // script, no business data or credential of their own), so both must remain
+  // servable and neither may embed the key any more than index.html does.
+  await testAsync('the split dashboard.css and dashboard.js remain publicly servable and key-free', async () => {
+    await withServer(async (port) => {
+      const css = await request(port, { method: 'GET', path: '/dashboard.css' });
+      assert.strictEqual(css.status, 200);
+      assert.ok(!css.raw.includes(VALID_KEY), 'dashboard.css must not embed the API key');
+
+      const js = await request(port, { method: 'GET', path: '/dashboard.js' });
+      assert.strictEqual(js.status, 200);
+      assert.ok(!js.raw.includes(VALID_KEY), 'dashboard.js must not embed the API key');
+    });
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exitCode = 1;
 }

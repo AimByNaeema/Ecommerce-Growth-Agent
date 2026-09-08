@@ -65,6 +65,25 @@ const { createAuditTracker } = require('./audit/auditTrail');
 const { createUsageLedger } = require('./usage/usageTracker');
 const { createToolResultCache } = require('./agent/core/toolResultCache');
 const { createUsageTracker } = require('./agent/core/usageLimits');
+// The two existing platform adapters, required ONLY for their credential-presence checks
+// (isConfigured), which the dashboard's Connected Channels section reports. Both are
+// deliberately zero-network: shopifyClient.isConfigured() reads resolved credentials,
+// etsyClient.isConfigured() calls its own missingCredentials() - neither opens a socket,
+// so GET /overview below stays safe to call on every page load. Required as whole module
+// objects so a test can monkey-patch isConfigured on the shared, cached instance, the
+// same convention orchestratorExecutionContract above already uses.
+const shopifyClient = require('./integrations/adapters/shopifyClient');
+const etsyClient = require('./integrations/adapters/etsyClient');
+// The existing read-only live-data tool (tools/toolRegistry.js's
+// analytics_data_retrieval). GET /store/metrics below is the dashboard's window onto it -
+// it calls this function and relays its result verbatim, never recomputing a metric or
+// filling in a missing one. Whole module object, same monkey-patch reason as above.
+const analyticsDataTool = require('./tools/analyticsDataTool');
+// The EXISTING analytics engine's own pure trend arithmetic
+// (agent/core/analyticsMetricsCalculator.js's calculateSalesTrend). Used below to turn
+// the orders tools/analyticsDataTool.js ALREADY pulled into a revenue/orders trend -
+// no second analytics engine, no extra Shopify call, and no number this server invents.
+const { calculateSalesTrend } = require('./agent/core/analyticsMetricsCalculator');
 
 const BUSINESS_CONFIG_PATH = path.join(__dirname, 'configuration', 'business.yaml');
 
@@ -345,6 +364,351 @@ function buildBusinessContext(config) {
     `Customer segments: ${(config.customer_segments || []).join(', ')}`,
   ];
   return `You are the assistant for the following business:\n${lines.join('\n')}`;
+}
+
+// ---------------------------------------------------------------------------
+// The dashboard Overview's read-only composition (GET /overview below).
+//
+// EVERY value these helpers produce is either read straight from an already-loaded
+// business config, from a credential-presence check, or COUNTED/RELAYED from a run
+// record agent/core/runHistoryStore.js already saved. Nothing here estimates,
+// extrapolates, scores, ranks or synthesizes - a fact this project does not already
+// hold is simply absent from the payload, and the dashboard renders "No data" for it
+// rather than a number. That discipline is the whole point of this surface: it exists
+// to make already-real work VISIBLE, never to make an empty system look populated.
+//
+// There is deliberately no new engine, store, or analytics layer here - see CLAUDE.md
+// rules 3-4. The opportunity relay below reads what
+// agent/core/crossAgentContext.js's gatherGrowthOpportunityDrafts and each specialist's
+// own result already produced; it never re-derives an opportunity of its own.
+// ---------------------------------------------------------------------------
+
+// How far back the Overview looks. Capped so a store with thousands of saved runs still
+// renders one bounded, fast response - a listing, never a full history export (that is
+// GET /history's job).
+const OVERVIEW_HISTORY_SCAN_LIMIT = 50;
+const OVERVIEW_ACTIVITY_LIMIT = 10;
+const OVERVIEW_OPPORTUNITY_LIMIT = 8;
+
+// The sales channels the dashboard reports on. A channel is "connectable" only when a
+// real adapter for it exists under integrations/adapters/ - today that is Shopify and
+// Etsy, and only Shopify is actually configured. The remaining three are listed with a
+// null adapter purely so the owner can see what this system does NOT integrate with yet;
+// they render as unavailable, never with a connect control, because no code behind them
+// exists. NO integration is added here (the dashboard is a presentation layer) - a
+// platform moves off the null list the day a real adapter lands.
+const DASHBOARD_CHANNELS = [
+  { id: 'shopify', name: 'Shopify', adapter: shopifyClient },
+  { id: 'etsy', name: 'Etsy', adapter: etsyClient },
+  { id: 'ebay', name: 'eBay', adapter: null },
+  { id: 'amazon', name: 'Amazon', adapter: null },
+  { id: 'woocommerce', name: 'WooCommerce', adapter: null },
+];
+
+// Real connection state per channel, from each adapter's OWN credential-presence check.
+// isConfigured() means "credentials are present", never "the integration works" - the
+// exact distinction integrations/adapters/etsyClient.js's own canPublish() documents -
+// so the field is named `configured` and the dashboard labels it "Connected" only for a
+// channel whose adapter is genuinely wired to a live API today. An adapter that throws
+// is reported as not configured with its own message, never as connected.
+function buildChannelStates() {
+  return DASHBOARD_CHANNELS.map((channel) => {
+    if (!channel.adapter || typeof channel.adapter.isConfigured !== 'function') {
+      return { id: channel.id, name: channel.name, adapter_exists: false, configured: false, detail: null };
+    }
+    try {
+      return {
+        id: channel.id,
+        name: channel.name,
+        adapter_exists: true,
+        configured: Boolean(channel.adapter.isConfigured()),
+        detail: null,
+      };
+    } catch (err) {
+      return { id: channel.id, name: channel.name, adapter_exists: true, configured: false, detail: err.message };
+    }
+  });
+}
+
+// The dashboard's specialist id for a saved record's internal specialist id - the exact
+// inverse of SPECIALIST_ID_MAP above, derived from it rather than maintained as a second
+// list that could drift.
+const INTERNAL_TO_DASHBOARD_SPECIALIST_ID = Object.fromEntries(
+  Object.entries(SPECIALIST_ID_MAP).map(([dashboardId, internalId]) => [internalId, dashboardId])
+);
+
+// One honest per-specialist rollup, keyed by the dashboard's own specialist ids. A
+// specialist with no saved run maps to null - which is what makes the card's "Not run
+// yet" truthful instead of a default that hides real history. Summaries arrive newest
+// first (listRunRecordSummaries sorts by created_at), so the first match per specialist
+// is its latest run.
+function buildSpecialistRollup(summaries) {
+  const rollup = {};
+  for (const dashboardId of Object.keys(SPECIALIST_ID_MAP)) rollup[dashboardId] = null;
+
+  for (const summary of summaries) {
+    const dashboardId = INTERNAL_TO_DASHBOARD_SPECIALIST_ID[summary.specialist_id];
+    if (!dashboardId) continue;
+    if (!rollup[dashboardId]) {
+      rollup[dashboardId] = {
+        last_run_at: summary.created_at || null,
+        last_status: summary.status || null,
+        last_summary: summary.summary || null,
+        last_run_id: summary.run_id || null,
+        last_result_count: null,
+        run_count: 0,
+      };
+    }
+    rollup[dashboardId].run_count += 1;
+  }
+  return rollup;
+}
+
+// The number of records a run actually returned, when - and only when - its own result
+// is a list. agent/core/orchestratorExecutionContract.js puts a tool's return value at
+// outputs.result, so a catalog pull lands here as a real array whose length is a fact,
+// not an estimate. Anything else yields null and the dashboard shows nothing rather
+// than a fabricated count.
+function resultRecordCount(record) {
+  const outputs = record && record.result && record.result.outputs;
+  if (!outputs || !Array.isArray(outputs.result)) return null;
+  return outputs.result.length;
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+// RELAY ONLY. Pulls the opportunity-shaped content a saved record ALREADY contains -
+// agent/core/crossAgentContext.js's growth_opportunity_drafts, and the `recommendations`
+// array a specialist result carries in its own right - and tags each with where it came
+// from. It computes no priority, applies no ranking, and invents no field: an item's
+// verification status is shown only when its source record already carries one. This is
+// emphatically not a second opportunity engine (CLAUDE.md rule 4).
+function extractOpportunities(record, summary) {
+  if (!record || !record.result) return [];
+  const specialistId = summary.specialist_id ? INTERNAL_TO_DASHBOARD_SPECIALIST_ID[summary.specialist_id] || null : null;
+  const base = {
+    run_id: summary.run_id || null,
+    run_kind: summary.kind || null,
+    specialist_id: specialistId,
+    specialist_name: summary.specialist_name || (specialistId ? SPECIALIST_DISPLAY_NAMES[specialistId] : null) || null,
+    created_at: summary.created_at || null,
+  };
+  const found = [];
+
+  for (const draft of asArray(record.result.growth_opportunity_drafts)) {
+    if (!draft || typeof draft.opportunity !== 'string' || !draft.opportunity.trim()) continue;
+    found.push({
+      ...base,
+      source_kind: 'growth_opportunity_draft',
+      title: draft.opportunity,
+      reason: (typeof draft.reason === 'string' && draft.reason) || draft.requiredAction || null,
+      category: draft.category || null,
+      verification_status: draft.verificationStatus || null,
+    });
+  }
+
+  // A specialist run's own result, and every step of a Chief Orchestrator plan, can each
+  // carry a `recommendations` array produced by that capability itself. A plan step is
+  // attributed to the specialist the step itself names (executionState's
+  // selected_specialist) - an orchestrate record has no top-level specialist_id, so
+  // without this its opportunities would be shown unattributed even though the record
+  // plainly says which specialist produced them.
+  const resultsCarryingRecommendations = [
+    { result: record.result.outputs && record.result.outputs.result, step: null },
+    ...asArray(record.result.routing && record.result.routing.plan).map((step) => ({
+      result: step && step.outputs && step.outputs.result,
+      step,
+    })),
+  ];
+  for (const { result: candidate, step } of resultsCarryingRecommendations) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const stepSpecialist = step && step.selected_specialist ? step.selected_specialist : null;
+    const attribution =
+      stepSpecialist && stepSpecialist.id
+        ? {
+            specialist_id: INTERNAL_TO_DASHBOARD_SPECIALIST_ID[stepSpecialist.id] || stepSpecialist.id,
+            specialist_name: stepSpecialist.title || base.specialist_name,
+          }
+        : {};
+    for (const recommendation of asArray(candidate.recommendations)) {
+      if (typeof recommendation !== 'string' || !recommendation.trim()) continue;
+      found.push({
+        ...base,
+        ...attribution,
+        source_kind: 'recommendation',
+        title: recommendation,
+        reason: (typeof candidate.topic === 'string' && candidate.topic) || null,
+        category: candidate.capability || null,
+        verification_status: candidate.verification_status || null,
+      });
+    }
+  }
+
+  return found;
+}
+
+// Counts the approvals a saved record genuinely recorded, split by whether a human
+// decision is still outstanding. Reads only the approval objects
+// agent/core/executionState.js already stores on each step - never a second approval
+// system (CLAUDE.md rule 4), and never a judgment about whether one SHOULD exist.
+function countRecordApprovals(record) {
+  const steps = [
+    record && record.result,
+    ...asArray(record && record.result && record.result.routing && record.result.routing.plan),
+  ];
+  let pending = 0;
+  let recorded = 0;
+  for (const step of steps) {
+    for (const approval of asArray(step && step.approvals)) {
+      if (!approval || typeof approval !== 'object') continue;
+      recorded += 1;
+      if (approval.status === 'required') pending += 1;
+    }
+  }
+  return { pending, recorded };
+}
+
+// The Performance charts' data layer.
+//
+// SOURCE: the `sales` capability's OWN actual_metrics - the per-order records
+// tools/analyticsDataTool.js already returned from the pull this same response relays.
+// So a trend costs ZERO extra Shopify calls and cannot disagree with the metric tiles
+// beside it: both read the identical pulled orders. The bucketing itself is
+// agent/core/analyticsMetricsCalculator.js's calculateSalesTrend() - the existing
+// engine's own pure arithmetic, not a reimplementation here.
+//
+// WHAT IS DELIBERATELY UNAVAILABLE: sessions/traffic and conversion rate. Shopify's
+// read-only Admin API exposes neither (tools/analyticsDataTool.js's header states this,
+// and it is why it offers no 'traffic'/'conversion' capability at all). They are
+// therefore returned as available:false carrying the real reason - never as an empty
+// series, a zero line, or an estimate derived from orders.
+//
+// CHANNEL-READY BY CONSTRUCTION: every metric carries a `channels` ARRAY, and each
+// series names the channel it came from. Today exactly one channel can populate it -
+// Shopify, the only connected adapter. When a real Etsy/eBay/Amazon adapter lands, it
+// appends another entry here and the chart layer renders it with no restructuring: the
+// UI already loops over channels rather than assuming a single series.
+const TREND_UNAVAILABLE_REASON =
+  "Shopify's read-only Admin API does not expose this. No connected data source in this system reports it yet, so no trend can be shown without inventing one.";
+
+function buildTrends(salesOutcome) {
+  const salesDomain =
+    salesOutcome && salesOutcome.result && Array.isArray(salesOutcome.result.specialized_records)
+      ? salesOutcome.result.specialized_records[0] && salesOutcome.result.specialized_records[0].sales
+      : null;
+  const actualMetrics = salesDomain && Array.isArray(salesDomain.actual_metrics) ? salesDomain.actual_metrics : [];
+
+  // actual_metrics entries are orderToActualMetric()'s shape ({ value, unit, createdAt })
+  // - mapped back onto the canonical order field names calculateSalesTrend() shares with
+  // its sibling calculators. A pure rename, never a recomputation.
+  const orders = actualMetrics
+    .filter((metric) => metric && metric.label === 'order')
+    .map((metric) => ({ totalPrice: metric.value, currency: metric.unit, createdAt: metric.createdAt }));
+
+  const trend = calculateSalesTrend(orders);
+  const limitations =
+    salesOutcome && salesOutcome.result && Array.isArray(salesOutcome.result.limitations)
+      ? salesOutcome.result.limitations
+      : [];
+
+  const available = Boolean(trend);
+  const channelsFor = (valueKey) =>
+    available
+      ? [
+          {
+            id: 'shopify',
+            name: 'Shopify',
+            points: trend.points.map((point) => ({ t: point.bucket_start, value: point[valueKey] })),
+          },
+        ]
+      : [];
+
+  return {
+    available,
+    // Null when nothing usable was pulled - the dashboard then says "No data available"
+    // rather than drawing an axis around an empty range.
+    granularity: available ? trend.granularity : null,
+    range: available ? trend.range : null,
+    currency: available ? trend.currency : null,
+    order_count: available ? trend.order_count : 0,
+    ignored_currencies: available ? trend.ignored_currencies : [],
+    // Passed straight through so the chart can state the same capped-read caveat the
+    // metric tiles do - a trend over a capped pull is never presented as the full history.
+    limitations,
+    metrics: [
+      {
+        id: 'revenue',
+        label: 'Revenue',
+        unit: available ? trend.currency : null,
+        available,
+        reason: available ? null : 'No usable orders were returned by the connected store.',
+        channels: channelsFor('revenue'),
+      },
+      {
+        id: 'orders',
+        label: 'Orders',
+        unit: null,
+        available,
+        reason: available ? null : 'No usable orders were returned by the connected store.',
+        channels: channelsFor('orders'),
+      },
+      { id: 'sessions', label: 'Sessions / traffic', unit: null, available: false, reason: TREND_UNAVAILABLE_REASON, channels: [] },
+      { id: 'conversion_rate', label: 'Conversion rate', unit: '%', available: false, reason: TREND_UNAVAILABLE_REASON, channels: [] },
+    ],
+  };
+}
+
+// Store-health lines, each stating a fact this server can already verify. No line is
+// emitted on a hunch, and a healthy system honestly reports "ok" rather than inventing a
+// warning to look vigilant.
+function buildHealthChecks({ channels, summaries, historyReadable, approvals }) {
+  const checks = [];
+
+  const shopify = channels.find((channel) => channel.id === 'shopify');
+  checks.push({
+    id: 'shopify_connection',
+    status: shopify && shopify.configured ? 'ok' : 'warn',
+    label: shopify && shopify.configured ? 'Shopify credentials configured' : 'Shopify not connected',
+    detail: shopify && shopify.configured ? null : 'Set the Shopify credentials in .env - see .env.example.',
+  });
+
+  checks.push({
+    id: 'run_history',
+    status: historyReadable ? 'ok' : 'warn',
+    label: historyReadable ? 'Run history readable' : 'Run history could not be read',
+    detail: historyReadable ? `${summaries.length} saved run(s) available.` : null,
+  });
+
+  const failed = summaries.filter((summary) => summary.status === 'error');
+  if (failed.length > 0) {
+    checks.push({
+      id: 'failed_runs',
+      status: 'error',
+      label: `${failed.length} saved run(s) failed`,
+      detail: failed[0].summary || null,
+    });
+  }
+
+  const partial = summaries.filter((summary) => summary.status === 'partial');
+  if (partial.length > 0) {
+    checks.push({
+      id: 'partial_runs',
+      status: 'warn',
+      label: `${partial.length} run(s) stopped for missing input`,
+      detail: partial[0].summary || null,
+    });
+  }
+
+  checks.push({
+    id: 'pending_approvals',
+    status: approvals.pending > 0 ? 'warn' : 'ok',
+    label: approvals.pending > 0 ? `${approvals.pending} approval(s) recorded as still required` : 'No approvals outstanding in saved runs',
+    detail: null,
+  });
+
+  return checks;
 }
 
 function createApp() {
@@ -989,6 +1353,153 @@ function createApp() {
     } catch (err) {
       console.error('POST /optimization-cycle/next failed:', err.message);
       res.status(502).json({ error: 'The next iteration could not be started right now. Please try again shortly.' });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // The dashboard Overview's two read-only surfaces. Both are GET, both go through the
+  // same `protect` boundary as every other endpoint, and NEITHER runs a specialist,
+  // spends a model token, or writes anything anywhere.
+  // -------------------------------------------------------------------------
+
+  // Everything the Overview can show WITHOUT touching an external service: the business
+  // identity this process already loaded, each adapter's own credential-presence check,
+  // and a rollup/relay over the runs agent/core/runHistoryStore.js already saved. Zero
+  // network calls, so the dashboard can call it on every page load without cost - which
+  // is exactly why store metrics live in a separate endpoint below rather than here.
+  app.get('/overview', protect, (req, res) => {
+    const channels = buildChannelStates();
+
+    let summaries;
+    let historyReadable = true;
+    try {
+      summaries = runHistoryStore.listRunRecordSummaries({ limit: OVERVIEW_HISTORY_SCAN_LIMIT });
+    } catch (err) {
+      // An unreadable history is reported as a health fact, never as zero runs - "we
+      // could not read this" and "there is nothing here" are different truths.
+      console.error('GET /overview could not read run history:', err.message);
+      summaries = [];
+      historyReadable = false;
+    }
+
+    const specialists = buildSpecialistRollup(summaries);
+    const opportunities = [];
+    const approvals = { pending: 0, recorded: 0 };
+
+    // One pass over the same bounded listing, reading each record once for the details a
+    // summary does not carry (opportunities, approvals, result size). A record that has
+    // gone missing or unreadable is skipped rather than faked.
+    for (const summary of summaries) {
+      if (!summary.run_id) continue;
+      let record;
+      try {
+        record = runHistoryStore.getRunRecordById(summary.run_id);
+      } catch (err) {
+        continue;
+      }
+      if (!record) continue;
+
+      opportunities.push(...extractOpportunities(record, summary));
+
+      const recordApprovals = countRecordApprovals(record);
+      approvals.pending += recordApprovals.pending;
+      approvals.recorded += recordApprovals.recorded;
+
+      const dashboardId = INTERNAL_TO_DASHBOARD_SPECIALIST_ID[summary.specialist_id];
+      const entry = dashboardId ? specialists[dashboardId] : null;
+      if (entry && entry.last_run_id === summary.run_id) {
+        entry.last_result_count = resultRecordCount(record);
+      }
+    }
+
+    const specialistsRun = Object.values(specialists).filter(Boolean).length;
+
+    res.json({
+      business: {
+        // Business facts only. No credential, no env var, no resolved token ever appears
+        // in this payload - see verification/testing/secretExposureAudit.js's standing rule.
+        name: businessConfig.business_name || null,
+        platform: businessConfig.platform || null,
+        store_url: businessConfig.store_url || null,
+        primary_language: businessConfig.primary_language || null,
+        tagline: (businessConfig.brand && businessConfig.brand.tagline) || null,
+      },
+      channels,
+      specialists,
+      specialist_names: SPECIALIST_DISPLAY_NAMES,
+      activity: summaries.slice(0, OVERVIEW_ACTIVITY_LIMIT),
+      // Counts of real saved records and relayed items - never a projection. A figure the
+      // saved records cannot support is absent here entirely, and the dashboard says
+      // "No data" instead of showing a number nothing backs.
+      growth: {
+        runs_total: summaries.length,
+        runs_completed: summaries.filter((summary) => summary.status === 'success').length,
+        runs_partial: summaries.filter((summary) => summary.status === 'partial').length,
+        runs_failed: summaries.filter((summary) => summary.status === 'error').length,
+        specialists_run: specialistsRun,
+        specialists_total: Object.keys(SPECIALIST_ID_MAP).length,
+        opportunities_found: opportunities.length,
+        approvals_recorded: approvals.recorded,
+        approvals_pending: approvals.pending,
+        last_run_at: summaries.length > 0 ? summaries[0].created_at || null : null,
+      },
+      opportunities: opportunities.slice(0, OVERVIEW_OPPORTUNITY_LIMIT),
+      health: buildHealthChecks({ channels, summaries, historyReadable, approvals }),
+      history_readable: historyReadable,
+    });
+  });
+
+  // Real, live store metrics - the ONE place the Overview reaches Shopify. It calls the
+  // existing read-only tools/analyticsDataTool.js (tool id analytics_data_retrieval) and
+  // relays each capability's own { status, result, error } VERBATIM. No metric is
+  // recomputed, reshaped, defaulted or filled in here; when that tool reports a source as
+  // failed/degraded, the dashboard shows exactly that reason instead of a number.
+  //
+  // WHAT IS DELIBERATELY ABSENT: sessions, traffic and conversion rate. Shopify's
+  // read-only Admin API does not expose them (see analyticsDataTool.js's own header), so
+  // they are not in this payload at all and the dashboard renders them "Not available"
+  // rather than inventing a figure.
+  //
+  // The cache below is in-memory, per-process, and lost on restart - the same deliberate
+  // stance as orchestratorRuns and the two workflow Maps above. Its purpose is cost, not
+  // durability: a page refresh, a second browser tab, and a returning owner all reuse one
+  // live pull instead of issuing four fresh Shopify reads each time.
+  const METRICS_TTL_MS = Number(process.env.OVERVIEW_METRICS_TTL_MS) > 0
+    ? Number(process.env.OVERVIEW_METRICS_TTL_MS)
+    : 5 * 60 * 1000;
+  let metricsCache = null;
+
+  app.get('/store/metrics', protect, async (req, res) => {
+    if (metricsCache && Date.now() - metricsCache.cachedAtMs < METRICS_TTL_MS) {
+      res.json({ ...metricsCache.payload, cached: true });
+      return;
+    }
+
+    try {
+      // Each capability is requested independently and reported independently, so one
+      // missing Shopify scope (e.g. read_customers) never blanks out the others - the
+      // graceful degradation analyticsDataTool.js already implements per source.
+      const capabilities = ['sales', 'products', 'inventory', 'customers'];
+      const outcomes = await Promise.all(
+        capabilities.map((analyticsCapability) =>
+          analyticsDataTool.runAnalyticsDataTool({ analyticsCapability, limit: 50 })
+        )
+      );
+
+      const payload = {
+        fetched_at: new Date().toISOString(),
+        capabilities: Object.fromEntries(capabilities.map((name, index) => [name, outcomes[index]])),
+        // Built from the sales pull above - no additional Shopify request (see buildTrends).
+        trends: buildTrends(outcomes[capabilities.indexOf('sales')]),
+      };
+      metricsCache = { payload, cachedAtMs: Date.now() };
+      res.json({ ...payload, cached: false });
+    } catch (err) {
+      // runAnalyticsDataTool documents that it never throws, so reaching here means
+      // something outside it broke. Logged rather than swallowed (CLAUDE.md rule 13), and
+      // reported as an honest failure - never as an empty or zeroed metric set.
+      console.error('GET /store/metrics failed:', err.message);
+      res.status(502).json({ error: 'Could not read live store metrics right now. Please try again shortly.' });
     }
   });
 
