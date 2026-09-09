@@ -620,15 +620,19 @@ const ALL_NEW_ENDPOINTS = [
     for (const forbidden of ['STAGE_DEFINITIONS', 'TOOL_EXECUTORS', 'STOP_REASONS', 'requiresApproval(']) {
       assert.ok(!code.includes(forbidden), `server.js appears to reimplement shared execution logic: found "${forbidden}"`);
     }
-    // server.js calls buildPlanStep exactly twice - /ask and /run, both of which
-    // predate this surface. The six workflow/cycle endpoints add ZERO direct dispatch
-    // calls of their own: every stage they run is dispatched by the orchestrator
-    // modules. A third call here would mean an endpoint had begun executing stages
-    // itself instead of delegating.
+    // server.js calls buildPlanStep exactly three times, and each call is ONE step
+    // handed to the shared machinery - never a stage sequence run here:
+    //   /ask           - a single pinned ai_reasoning step
+    //   /run           - a single specialist step the dashboard already chose
+    //   /etsy/analyze  - a single pinned SEO or Listing step over one Etsy listing
+    // The six workflow/cycle endpoints add ZERO direct dispatch calls of their own:
+    // every stage they run is dispatched by the orchestrator modules. A FOURTH call
+    // here, or any of the forbidden symbols above, would mean an endpoint had begun
+    // executing stages itself instead of delegating.
     assert.strictEqual(
       code.split('buildPlanStep(').length - 1,
-      2,
-      'server.js dispatches steps itself beyond the pre-existing /ask and /run calls'
+      3,
+      'server.js dispatches steps itself beyond the /ask, /run and /etsy/analyze calls'
     );
     // checkToolAccess IS called here - but only as the deterministic pre-check that
     // refuses an unauthorized target before any spend. It is the project's existing

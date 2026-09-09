@@ -16,6 +16,8 @@ const EXPECTED_ORDER = [
   'business_configuration_retrieval',
   'product_data_retrieval',
   'collection_data_retrieval',
+  'etsy_shop_data_retrieval',
+  'etsy_listing_data_retrieval',
   'market_product_opportunity_analysis',
   'product_research',
   'market_research',
@@ -55,6 +57,12 @@ const IMPLEMENTED_IDS = [
   'business_configuration_retrieval',
   'product_data_retrieval',
   'collection_data_retrieval',
+  // The two Etsy reads. Read-only GETs against the Etsy Open API v3 for the owner's own
+  // shop (integrations/adapters/etsyReadClient.js), which has no write path at all - the
+  // Etsy PUBLISH adapter remains closed and is untouched by them. Added in the read-only
+  // Etsy phase alongside tools/etsyShopDataTool.js and tools/etsyListingDataTool.js.
+  'etsy_shop_data_retrieval',
+  'etsy_listing_data_retrieval',
   'market_product_opportunity_analysis',
   // Long reserved as 'not_implemented' and now wrapped by tools/productResearchTool.js,
   // which connects the four Product capabilities that previously had no tool.
@@ -116,7 +124,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 36 required tools, in the requested order', () => {
+test('the registry has exactly the 38 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER

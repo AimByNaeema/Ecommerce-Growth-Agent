@@ -39,6 +39,16 @@
 // "unauthorized -> zero mutation" guarantee is enforced and covered against this exact
 // function. When the two gaps above are closed, the transport lands HERE and nothing in
 // front of it changes.
+//
+// THE READ SURFACE IS A SEPARATE MODULE, ON PURPOSE. Reading this shop's own listings
+// needs a VERIFIED endpoint mapping, which now exists (from Etsy's own published API
+// reference) - while the PUBLISH mapping above still does not. Those two facts must not
+// be allowed to blur into each other, so the read client lives in its own file:
+// integrations/adapters/etsyReadClient.js. Keeping them apart means this file's
+// "nothing here is guessed" guarantee stays literally true and independently checkable
+// (verification/testing/etsyPublishing.test.js asserts this file contains no Etsy
+// endpoint URL and no Etsy field name at all), and it means the read work could not
+// quietly relax the publishing gate even by accident.
 
 const { RetryableError, retryAsync, withTimeout } = require('../../agent/core/networkRetry');
 const businessRegistry = require('../../configuration/businessRegistry');

@@ -121,6 +121,8 @@ const analyticsDataTool = require('../../tools/analyticsDataTool');
 const productDataRetrievalTool = require('../../tools/productDataRetrievalTool');
 const productResearchTool = require('../../tools/productResearchTool');
 const collectionDataRetrievalTool = require('../../tools/collectionDataRetrievalTool');
+const etsyShopDataTool = require('../../tools/etsyShopDataTool');
+const etsyListingDataTool = require('../../tools/etsyListingDataTool');
 const seoQualityCheckTool = require('../../tools/seoQualityCheckTool');
 const listingQualityCheckTool = require('../../tools/listingQualityCheckTool');
 
@@ -257,6 +259,20 @@ const TOOL_EXECUTORS = {
     }),
   collection_data_retrieval: (executionRequest) =>
     collectionDataRetrievalTool.retrieveCollectionData({
+      ...(executionRequest.research_params || {}),
+      businessId: executionRequest.business_id,
+    }),
+  // The two Etsy reads. Same businessId spread as the Shopify pulls above because they
+  // too reach a real external system - and, like them, they only ever GET: the Etsy read
+  // client (integrations/adapters/etsyReadClient.js) has no write path, and the Etsy
+  // publish adapter is not referenced from either tool.
+  etsy_shop_data_retrieval: (executionRequest) =>
+    etsyShopDataTool.runEtsyShopDataTool({
+      ...(executionRequest.research_params || {}),
+      businessId: executionRequest.business_id,
+    }),
+  etsy_listing_data_retrieval: (executionRequest) =>
+    etsyListingDataTool.runEtsyListingDataTool({
       ...(executionRequest.research_params || {}),
       businessId: executionRequest.business_id,
     }),

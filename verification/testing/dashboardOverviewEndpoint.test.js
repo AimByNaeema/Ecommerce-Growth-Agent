@@ -23,8 +23,21 @@ process.env.RATE_LIMIT_MAX_REQUESTS = '10000';
 const { createApp } = require('../../server');
 const runHistoryStore = require('../../agent/core/runHistoryStore');
 const shopifyClient = require('../../integrations/adapters/shopifyClient');
-const etsyClient = require('../../integrations/adapters/etsyClient');
+// The READ client, not the publishing client: GET /overview reports whether this Etsy shop
+// can be READ, which is the only Etsy capability this project has. See server.js's
+// DASHBOARD_CHANNELS comment.
+const etsyReadClient = require('../../integrations/adapters/etsyReadClient');
 const analyticsDataTool = require('../../tools/analyticsDataTool');
+const etsyShopDataTool = require('../../tools/etsyShopDataTool');
+const etsyListingDataTool = require('../../tools/etsyListingDataTool');
+
+// THIS SUITE MUST NEVER TOUCH THE REAL ETSY API. GET /store/metrics reads Etsy whenever
+// canRead() is true - and on the owner's own machine Etsy IS configured, so without this
+// the suite would spend real Etsy quota and its results would depend on a live shop.
+// Pinned false for the whole file; the tests that assert Etsy behavior re-mock it
+// themselves, and verification/testing/etsyDashboardIntegration.test.js covers the
+// connected path with the tools mocked at the module boundary.
+etsyReadClient.canRead = () => false;
 
 let passed = 0;
 let failed = 0;
@@ -121,10 +134,12 @@ async function main() {
     });
   });
 
-  await testAsync('GET /overview never calls Shopify, Etsy, or the analytics tool - local state only', async () => {
+  await testAsync('GET /overview never calls Shopify, Etsy, or any live-data tool - local state only', async () => {
     let shopifyCalled = false;
     let etsyCalled = false;
     let analyticsCalled = false;
+    let etsyShopToolCalled = false;
+    let etsyListingToolCalled = false;
     await withMocked(
       shopifyClient,
       'isConfigured',
@@ -134,8 +149,8 @@ async function main() {
       },
       () =>
         withMocked(
-          etsyClient,
-          'isConfigured',
+          etsyReadClient,
+          'canRead',
           () => {
             etsyCalled = true;
             return false;
@@ -149,16 +164,37 @@ async function main() {
                 return { status: 'failed', result: null, error: 'should not be called' };
               },
               () =>
-                withServer(async (port) => {
-                  const res = await authedGet(port, '/overview');
-                  assert.strictEqual(res.status, 200);
-                  // isConfigured() IS the local, zero-network credential-presence check
-                  // GET /overview is documented to use - it is expected to run.
-                  assert.strictEqual(shopifyCalled, true);
-                  assert.strictEqual(etsyCalled, true);
-                  // The live-data tool must NEVER be reached from this endpoint.
-                  assert.strictEqual(analyticsCalled, false);
-                })
+                withMocked(
+                  etsyShopDataTool,
+                  'runEtsyShopDataTool',
+                  async () => {
+                    etsyShopToolCalled = true;
+                    return { status: 'failed', result: null, error: 'should not be called' };
+                  },
+                  () =>
+                    withMocked(
+                      etsyListingDataTool,
+                      'runEtsyListingDataTool',
+                      async () => {
+                        etsyListingToolCalled = true;
+                        return { status: 'failed', result: null, error: 'should not be called' };
+                      },
+                      () =>
+                        withServer(async (port) => {
+                          const res = await authedGet(port, '/overview');
+                          assert.strictEqual(res.status, 200);
+                          // These ARE the local, zero-network credential-presence checks
+                          // GET /overview is documented to use - they are expected to run.
+                          assert.strictEqual(shopifyCalled, true);
+                          assert.strictEqual(etsyCalled, true);
+                          // No live-data tool, for EITHER channel, may be reached from this
+                          // endpoint - that is what keeps it free to call on every page load.
+                          assert.strictEqual(analyticsCalled, false);
+                          assert.strictEqual(etsyShopToolCalled, false);
+                          assert.strictEqual(etsyListingToolCalled, false);
+                        })
+                    )
+                )
             )
         )
     );
@@ -170,7 +206,7 @@ async function main() {
       'isConfigured',
       () => true,
       () =>
-        withMocked(etsyClient, 'isConfigured', () => false, () =>
+        withMocked(etsyReadClient, 'canRead', () => false, () =>
           withServer(async (port) => {
             const res = await authedGet(port, '/overview');
             const data = JSON.parse(res.raw);

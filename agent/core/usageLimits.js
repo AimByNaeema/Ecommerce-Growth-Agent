@@ -41,15 +41,24 @@ const MODEL_CALL_TOOL_IDS = new Set([
 
 // The tool ids that ultimately reach integrations/adapters/shopifyClient.js
 // (business_configuration_retrieval, analytics_data_retrieval, product_data_retrieval,
-// collection_data_retrieval) or agent/core/claudeClient.js (ai_reasoning_completion,
-// live_competitor_research - the latter also spends real web_search usage on top of
-// the model call, see tools/webCompetitorResearchTool.js) - every other TOOL_EXECUTORS
-// entry is pure, deterministic, in-memory logic with no external network call.
+// collection_data_retrieval), integrations/adapters/etsyReadClient.js
+// (etsy_shop_data_retrieval, etsy_listing_data_retrieval) or agent/core/claudeClient.js
+// (ai_reasoning_completion, live_competitor_research - the latter also spends real
+// web_search usage on top of the model call, see tools/webCompetitorResearchTool.js) -
+// every other TOOL_EXECUTORS entry is pure, deterministic, in-memory logic with no
+// external network call.
 const EXTERNAL_API_TOOL_IDS = new Set([
   'business_configuration_retrieval',
   'analytics_data_retrieval',
   'product_data_retrieval',
   'collection_data_retrieval',
+  // The two Etsy reads. Counted here for the same reason as the Shopify reads: they
+  // spend a real external request. For Etsy that budget is doubly meaningful, because
+  // Etsy enforces its own per-application daily quota (QPD) - so the per-run external-API
+  // ceiling is this project's own guard against a single run consuming the day's Etsy
+  // allowance, on top of the read client's caching, deduplication and 429 backoff.
+  'etsy_shop_data_retrieval',
+  'etsy_listing_data_retrieval',
   'ai_reasoning_completion',
   'live_competitor_research',
   'discover_market_questions',

@@ -57,6 +57,19 @@ const CREDENTIAL_KEYS = [
   'ETSY_API_KEYSTRING',
   'ETSY_OAUTH_ACCESS_TOKEN',
   'ETSY_SHOP_ID',
+  // Etsy read-only access (integrations/etsyOAuth.js,
+  // integrations/adapters/etsyReadClient.js). The refresh token is what
+  // `npm run integrations:etsy-authorize` obtains and stores; the redirect URI must match
+  // the Etsy application registration exactly and is therefore never defaulted in code.
+  // Additive in the same way as every key above: absent means ''.
+  'ETSY_OAUTH_REFRESH_TOKEN',
+  'ETSY_OAUTH_REDIRECT_URI',
+  // The application's shared secret. Etsy's v3 API requires the x-api-key header to carry
+  // `keystring:shared_secret`, not the keystring alone - its own securitySchemes entry
+  // says so, and a real request without it is refused with
+  // "403: Shared secret is required in x-api-key header." It is a SECRET: it is never
+  // logged, and audit/auditTrail.js's redaction already matches the key by name.
+  'ETSY_SHARED_SECRET',
 ];
 
 function isValidBusinessId(id) {

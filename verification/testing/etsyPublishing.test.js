@@ -186,16 +186,61 @@ function publish(requests, overrides = {}) {
 
   // --- The missing external capability, reported honestly ---------------------------
 
+  // Runs `fn` with the three publishing credentials forced to a known state, then restores
+  // them. Written because this file must assert the same thing whether or not the operator
+  // has begun configuring Etsy - an assertion that only holds on an unconfigured machine
+  // stops testing the gate and starts testing the .env file.
+  function withPublishingCredentials(values, fn) {
+    const keys = ['ETSY_API_KEYSTRING', 'ETSY_OAUTH_ACCESS_TOKEN', 'ETSY_SHOP_ID'];
+    const saved = {};
+    // The lazy .env load must happen BEFORE the deletions, or it would undo them.
+    etsyClient.loadEnvOnce();
+    for (const key of keys) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    Object.assign(process.env, values);
+    try {
+      fn();
+    } finally {
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  }
+
   test('the adapter reports its own gaps instead of pretending to work', () => {
-    // No Etsy credential is configured in this project, so:
-    assert.strictEqual(etsyClient.isConfigured(), false);
-    assert.strictEqual(etsyClient.canPublish(), false);
-    assert.strictEqual(etsyClient.ETSY_PUBLISHING_STATUS, 'awaiting_verified_api_mapping');
-    assert.deepStrictEqual(etsyClient.missingCredentials(), [
-      'ETSY_API_KEYSTRING',
-      'ETSY_OAUTH_ACCESS_TOKEN',
-      'ETSY_SHOP_ID',
-    ]);
+    withPublishingCredentials({}, () => {
+      assert.strictEqual(etsyClient.isConfigured(), false);
+      assert.strictEqual(etsyClient.canPublish(), false);
+      assert.strictEqual(etsyClient.ETSY_PUBLISHING_STATUS, 'awaiting_verified_api_mapping');
+      assert.deepStrictEqual(etsyClient.missingCredentials(), [
+        'ETSY_API_KEYSTRING',
+        'ETSY_OAUTH_ACCESS_TOKEN',
+        'ETSY_SHOP_ID',
+      ]);
+    });
+  });
+
+  test('FULLY CONFIGURED STILL CANNOT PUBLISH: credentials are not the gate', () => {
+    // The stronger form of the assertion above. Publishing is closed because no verified
+    // request mapping exists - NOT merely because credentials are absent. So filling all
+    // three in must change nothing, which is what stops a future operator from concluding
+    // that finishing the .env is what enables publishing.
+    withPublishingCredentials(
+      {
+        ETSY_API_KEYSTRING: '(placeholder)',
+        ETSY_OAUTH_ACCESS_TOKEN: '(placeholder)',
+        ETSY_SHOP_ID: '99999999',
+      },
+      () => {
+        assert.deepStrictEqual(etsyClient.missingCredentials(), [], 'the test premise: nothing is missing');
+        assert.strictEqual(etsyClient.isConfigured(), true);
+        assert.strictEqual(etsyClient.canPublish(), false, 'publishing must STILL be closed');
+        assert.strictEqual(etsyClient.ETSY_PUBLISHING_STATUS, 'awaiting_verified_api_mapping');
+      }
+    );
   });
 
   await testAsync('the real adapter NEVER reaches the network - it throws before any transport', async () => {

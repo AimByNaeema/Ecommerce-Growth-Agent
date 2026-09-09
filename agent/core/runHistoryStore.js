@@ -140,6 +140,32 @@ function listRunRecordSummaries({ limit = 50, businessId = null, storeDir = getD
       specialist_name: record.specialist_name || null,
       status: record.status || null,
       summary: record.summary || null,
+      // WHICH SALES CHANNEL THIS RUN WAS ABOUT, when the run's own origin stated it -
+      // additive in exactly the way business_id above already is, and null for every
+      // record that does not carry one (which is every run saved before this field
+      // existed, and every run whose trigger is not channel-scoped).
+      //
+      // NEVER INFERRED. A channel appears here only because the endpoint that created the
+      // record knew it explicitly - it is never guessed from an objective's wording, a
+      // product title, or which tools a run happened to touch. A wrong channel label is
+      // worse than none: it would attribute one store's analysis to another.
+      //
+      // WHY SHOPIFY RUNS CURRENTLY READ null, AND WHAT WOULD CHANGE THAT. Today exactly one
+      // endpoint states a channel: server.js's POST /etsy/analyze, which knows it is acting
+      // on one Etsy listing. Runs from POST /run and POST /orchestrate carry no channel,
+      // because a free-text objective genuinely does not establish one - a Product or
+      // Analytics run reads Shopify, but an SEO or Marketing run may be about neither store
+      // in particular. Labelling those "shopify" would be a guess dressed as metadata.
+      //
+      // DEFERRED, BY AN EXPLICIT OWNER DECISION (not an oversight): giving Shopify runs a
+      // real channel needs a Shopify-side trigger that knows its own channel the way
+      // /etsy/analyze does - a separate, explicitly-scoped task, deliberately out of scope
+      // for the Etsy phases. Until then the honest value is null, and the dashboard renders
+      // those rows exactly as it did before this field existed.
+      channel: record.channel || null,
+      // The record's own native id within that channel (an Etsy listing_id), so a run can
+      // be traced back to the exact listing it analysed.
+      channel_reference: record.channel_reference || null,
       created_at: record.created_at || null,
       updated_at: record.updated_at || record.created_at || null,
     });

@@ -110,6 +110,24 @@ const TOOL_REGISTRY = [
     status: 'implemented',
   },
   {
+    id: 'etsy_shop_data_retrieval',
+    title: 'Etsy shop data retrieval',
+    description:
+      "Retrieve read-only shop data (name, title, currency, listing counts, vacation state) for the connected Etsy shop via integrations/adapters/etsyReadClient.js's getEtsyShop() - see tools/etsyShopDataTool.js. GET requests only; no writes are reachable from that client. The record carries channel: 'etsy' and is never merged with Shopify data.",
+    category: 'products',
+    operation: 'read',
+    status: 'implemented',
+  },
+  {
+    id: 'etsy_listing_data_retrieval',
+    title: 'Etsy listing data retrieval',
+    description:
+      "Retrieve read-only listing data (title, description, tags, state, price, digital/physical nature) for the connected Etsy shop via integrations/adapters/etsyReadClient.js's getEtsyListings(), with the existing compliance verdict and the product facts the listing data does NOT establish (reported as NEEDS_INFORMATION, never inferred) attached per listing - see tools/etsyListingDataTool.js. GET requests only; no writes are reachable. Records carry channel: 'etsy'.",
+    category: 'products',
+    operation: 'read',
+    status: 'implemented',
+  },
+  {
     id: 'market_product_opportunity_analysis',
     title: 'Market-connected product opportunity analysis',
     description:

@@ -86,6 +86,14 @@ const TOOL_CLASSIFICATIONS = {
   global_market_opportunity_analysis: 'analysis_only',
   product_data_retrieval: 'analysis_only',
   collection_data_retrieval: 'analysis_only',
+  // The two Etsy reads are read-only GETs against the Etsy Open API v3 (no writes, no
+  // side effects, and no write path exists in integrations/adapters/etsyReadClient.js at
+  // all) - classified analysis_only on exactly the same footing as the three Shopify
+  // reads above. They sit in the `products` category and carry operation 'read', so the
+  // existing Product specialist permission (['read', 'execute']) already covers them and
+  // SPECIALIST_ROLE_PERMISSIONS needs no change.
+  etsy_shop_data_retrieval: 'analysis_only',
+  etsy_listing_data_retrieval: 'analysis_only',
   market_product_opportunity_analysis: 'analysis_only',
   keyword_research: 'analysis_only',
   seo_analysis: 'analysis_only',

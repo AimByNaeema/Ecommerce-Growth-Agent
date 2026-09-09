@@ -83,34 +83,53 @@
         </div>
       </div>
 
+      <!-- Channel filter. Narrows what is shown to ONE channel's own data - it never
+           merges, joins, or compares across channels. A pill appears only for a channel
+           that is genuinely connected, so this row shows nothing to choose from until a
+           second channel really exists. Same .filter-row/.filter-pill pattern as the
+           Approval Center's status filter. -->
+      <div class="filter-row" id="channelFilterRow" role="group" aria-label="Sales channel" hidden></div>
+
       <!-- Business KPIs -->
-      <div class="section-label">Store overview</div>
-      <div class="metric-grid" id="storeMetricGrid">
+      <div class="section-label" data-channel-section="shopify">Store overview <span class="section-channel-tag">Shopify</span></div>
+      <div class="metric-grid" id="storeMetricGrid" data-channel-section="shopify">
         <div class="metric-tile"><div class="metric-tile-label">Orders</div><div class="metric-tile-value unavailable">Loading…</div></div>
       </div>
 
-      <!-- Performance: real trend charts over the orders already pulled -->
-      <div class="section-row">
-        <div class="section-label">Performance</div>
+      <!-- Etsy catalog: this shop's OWN read-only data, kept in its own section so no
+           figure here can be read as a combined cross-channel total. Hidden entirely
+           until Etsy is genuinely connected. -->
+      <div class="section-row" id="etsyCatalogHeader" data-channel-section="etsy" hidden>
+        <div class="section-label">Etsy catalog <span class="section-channel-tag">Etsy · Read only</span></div>
+        <span class="section-row-right" id="etsyCatalogShop"></span>
+      </div>
+      <div class="panel-card" id="etsyCatalogArea" data-channel-section="etsy" hidden><div class="panel-empty">Loading…</div></div>
+
+      <!-- Performance: real trend charts over the orders already pulled.
+           Shopify-derived (see server.js buildTrends), so the channel filter hides this
+           whole block under "Etsy" rather than showing Shopify numbers beneath an Etsy
+           heading. -->
+      <div class="section-row" data-channel-section="shopify">
+        <div class="section-label">Performance <span class="section-channel-tag">Shopify</span></div>
         <div class="section-row-right">
           <span class="perf-range" id="perfRange"></span>
           <button class="section-link" id="perfDetailsLink" type="button">View details →</button>
         </div>
       </div>
-      <div class="panel-card perf-card">
+      <div class="panel-card perf-card" data-channel-section="shopify">
         <div class="perf-tabs" id="perfTabs" role="tablist" aria-label="Performance metric"></div>
         <div class="perf-chart-area" id="perfChartArea"><div class="panel-empty">Loading…</div></div>
         <div class="perf-note" id="perfNote"></div>
       </div>
 
-      <!-- Sales funnel + Top products -->
-      <div class="ov-columns">
+      <!-- Sales funnel + Top products - also Shopify-derived. -->
+      <div class="ov-columns" data-channel-section="shopify">
         <div>
-          <div class="section-label">Sales funnel</div>
+          <div class="section-label">Sales funnel <span class="section-channel-tag">Shopify</span></div>
           <div class="panel-card" id="funnelArea"><div class="panel-empty">Loading…</div></div>
         </div>
         <div>
-          <div class="section-label">Top products</div>
+          <div class="section-label">Top products <span class="section-channel-tag">Shopify</span></div>
           <div class="panel-card" id="topProductsArea"><div class="panel-empty">Loading…</div></div>
         </div>
       </div>

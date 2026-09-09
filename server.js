@@ -65,15 +65,28 @@ const { createAuditTracker } = require('./audit/auditTrail');
 const { createUsageLedger } = require('./usage/usageTracker');
 const { createToolResultCache } = require('./agent/core/toolResultCache');
 const { createUsageTracker } = require('./agent/core/usageLimits');
-// The two existing platform adapters, required ONLY for their credential-presence checks
-// (isConfigured), which the dashboard's Connected Channels section reports. Both are
-// deliberately zero-network: shopifyClient.isConfigured() reads resolved credentials,
-// etsyClient.isConfigured() calls its own missingCredentials() - neither opens a socket,
-// so GET /overview below stays safe to call on every page load. Required as whole module
-// objects so a test can monkey-patch isConfigured on the shared, cached instance, the
+// The existing platform adapters, required ONLY for their credential-presence checks,
+// which the dashboard's Connected Channels section reports. All are deliberately
+// zero-network: shopifyClient.isConfigured() reads resolved credentials, and
+// etsyReadClient.canRead() calls its own missingReadCredentials() - neither opens a
+// socket, so GET /overview below stays safe to call on every page load. Required as whole
+// module objects so a test can monkey-patch the check on the shared, cached instance, the
 // same convention orchestratorExecutionContract above already uses.
+//
+// ETSY IS THE READ CLIENT, NOT THE PUBLISHING CLIENT. integrations/adapters/etsyClient.js
+// answers "are publishing credentials present" - a question whose answer is deliberately
+// no, because Etsy publishing is intentionally closed in this project. What the dashboard
+// actually reports is whether this shop's data can be READ, which is
+// integrations/adapters/etsyReadClient.js's canRead(). Reporting the publish client here
+// would show "Not connected" for a channel whose reads work perfectly.
 const shopifyClient = require('./integrations/adapters/shopifyClient');
-const etsyClient = require('./integrations/adapters/etsyClient');
+const etsyReadClient = require('./integrations/adapters/etsyReadClient');
+// The two existing read-only Etsy tools (tools/toolRegistry.js's
+// etsy_shop_data_retrieval / etsy_listing_data_retrieval), both classified analysis_only.
+// GET /store/metrics relays their {status, result, error} envelopes the same way it
+// relays analyticsDataTool's. No Etsy write tool exists to require.
+const etsyShopDataTool = require('./tools/etsyShopDataTool');
+const etsyListingDataTool = require('./tools/etsyListingDataTool');
 // The existing read-only live-data tool (tools/toolRegistry.js's
 // analytics_data_retrieval). GET /store/metrics below is the dashboard's window onto it -
 // it calls this function and relays its result verbatim, never recomputing a metric or
@@ -389,43 +402,76 @@ function buildBusinessContext(config) {
 const OVERVIEW_HISTORY_SCAN_LIMIT = 50;
 const OVERVIEW_ACTIVITY_LIMIT = 10;
 const OVERVIEW_OPPORTUNITY_LIMIT = 8;
+// How many Etsy listings GET /store/metrics reads per cache window. Bounded on purpose:
+// this is a dashboard summary, not a catalogue export, and Etsy's shop-listings endpoint
+// is paged - so one page is read and the response says so via `catalog.pagination`. The
+// SHOP-WIDE totals shown as metrics come from the shop record itself, never from counting
+// this page, so a bounded read can never understate the catalogue.
+const ETSY_DASHBOARD_LISTING_LIMIT = 25;
 
 // The sales channels the dashboard reports on. A channel is "connectable" only when a
 // real adapter for it exists under integrations/adapters/ - today that is Shopify and
-// Etsy, and only Shopify is actually configured. The remaining three are listed with a
-// null adapter purely so the owner can see what this system does NOT integrate with yet;
-// they render as unavailable, never with a connect control, because no code behind them
-// exists. NO integration is added here (the dashboard is a presentation layer) - a
-// platform moves off the null list the day a real adapter lands.
+// Etsy. The remaining three are listed with a null adapter purely so the owner can see
+// what this system does NOT integrate with yet; they render as unavailable, never with a
+// connect control, because no code behind them exists. NO integration is added here (the
+// dashboard is a presentation layer) - a platform moves off the null list the day a real
+// adapter lands.
+//
+// `check` names the adapter method that answers "are this channel's credentials present",
+// because the two adapters answer different questions: Shopify's isConfigured() covers the
+// one credential set it has, while Etsy's read path and publish path are separate and only
+// the read path is open. `access` records WHICH capability that check proved - 'read_only'
+// for Etsy, so the dashboard can never label a read-only connection as though it could
+// publish. null means "the adapter's full capability", the pre-existing behavior.
 const DASHBOARD_CHANNELS = [
-  { id: 'shopify', name: 'Shopify', adapter: shopifyClient },
-  { id: 'etsy', name: 'Etsy', adapter: etsyClient },
-  { id: 'ebay', name: 'eBay', adapter: null },
-  { id: 'amazon', name: 'Amazon', adapter: null },
-  { id: 'woocommerce', name: 'WooCommerce', adapter: null },
+  { id: 'shopify', name: 'Shopify', adapter: shopifyClient, check: 'isConfigured', access: null },
+  { id: 'etsy', name: 'Etsy', adapter: etsyReadClient, check: 'canRead', access: 'read_only' },
+  { id: 'ebay', name: 'eBay', adapter: null, check: null, access: null },
+  { id: 'amazon', name: 'Amazon', adapter: null, check: null, access: null },
+  { id: 'woocommerce', name: 'WooCommerce', adapter: null, check: null, access: null },
 ];
 
 // Real connection state per channel, from each adapter's OWN credential-presence check.
-// isConfigured() means "credentials are present", never "the integration works" - the
-// exact distinction integrations/adapters/etsyClient.js's own canPublish() documents -
-// so the field is named `configured` and the dashboard labels it "Connected" only for a
-// channel whose adapter is genuinely wired to a live API today. An adapter that throws
-// is reported as not configured with its own message, never as connected.
+// That check means "credentials are present", never "the integration works" - the exact
+// distinction integrations/adapters/etsyClient.js's own canPublish() documents - so the
+// field is named `configured` and the dashboard labels it "Connected" only for a channel
+// whose adapter is genuinely wired to a live API today. An adapter that throws is reported
+// as not configured with its own message, never as connected.
+//
+// Every check here is zero-network by construction (shopifyClient.isConfigured() reads
+// resolved credentials; etsyReadClient.canRead() counts missing env keys), which is what
+// keeps GET /overview safe to call on every page load.
 function buildChannelStates() {
   return DASHBOARD_CHANNELS.map((channel) => {
-    if (!channel.adapter || typeof channel.adapter.isConfigured !== 'function') {
-      return { id: channel.id, name: channel.name, adapter_exists: false, configured: false, detail: null };
+    const checkName = channel.check || 'isConfigured';
+    if (!channel.adapter || typeof channel.adapter[checkName] !== 'function') {
+      return {
+        id: channel.id,
+        name: channel.name,
+        adapter_exists: false,
+        configured: false,
+        access: null,
+        detail: null,
+      };
     }
     try {
       return {
         id: channel.id,
         name: channel.name,
         adapter_exists: true,
-        configured: Boolean(channel.adapter.isConfigured()),
+        configured: Boolean(channel.adapter[checkName]()),
+        access: channel.access,
         detail: null,
       };
     } catch (err) {
-      return { id: channel.id, name: channel.name, adapter_exists: true, configured: false, detail: err.message };
+      return {
+        id: channel.id,
+        name: channel.name,
+        adapter_exists: true,
+        configured: false,
+        access: channel.access,
+        detail: err.message,
+      };
     }
   });
 }
@@ -638,6 +684,171 @@ function buildTopProducts(orders) {
       'Shopify order line items carry no per-line price in this read, so per-product revenue would have to be apportioned from the order total - it is left out rather than estimated.',
     views_available: false,
     views_reason: "Per-product views and conversion need storefront analytics, which Shopify's read-only Admin API does not expose.",
+  };
+}
+
+/* ---------- Etsy: a SEPARATE channel, never merged with the Shopify data above ----------
+   Everything below describes the Etsy shop alone. No figure here is combined with, derived
+   from, or compared against a Shopify figure, and no record is matched across the two
+   channels - agent/core/channelModel.js deliberately exports no merge or id-equivalence
+   function, and this block adds none.
+
+   READ-ONLY, AND VISIBLY SO. The two tools relayed here are classified analysis_only and
+   sit on integrations/adapters/etsyReadClient.js, which issues GET requests only and
+   refuses any other method before a socket is opened. No Etsy write tool is required by
+   this file, so no route can reach one.
+
+   WHY SO MANY METRICS ARE UNAVAILABLE. This integration holds exactly two Etsy scopes -
+   shops_r and listings_r. Orders, revenue, buyers and shop traffic live behind scopes it
+   deliberately does not request, so each is reported unavailable WITH THE REASON rather
+   than shown as 0. A zero here would read as "your Etsy shop sold nothing", which is a
+   fabricated claim about a real business. */
+const ETSY_SCOPE_UNAVAILABLE_REASON =
+  'Etsy grants this integration only the shops_r and listings_r read scopes. Order, revenue and buyer data ' +
+  'live behind transactions_r/receipts_r, which are deliberately not requested.';
+
+const ETSY_TRAFFIC_UNAVAILABLE_REASON =
+  'Etsy\'s API does not report shop-level traffic or conversion to this integration, and no connected analytics ' +
+  'source in this system reports it for Etsy.';
+
+// One Etsy listing, projected to what a dashboard row actually shows.
+//
+// `description` is dropped on purpose: it is long raw seller copy with no row to fill, and
+// carrying it would bloat every /store/metrics response. Nothing else is reshaped - each
+// field is exactly what Etsy returned, and the record keeps its channel stamp so it can
+// never be mistaken downstream for a Shopify product.
+function projectEtsyListing(entry) {
+  const listing = (entry && entry.listing) || {};
+  const compliance = (entry && entry.compliance) || {};
+  return {
+    listing_id: listing.listing_id ?? null,
+    title: listing.title ?? null,
+    state: listing.state ?? null,
+    url: listing.url ?? null,
+    listing_type: listing.listing_type ?? null,
+    is_digital_product: listing.is_digital_product ?? null,
+    tags: Array.isArray(listing.tags) ? listing.tags : [],
+    taxonomy_id: listing.taxonomy_id ?? null,
+    price: listing.price ?? null,
+    quantity: listing.quantity ?? null,
+    // Etsy DOES return these per listing, so they are shown per listing. They are never
+    // summed into a shop-wide total: a sum over the page read would misdescribe a
+    // catalogue larger than that page.
+    num_favorers: listing.num_favorers ?? null,
+    views: listing.views ?? null,
+    // The channel stamp travels with the record, exactly as etsyReadClient applied it.
+    channel: listing.channel ?? null,
+    // The compliance verdict the retrieval tool already attached - relayed, not recomputed.
+    compliance_status: compliance.status ?? null,
+    missing_fact_count: Array.isArray(entry && entry.missing_facts) ? entry.missing_facts.length : null,
+  };
+}
+
+// Builds the response's `etsy` key from the two tools' own {status, result, error}
+// envelopes. Recomputes nothing: every available number below is a field Etsy returned.
+function buildEtsyBlock({ connected, shopOutcome, listingOutcome }) {
+  const shop = shopOutcome && shopOutcome.status === 'success' ? shopOutcome.result : null;
+
+  // The reason a value is missing, in order of specificity: not connected at all, then the
+  // tool's own error, then the honest fallback. Never a guess about which it was.
+  const shopReason = !connected
+    ? 'Etsy is not connected for reading.'
+    : (shopOutcome && shopOutcome.error) || 'The Etsy shop read did not return a shop record for this request.';
+
+  const value = (key) => (shop && shop[key] !== null && shop[key] !== undefined ? shop[key] : null);
+  const known = (key) => value(key) !== null;
+
+  const metrics = [
+    {
+      id: 'active_listings',
+      label: 'Active listings',
+      value: value('listing_active_count'),
+      available: known('listing_active_count'),
+      reason: known('listing_active_count') ? null : shopReason,
+    },
+    {
+      id: 'digital_listings',
+      label: 'Digital listings',
+      value: value('digital_listing_count'),
+      available: known('digital_listing_count'),
+      reason: known('digital_listing_count') ? null : shopReason,
+    },
+    {
+      id: 'shop_status',
+      // is_vacation is a real boolean Etsy reports; null stays unavailable rather than
+      // defaulting to "Open", which would claim a shop is trading when we do not know.
+      label: 'Shop status',
+      value: known('is_vacation') ? (value('is_vacation') ? 'On vacation' : 'Open') : null,
+      available: known('is_vacation'),
+      reason: known('is_vacation') ? null : shopReason,
+    },
+    {
+      id: 'currency',
+      label: 'Shop currency',
+      value: value('currency_code'),
+      available: known('currency_code'),
+      reason: known('currency_code') ? null : shopReason,
+    },
+    { id: 'orders', label: 'Orders', value: null, available: false, reason: ETSY_SCOPE_UNAVAILABLE_REASON },
+    { id: 'revenue', label: 'Revenue', value: null, available: false, reason: ETSY_SCOPE_UNAVAILABLE_REASON },
+    { id: 'customers', label: 'Customers', value: null, available: false, reason: ETSY_SCOPE_UNAVAILABLE_REASON },
+    { id: 'sessions', label: 'Visits / traffic', value: null, available: false, reason: ETSY_TRAFFIC_UNAVAILABLE_REASON },
+    {
+      id: 'conversion_rate',
+      label: 'Conversion rate',
+      value: null,
+      available: false,
+      reason: ETSY_TRAFFIC_UNAVAILABLE_REASON,
+    },
+  ];
+
+  const listingResult = listingOutcome && listingOutcome.result ? listingOutcome.result : null;
+  const listings = listingResult && Array.isArray(listingResult.listings) ? listingResult.listings : [];
+
+  return {
+    connected: Boolean(connected),
+    // Stated as data, not only as UI copy, so no consumer of this payload can conclude
+    // publishing is available.
+    access: 'read_only',
+    publishing_enabled: false,
+    publishing_note:
+      'Etsy publishing is intentionally disabled in this project. No Etsy write tool is registered, and the read ' +
+      'client issues GET requests only.',
+    shop: shop
+      ? {
+          shop_id: shop.shop_id ?? null,
+          shop_name: shop.shop_name ?? null,
+          title: shop.title ?? null,
+          url: shop.url ?? null,
+          currency_code: shop.currency_code ?? null,
+          is_vacation: shop.is_vacation ?? null,
+          channel: shop.channel ?? null,
+        }
+      : null,
+    shop_status: shopOutcome ? shopOutcome.status : null,
+    shop_error: (shopOutcome && shopOutcome.error) || null,
+    metrics,
+    catalog: {
+      status: listingOutcome ? listingOutcome.status : null,
+      error: (listingOutcome && listingOutcome.error) || null,
+      // How many listings were READ this request - explicitly not the catalogue size,
+      // which is the `active_listings` metric above.
+      listing_count: listingResult ? listingResult.listing_count : null,
+      aggregate_compliance_status: listingResult ? listingResult.aggregate_compliance_status : null,
+      pagination: listingResult ? listingResult.pagination : null,
+      listings: listings.map(projectEtsyListing),
+      // Both need one Etsy request PER LISTING. Fetching them for a page of listings would
+      // multiply this endpoint's Etsy usage by ~50 for two columns, so they are reported
+      // unavailable with that reason rather than quietly fetched.
+      inventory_available: false,
+      inventory_reason:
+        "Etsy returns inventory only from its per-listing inventory endpoint, one request per listing. It is not " +
+        'fetched here to keep this dashboard within a small, predictable Etsy request budget.',
+      images_available: false,
+      images_reason:
+        'Etsy returns images only from its per-listing images endpoint, one request per listing. It is not fetched ' +
+        'here for the same reason.',
+    },
   };
 }
 
@@ -1001,6 +1212,20 @@ function buildHealthChecks({ channels, summaries, historyReadable, approvals }) 
     detail: shopify && shopify.configured ? null : 'Set the Shopify credentials in .env - see .env.example.',
   });
 
+  // Etsy is reported only as a READ connection, because that is the only Etsy capability
+  // this project has. It is never described as "connected" in a way that could be read as
+  // "can publish" - publishing stays closed by design, not by a missing credential.
+  const etsy = channels.find((channel) => channel.id === 'etsy');
+  checks.push({
+    id: 'etsy_read_connection',
+    status: etsy && etsy.configured ? 'ok' : 'warn',
+    label: etsy && etsy.configured ? 'Etsy connected for reading' : 'Etsy not connected for reading',
+    detail:
+      etsy && etsy.configured
+        ? 'Read-only: listings are read under shops_r and listings_r. Publishing to Etsy is intentionally disabled.'
+        : 'Run `npm run integrations:etsy-authorize` and set the Etsy values in .env - see .env.example.',
+  });
+
   checks.push({
     id: 'run_history',
     status: historyReadable ? 'ok' : 'warn',
@@ -1230,6 +1455,282 @@ function createApp() {
       res.json({ ...responseBody, run_id: runId });
     } catch (err) {
       res.status(502).json({ error: 'The specialist could not complete this run right now. Please try again shortly.' });
+    }
+  });
+
+  /* ---------- Etsy read-only analysis, through the EXISTING specialist path ----------
+     Runs the existing SEO or Listing specialist against one real Etsy listing. This is a
+     thin, channel-aware ENTRY POINT, not a second execution path: it assembles evidence
+     from data Etsy actually returned and then calls the very same
+     orchestratorExecutionContract.buildPlanStep() that POST /run above uses, with the
+     same permission, budget, approval and audit machinery. No new agent, no second SEO or
+     Listing implementation, no workflow engine.
+
+     WHY IT IS A SERVER ROUTE AND NOT A BROWSER-BUILT /run CALL. Provenance has to be
+     trustworthy. If the dashboard assembled the evidence and posted it to /run, every
+     "source" in the resulting analysis would be a client-supplied string this server had
+     no way to verify - a forged provenance chain by construction. Here the evidence is
+     read from Etsy on this side of the boundary, so each source names the real endpoint
+     and the real listing id.
+
+     READ-ONLY, STRUCTURALLY. The only Etsy call it can make is the same GET-only listings
+     read the dashboard already performs, and both specialists it can reach
+     (seo_analysis, listing_content_generation) are classified analysis_only and produce
+     text. There is no Etsy write tool in the registry for this route to select even if it
+     tried, and it pins the tool explicitly rather than routing by free text.
+
+     THE EVIDENCE RULE, which is the whole point. Evidence is built ONLY from structural
+     fields Etsy returned - listing_type, state, tags, taxonomy_id, quantity, title length,
+     favourites, views. The listing DESCRIPTION is deliberately NOT mined for facts: it is
+     seller-written marketing copy, so its claims (file formats, "editable in Canva",
+     licensing) are content to be SCRUTINISED by compliance, never evidence that those
+     things are true. Anything Etsy did not state structurally is reported as
+     NEEDS_INFORMATION, never filled in. */
+  const ETSY_ANALYSES = {
+    seo: {
+      specialistId: 'seo',
+      toolId: 'seo_analysis',
+      capabilityId: 'product_seo',
+      label: 'SEO analysis',
+    },
+    listing: {
+      specialistId: 'listing',
+      toolId: 'listing_content_generation',
+      capabilityId: 'marketplace_format',
+      label: 'Listing analysis',
+    },
+  };
+
+  // Facts Etsy itself stated about this listing, each carrying the real endpoint and
+  // listing id it came from. Nothing here is derived from the description.
+  function buildEtsyEvidence(listing, source) {
+    const evidence = [
+      { topic: 'Listing type', finding: `Etsy reports listing_type='${listing.listing_type}'.`, source },
+      { topic: 'Listing state', finding: `Etsy reports state='${listing.state}'.`, source },
+      {
+        // Reported as a COUNT of what Etsy returned, deliberately not as "N of 13". Etsy's
+        // own OpenAPI spec declares no maxItems for tags and no maxLength for title, so a
+        // ceiling stated here would be an unsourced number - precisely the kind of
+        // invented fact this integration refuses to produce.
+        topic: 'Tag coverage',
+        finding: `Etsy returned ${listing.tags.length} tag(s) on this listing: ${listing.tags.join(', ') || 'none'}.`,
+        source,
+      },
+      { topic: 'Taxonomy', finding: `Etsy reports taxonomy_id=${listing.taxonomy_id}.`, source },
+      { topic: 'Title', finding: `The title Etsy returned is ${String(listing.title || '').length} characters long.`, source },
+    ];
+    // Only reported when Etsy actually returned a number - an absent count is left out
+    // entirely rather than asserted as zero.
+    if (typeof listing.num_favorers === 'number') {
+      evidence.push({ topic: 'Favourites', finding: `Etsy reports num_favorers=${listing.num_favorers}.`, source });
+    }
+    if (typeof listing.views === 'number') {
+      evidence.push({ topic: 'Views', finding: `Etsy reports views=${listing.views}.`, source });
+    }
+    if (typeof listing.quantity === 'number') {
+      evidence.push({ topic: 'Quantity', finding: `Etsy reports quantity=${listing.quantity}.`, source });
+    }
+    return evidence;
+  }
+
+  // Real, checkable observations about THIS listing's own data - each one a count or a
+  // presence/absence fact that can be re-derived from the same Etsy response.
+  //
+  // WHAT IS NOT HERE, ON PURPOSE: search volume, ranking, competitor content, or a
+  // "recommended" title length. This system has no keyword-volume source, no rank
+  // tracker, and no licence to copy another seller's listing - so a claim that a term is
+  // "high volume", or that a title should be some particular length, would be fabricated.
+  // Etsy's own OpenAPI spec declares no maxLength for title and no maxItems for tags, so
+  // even the platform ceiling is not a number this code may assert.
+  function buildEtsySeoObservations(listing) {
+    const observations = [
+      `The title Etsy returned is ${String(listing.title || '').length} characters long.`,
+      `Etsy returned ${listing.tags.length} tag(s) on this listing.`,
+    ];
+    if (listing.tags.length === 0) {
+      observations.push('Etsy returned no tags at all for this listing.');
+    }
+    if (listing.taxonomy_id === null || listing.taxonomy_id === undefined) {
+      observations.push('Etsy returned no taxonomy_id for this listing.');
+    }
+    return observations;
+  }
+
+  app.post('/etsy/analyze', protect, async (req, res) => {
+    const { listing_id: listingIdInput, analysis: analysisInput } = req.body || {};
+    const analysis = ETSY_ANALYSES[String(analysisInput || '').trim()];
+    if (!analysis) {
+      res.status(400).json({ error: `"analysis" must be one of: ${Object.keys(ETSY_ANALYSES).join(', ')}.` });
+      return;
+    }
+    // Etsy listing ids are positive integers. Validated before it can be compared against
+    // anything, and never substituted into a URL by this route at all.
+    const listingId = String(listingIdInput === undefined || listingIdInput === null ? '' : listingIdInput).trim();
+    if (!/^[0-9]+$/.test(listingId)) {
+      res.status(400).json({ error: 'A numeric "listing_id" is required.' });
+      return;
+    }
+
+    // FAIL CLOSED. No Etsy request is attempted when reading is not configured.
+    if (!etsyReadClient.canRead()) {
+      res.status(409).json({
+        error: 'Etsy is not connected for reading, so no Etsy listing can be analysed. No Etsy request was attempted.',
+      });
+      return;
+    }
+
+    try {
+      // The SAME bounded, read-only listings pull the dashboard already performs. Within
+      // etsyReadClient's own response-cache TTL this costs NO new Etsy request, and its
+      // in-flight de-duplication means two people triggering an analysis at once still
+      // produce one read. No per-listing GET, no inventory read, no images read - the
+      // shop-listings response already carries every field the evidence below uses.
+      const listingOutcome = await etsyListingDataTool.runEtsyListingDataTool({ limit: ETSY_DASHBOARD_LISTING_LIMIT });
+      if (!listingOutcome.result || !Array.isArray(listingOutcome.result.listings)) {
+        res.status(502).json({ error: listingOutcome.error || 'Etsy listings could not be read for this request.' });
+        return;
+      }
+
+      const entry = listingOutcome.result.listings.find((item) => String(item.listing.listing_id) === listingId);
+      if (!entry) {
+        res.status(404).json({
+          error: `Listing ${listingId} was not in the page of listings read from this shop. No analysis was run.`,
+        });
+        return;
+      }
+
+      const listing = entry.listing;
+      // Provenance names the real endpoint and the real listing - never a placeholder.
+      const source = [`Etsy Open API v3 getListingsByShop - listing ${listing.listing_id}, shop ${listing.shop_id}`];
+      const evidence = buildEtsyEvidence(listing, source);
+      const productReference = `Etsy listing ${listing.listing_id}`;
+      const objective = `${analysis.label} for Etsy listing ${listing.listing_id} ("${listing.title}") in shop ${listing.shop_id}.`;
+
+      const researchParams =
+        analysis.specialistId === 'seo'
+          ? {
+              seoCapability: 'product_seo',
+              productReference,
+              internalOptimizationOpportunities: buildEtsySeoObservations(listing),
+              evidence,
+            }
+          : {
+              listingCapability: 'marketplace_format',
+              // The channel travels INTO the agent, so the draft is produced for Etsy
+              // rather than for a generic or Shopify-shaped listing.
+              marketplace: 'etsy',
+              productReference,
+              sourceListing: { productTitle: listing.title },
+              evidence,
+            };
+
+      // Per-run trackers, exactly as POST /ask builds them - caller-held, never
+      // module-level, so two concurrent analyses can never share a budget or a trail.
+      const runId = `etsy-${analysis.specialistId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const runAuditTracker = createAuditTracker(runId, null);
+      const runUsageLedger = createUsageLedger(runId, null);
+
+      const step = await orchestratorExecutionContract.buildPlanStep(
+        orchestratorExecutionContract.buildSpecialistTarget(analysis.specialistId),
+        objective,
+        objective,
+        { tokensUsedThisRun: 0 },
+        researchParams,
+        [],
+        { requests: [] },
+        runAuditTracker,
+        createToolResultCache(),
+        createUsageTracker(),
+        null,
+        runUsageLedger,
+        // Pinned rather than free-text routed, the same mechanism /ask uses. buildPlanStep
+        // still refuses a tool outside this specialist's own real ownership, so pinning
+        // can never reach a tool the specialist does not own - and no Etsy write tool
+        // exists for it to reach in any case.
+        { toolId: analysis.toolId, capabilityId: analysis.capabilityId }
+      );
+
+      const status =
+        step.completion_state === 'complete' ? 'success' : step.completion_state === 'failed' ? 'error' : 'partial';
+      const summary = summarizeExecutionState(step);
+
+      // COMPLIANCE TRAVELS WITH THE RESULT. The verdict on the listing's EXISTING content
+      // was already computed by the retrieval tool through the shared engine
+      // (compliance/etsyComplianceInput.js) - it is relayed here, never recomputed and
+      // never softened, so no Etsy content circulates without it. `missing_facts` is the
+      // machine-readable NEEDS_INFORMATION list: the product facts this listing's own data
+      // does not establish, which is why no draft may assert them.
+      const compliance = {
+        status: entry.compliance.status,
+        review_reasons: entry.compliance.review_reasons,
+        limitations: entry.compliance.limitations,
+        checked_at: entry.compliance.checked_at,
+        checker_version: entry.compliance.checker_version,
+        needs_information: entry.missing_facts,
+      };
+
+      const responseBody = {
+        ...step,
+        status,
+        summary,
+        channel: etsyReadClient.ETSY_CHANNEL,
+        analysis: analysis.specialistId,
+        // Draft/analysis only, stated in the payload itself so no consumer can read this
+        // as an applied change. Acting on it would be a separate, human-approved action
+        // that this project has no Etsy path for.
+        applied_to_etsy: false,
+        etsy_write_attempted: false,
+        listing: {
+          listing_id: listing.listing_id,
+          shop_id: listing.shop_id,
+          title: listing.title,
+          url: listing.url,
+          channel: listing.channel,
+        },
+        provenance: { source, endpoint: 'getListingsByShop', listing_id: listing.listing_id },
+        compliance,
+        // Why the Listing draft reports "partial" rather than reformatting anything. The
+        // marketplace-format capability truncates/maps against caller-supplied constraints,
+        // and Etsy's own OpenAPI spec declares no maxLength for title and no maxItems for
+        // tags - so there is no sourced ceiling to supply. Passing a plausible-looking
+        // number (a "140-character title limit") would make every future draft silently
+        // truncate real copy against a figure nothing backs. Reporting the gap is the
+        // correct outcome, not a failure.
+        format_constraints:
+          analysis.specialistId === 'listing'
+            ? {
+                supplied: false,
+                reason:
+                  "Etsy's own OpenAPI spec declares no maximum title length and no maximum tag count, so no format " +
+                  'constraint could be sourced. None was invented, and the listing content was carried through unchanged.',
+              }
+            : null,
+      };
+
+      try {
+        runHistoryStore.saveRunRecord({
+          run_id: runId,
+          kind: 'run',
+          objective,
+          specialist_id: analysis.specialistId,
+          specialist_name: SPECIALIST_DISPLAY_NAMES[analysis.specialistId] || analysis.specialistId,
+          // The explicit channel metadata Activity/History renders. Set because THIS
+          // endpoint knows the channel for certain, never inferred downstream.
+          channel: etsyReadClient.ETSY_CHANNEL,
+          channel_reference: String(listing.listing_id),
+          status,
+          summary,
+          created_at: new Date().toISOString(),
+          result: responseBody,
+        });
+      } catch (saveErr) {
+        console.error('Could not save run history for /etsy/analyze:', saveErr.message);
+      }
+
+      res.json({ ...responseBody, run_id: runId });
+    } catch (err) {
+      console.error('POST /etsy/analyze failed:', err.message);
+      res.status(502).json({ error: 'The Etsy analysis could not complete right now. Please try again shortly.' });
     }
   });
 
@@ -1828,7 +2329,39 @@ function createApp() {
       // round of requests and covered by the same cache below, so it costs one extra
       // Shopify read per TTL window rather than one per page load. A failure here degrades
       // Top Products alone and never blanks out the rest of the response.
-      const [outcomes, ordersForProducts] = await Promise.all([
+      // Etsy rides this same request and this same cache, which is what keeps it to TWO
+      // Etsy GETs per TTL window no matter how often the dashboard is opened or how many
+      // tabs are watching. Both tools are read-only and never throw (they return a failed
+      // envelope instead), and the read client below them adds its own response cache and
+      // in-flight de-duplication - no second caching layer is introduced here.
+      //
+      // When Etsy is not connected, NO Etsy request is attempted at all: canRead() is a
+      // local env check, and skipping the calls entirely is cheaper and more honest than
+      // firing them to collect a predictable failure.
+      const etsyConnected = etsyReadClient.canRead();
+      // SEQUENTIAL ON PURPOSE, and only these two. Each Etsy read resolves an OAuth access
+      // token first; running them concurrently makes both miss the token cache and perform
+      // their own refresh, so one dashboard build costs two token exchanges instead of
+      // one. Awaiting them in order lets the second reuse the first's cached token. The
+      // pair still runs CONCURRENTLY with the Shopify reads below, so this costs no wall
+      // time the Shopify pull was not already spending.
+      const etsyReads = etsyConnected
+        ? (async () => {
+            const shopOutcome = await etsyShopDataTool.runEtsyShopDataTool({}).catch((err) => {
+              console.error('GET /store/metrics could not read the Etsy shop:', err.message);
+              return { status: 'failed', result: null, error: err.message };
+            });
+            const listingOutcome = await etsyListingDataTool
+              .runEtsyListingDataTool({ limit: ETSY_DASHBOARD_LISTING_LIMIT })
+              .catch((err) => {
+                console.error('GET /store/metrics could not read Etsy listings:', err.message);
+                return { status: 'failed', result: null, error: err.message };
+              });
+            return [shopOutcome, listingOutcome];
+          })()
+        : Promise.resolve([null, null]);
+
+      const [outcomes, ordersForProducts, [etsyShopOutcome, etsyListingOutcome]] = await Promise.all([
         Promise.all(
           capabilities.map((analyticsCapability) =>
             analyticsDataTool.runAnalyticsDataTool({ analyticsCapability, limit: 50 })
@@ -1838,6 +2371,7 @@ function createApp() {
           console.error('GET /store/metrics could not read orders for Top Products:', err.message);
           return null;
         }),
+        etsyReads,
       ]);
 
       const salesOutcome = outcomes[capabilities.indexOf('sales')];
@@ -1850,6 +2384,13 @@ function createApp() {
         top_products: ordersForProducts
           ? buildTopProducts(ordersForProducts)
           : { available: false, products: [], revenue_available: false, revenue_reason: null, views_available: false, views_reason: null },
+        // A SEPARATE key, deliberately. Etsy data never joins the Shopify keys above -
+        // not in `capabilities`, not in `trends.channels`, not in `top_products`.
+        etsy: buildEtsyBlock({
+          connected: etsyConnected,
+          shopOutcome: etsyShopOutcome,
+          listingOutcome: etsyListingOutcome,
+        }),
       };
       metricsCache = { payload, cachedAtMs: Date.now() };
       res.json({ ...payload, cached: false });

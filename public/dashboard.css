@@ -1,3 +1,10 @@
+  /* The `hidden` attribute must actually hide. The browser's default stylesheet gives
+     [hidden] display:none at the LOWEST precedence, so any author rule that sets a display
+     - .filter-row and .section-row are display:flex, and .section-link is inline-block -
+     silently beats it, leaving an element the JS believes is hidden fully on screen.
+     Declared once here so every el.hidden = true in dashboard.js means what it says. */
+  [hidden] { display: none !important; }
+
   /* ============ Design tokens (unchanged from the previous dashboard) ============ */
   :root {
     --ground: #020617;
@@ -746,6 +753,36 @@
   .status-chip.connected { background: var(--growth-soft); color: var(--growth); }
   .status-chip.not-connected { background: var(--surface-raised); color: var(--ink-faint); border: 1px solid var(--border); }
   .status-chip.unavailable { background: var(--surface-raised); color: var(--ink-faint); border: 1px solid var(--border); opacity: 0.7; }
+  /* A working connection that is deliberately read-only. Reads as connected (not an
+     error or a warning) but is visibly NOT the same state as a full connection. */
+  .status-chip.read-only { background: var(--accent-soft); color: var(--accent); }
+
+  /* ============ Channel labelling (Shopify / Etsy) ============
+     Every channel-scoped section carries its channel's name, so a figure on this page is
+     never ambiguous about which store it describes - especially under the "All" filter,
+     where both channels' sections are on screen together. */
+  .section-channel-tag {
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--ink-faint); background: var(--surface-raised);
+    border: 1px solid var(--border); border-radius: 100px;
+    padding: 2px 8px; margin-left: 8px; vertical-align: middle;
+  }
+
+  .etsy-listing-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    /* Wraps rather than squeezing: on a narrow screen the verdict chip and the two
+       analysis triggers drop below the title instead of crushing it or overflowing. */
+    flex-wrap: wrap;
+    padding: 10px 0; border-bottom: 1px solid var(--border);
+    font-size: 12.5px; color: var(--ink-soft);
+  }
+  .etsy-listing-row:last-of-type { border-bottom: none; }
+  .etsy-listing-main { min-width: 0; }
+  .etsy-listing-title { color: var(--ink); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .etsy-listing-meta { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
+  /* The two read-only analysis triggers. Kept on one line beside the compliance chip and
+     allowed to wrap under it on a narrow screen rather than squeezing the title. */
+  .etsy-listing-actions { display: flex; gap: 10px; flex-shrink: 0; }
 
   .panel-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 14px;

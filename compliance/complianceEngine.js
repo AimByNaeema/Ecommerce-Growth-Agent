@@ -107,6 +107,44 @@ function findLiteralTerm(content, term) {
   return match ? { start: match.index, end: match.index + match[0].length } : null;
 }
 
+// The words that turn a forbidden phrase into its own denial.
+const NEGATION_TOKENS = [
+  'no', 'not', 'never', 'nothing', 'none', 'nor', 'without',
+  'cannot', "can't", "won't", "isn't", "aren't", "doesn't", "don't", "we don't",
+];
+
+// True when a matched forbidden phrase sits inside a clause that NEGATES it.
+//
+// WHY THIS EXISTS. Found by running the checker against the owner's real Etsy listings: the
+// block-severity rule "a digital product is described as being shipped" was matching
+//
+//   "This is a digital product only. No physical invitation will be shipped."
+//
+// which is the exact OPPOSITE of the violation - and is the standard, near-universal
+// disclaimer on a digital listing. It produced a `block` verdict, the strictest this engine
+// can reach, on the most compliant sentence in the content. A checker that punishes correct
+// copy trains its reader to ignore it.
+//
+// THE SCOPE IS DELIBERATELY TIGHT - one clause, not one sentence. The search runs from the
+// nearest preceding clause boundary (. ! ? ; , or a line break) to the start of the match,
+// so a negation elsewhere cannot excuse a real violation:
+//
+//   "No refunds. Your order ships in 3 business days."   -> still blocks (different clause)
+//   "Your order ships in 3 days, no exceptions."         -> still blocks (negator is after)
+//
+// Erring narrow is deliberate: a missed negation costs a false REVIEW, while an over-broad
+// one would silently permit the thing the rule exists to catch.
+function isNegatedMatch(content, range) {
+  if (!range || typeof range.start !== 'number') return false;
+  const precedingClause = String(content)
+    .slice(0, range.start)
+    .split(/[.!?;,\n\r]/)
+    .pop();
+  return NEGATION_TOKENS.some((token) =>
+    new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(token)}(?![\\p{L}\\p{N}])`, 'iu').test(precedingClause)
+  );
+}
+
 // Whole-word match, so a brand name is not "detected" inside an unrelated longer word.
 function findBrandMention(content, brand) {
   if (!isNonEmptyString(brand)) return null;
@@ -423,6 +461,22 @@ function checkPlatformPolicy(input, findings, limitations) {
     for (const phrase of normalizeArray(rule.forbidden_phrases).filter(isNonEmptyString)) {
       const range = findLiteralTerm(input.content, phrase);
       if (!range) continue;
+      // A phrase the content itself denies does not BLOCK - see isNegatedMatch.
+      //
+      // ONLY `block` IS SUPPRESSED, DELIBERATELY. A negated match still reaches every
+      // review-severity rule, so wording a human should look at still gets flagged; all
+      // this does is stop a denial from tripping the strictest verdict the engine has.
+      // Nothing that previously reached REVIEW can become PASS through this path, so the
+      // change can only ever loosen a hard stop into a human check - never into silence.
+      //
+      // The match is still recorded as a limitation, so a reader can see the checker met
+      // the wording and judged it a denial, rather than the match never having happened.
+      if (severity === 'block' && isNegatedMatch(input.content, range)) {
+        limitations.push(
+          `A blocking ${input.platform} policy rule matched wording that the content itself negates, so it was not treated as a violation. Review-severity rules still applied. A human should confirm the denial reads as intended.`
+        );
+        continue;
+      }
       findings.push(
         createComplianceFinding({
           checkType: 'platform_policy',

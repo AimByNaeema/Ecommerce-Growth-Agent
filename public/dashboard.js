@@ -933,11 +933,18 @@
 
         const kindLabel = entry.kind === 'orchestrate' ? 'Chief Orchestrator' : 'Specialist: ' + (entry.specialist_name || entry.specialist_id || '');
         const when = entry.created_at ? new Date(entry.created_at).toLocaleString() : '';
+        // Same explicit-only rule as the Overview activity rows: a channel shows because
+        // the record states one, never because a title looked like it belonged to a
+        // marketplace. The listing id is included so a run traces to the exact listing.
+        const channel = channelLabel(entry);
+        const channelBit = channel
+          ? escapeHtml(channel) + (entry.channel_reference ? ' #' + escapeHtml(entry.channel_reference) : '') + ' · '
+          : '';
 
         row.innerHTML =
           '<div class="approval-row-head">' +
           '<div><div class="approval-row-title">' + escapeHtml(entry.objective || '(no objective recorded)') + '</div>' +
-          '<div class="approval-row-meta">' + escapeHtml(kindLabel) + ' · ' + escapeHtml(when) + '</div></div>' +
+          '<div class="approval-row-meta">' + channelBit + escapeHtml(kindLabel) + ' · ' + escapeHtml(when) + '</div></div>' +
           '<span class="approval-row-status ' + historyStatusClass(entry.status) + '">' + escapeHtml(entry.status || 'unknown') + '</span>' +
           '</div>';
 
@@ -1068,12 +1075,24 @@
       urlEl.appendChild(a);
     }
 
-    const shopify = (channels || []).find((c) => c.id === 'shopify');
+    // The header chip summarises every channel with a real adapter, naming each one and
+    // its own state. It stays a summary - the full list is the Connected Channels section
+    // below - but it must not keep reporting Shopify alone now that a second channel can
+    // genuinely be connected.
+    const withAdapters = (channels || []).filter((c) => c.adapter_exists);
     const chip = document.getElementById('ovChannelChip');
     const chipText = document.getElementById('ovChannelChipText');
-    const connected = Boolean(shopify && shopify.configured);
-    chip.classList.toggle('warn', !connected);
-    chipText.textContent = connected ? 'Shopify — Connected' : 'Shopify — Not connected';
+    const anyConnected = withAdapters.some((c) => c.configured);
+    chip.classList.toggle('warn', !anyConnected);
+    chipText.textContent =
+      withAdapters.length > 0
+        ? withAdapters
+            .map((c) => {
+              if (!c.configured) return c.name + ' — Not connected';
+              return c.access === 'read_only' ? c.name + ' — Read only' : c.name + ' — Connected';
+            })
+            .join('  ·  ')
+        : 'No channel connected';
   }
 
   // One metric tile. `formattedValue` is a ready-to-show string, or null when the
@@ -1204,6 +1223,254 @@
       metricTile('Sessions / traffic', null, "Shopify's read-only Admin API does not expose this.")
     );
     grid.appendChild(metricTile('Conversion rate', null, "Shopify's read-only Admin API does not expose this."));
+  }
+
+  /* ---------- Etsy catalog ----------
+     RELAY ONLY, exactly like renderStoreMetrics above. Every number drawn here is a field
+     GET /store/metrics's `etsy` block already carried, and every "not available" line is
+     the SERVER'S own stated reason - this file never decides why something is missing and
+     never substitutes a zero for it.
+
+     SEPARATE BY CONSTRUCTION. Nothing in this function reads Shopify data, and nothing in
+     renderStoreMetrics reads Etsy data. The two sections cannot produce a combined figure
+     because neither ever sees the other's numbers. */
+  const OVERVIEW_ETSY_LISTING_LIMIT = 5;
+
+  function etsyListingRow(listing) {
+    const row = document.createElement('div');
+    row.className = 'etsy-listing-row';
+
+    const main = document.createElement('div');
+    main.className = 'etsy-listing-main';
+
+    const title = document.createElement('div');
+    title.className = 'etsy-listing-title';
+    title.textContent = listing.title || '(untitled listing)';
+    main.appendChild(title);
+
+    // The meta line names the channel explicitly on every row. Under the "All" filter this
+    // is what keeps an Etsy listing from reading as just another product.
+    const bits = ['Etsy'];
+    if (listing.listing_id !== null && listing.listing_id !== undefined) bits.push('#' + listing.listing_id);
+    if (listing.state) bits.push(listing.state);
+    if (listing.is_digital_product === true) bits.push('digital');
+    else if (listing.is_digital_product === false) bits.push('physical');
+    if (Array.isArray(listing.tags)) bits.push(listing.tags.length + ' tags');
+    if (listing.taxonomy_id !== null && listing.taxonomy_id !== undefined) bits.push('taxonomy ' + listing.taxonomy_id);
+    if (typeof listing.num_favorers === 'number') bits.push(listing.num_favorers + ' favourites');
+    if (typeof listing.views === 'number') bits.push(listing.views + ' views');
+
+    const meta = document.createElement('div');
+    meta.className = 'etsy-listing-meta';
+    meta.textContent = bits.join(' · ');
+    main.appendChild(meta);
+    row.appendChild(main);
+
+    // The compliance verdict the retrieval tool attached, shown with the listing rather
+    // than separately - the content is never presented without its verdict.
+    if (listing.compliance_status) {
+      const chip = document.createElement('span');
+      chip.className = 'status-chip ' + (listing.compliance_status === 'PASS' ? 'connected' : 'not-connected');
+      const missing = listing.missing_fact_count;
+      chip.textContent =
+        typeof missing === 'number' && missing > 0
+          ? listing.compliance_status + ' · ' + missing + ' unknown'
+          : listing.compliance_status;
+      row.appendChild(chip);
+    }
+
+    // The two read-only analysis triggers. Reuses the existing .activity-row-link button
+    // style rather than introducing a control of its own, and both run ANALYSIS ONLY -
+    // neither can change the Etsy listing, and the server has no Etsy write path to
+    // reach even if one were requested.
+    const actions = document.createElement('span');
+    actions.className = 'etsy-listing-actions';
+    [
+      { id: 'seo', label: 'SEO' },
+      { id: 'listing', label: 'Listing' },
+    ].forEach((action) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'activity-row-link';
+      btn.textContent = action.label + ' →';
+      btn.title = `Run a read-only ${action.label} analysis of this Etsy listing. Nothing is written to Etsy.`;
+      btn.addEventListener('click', () => runEtsyAnalysis(listing.listing_id, action.id, btn));
+      actions.appendChild(btn);
+    });
+    row.appendChild(actions);
+
+    return row;
+  }
+
+  // Triggers one read-only Etsy analysis and hands the result to the EXISTING History
+  // detail view (the same loadHistoryDetail an activity row's "View" already opens), so
+  // no second result viewer is built. The record is saved server-side with its channel,
+  // which is what makes it appear as an Etsy run in Activity and History.
+  async function runEtsyAnalysis(listingId, analysis, button) {
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Running…';
+    try {
+      const res = await apiFetch('/etsy/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ listing_id: listingId, analysis }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.run_id) {
+        // The server's own reason, verbatim - this page never guesses why a run failed.
+        button.textContent = 'Failed';
+        button.title = data.error || 'The analysis could not complete.';
+        return;
+      }
+      button.textContent = original;
+      // Reuses the existing History page and its existing detail loader.
+      selectPage('history');
+      loadHistoryDetail(data.run_id);
+    } catch (err) {
+      button.textContent = 'Failed';
+      button.title = 'Could not reach the server. Check that it is running.';
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function renderEtsyCatalog(etsy) {
+    const header = document.getElementById('etsyCatalogHeader');
+    const area = document.getElementById('etsyCatalogArea');
+    const shopEl = document.getElementById('etsyCatalogShop');
+    if (!header || !area) return;
+
+    // Not connected -> the section is not shown at all. An empty Etsy panel on a store
+    // that has no Etsy connection would imply an integration that is not there.
+    if (!etsy || !etsy.connected) {
+      header.dataset.etsyReady = 'false';
+      area.dataset.etsyReady = 'false';
+      header.hidden = true;
+      area.hidden = true;
+      return;
+    }
+    // Marks these sections as having real data, which is what lets applyChannelFilter
+    // show them. Without it the filter could un-hide an empty Etsy panel.
+    header.dataset.etsyReady = 'true';
+    area.dataset.etsyReady = 'true';
+    header.hidden = false;
+    area.hidden = false;
+    area.innerHTML = '';
+
+    // Shop identity. shop_id is not a secret - it appears in the public shop URL.
+    shopEl.textContent = etsy.shop
+      ? etsy.shop.shop_name
+        ? etsy.shop.shop_name + ' · #' + etsy.shop.shop_id
+        : '#' + etsy.shop.shop_id
+      : '';
+
+    const grid = document.createElement('div');
+    grid.className = 'metric-grid';
+    (etsy.metrics || []).forEach((metric) => {
+      // The SAME metricTile the Shopify grid uses: a null value renders the server's own
+      // reason text, so an unavailable Etsy metric can never appear as 0.
+      grid.appendChild(
+        metricTile(
+          metric.label,
+          metric.available && metric.value !== null && metric.value !== undefined ? String(metric.value) : null,
+          metric.available ? null : metric.reason
+        )
+      );
+    });
+    area.appendChild(grid);
+
+    const catalog = etsy.catalog || {};
+    const listings = Array.isArray(catalog.listings) ? catalog.listings : [];
+
+    if (listings.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'panel-empty';
+      empty.textContent = catalog.error
+        ? 'Etsy listings could not be read: ' + catalog.error
+        : 'No Etsy listings were returned for this request.';
+      area.appendChild(empty);
+    } else {
+      const listLabel = document.createElement('div');
+      listLabel.className = 'panel-note';
+      listLabel.textContent =
+        'Showing ' +
+        Math.min(listings.length, OVERVIEW_ETSY_LISTING_LIMIT) +
+        ' of ' +
+        listings.length +
+        ' listing(s) read this request' +
+        (catalog.aggregate_compliance_status ? ' · worst compliance verdict: ' + catalog.aggregate_compliance_status : '') +
+        '.';
+      area.appendChild(listLabel);
+      listings.slice(0, OVERVIEW_ETSY_LISTING_LIMIT).forEach((listing) => area.appendChild(etsyListingRow(listing)));
+    }
+
+    // Re-apply the current filter now that these sections carry data.
+    applyChannelFilter();
+
+    // The server's own reasons for what this read deliberately does not include, shown
+    // rather than left as an unexplained absence.
+    [catalog.inventory_reason, catalog.images_reason, etsy.publishing_note].forEach((text) => {
+      if (!text) return;
+      const note = document.createElement('div');
+      note.className = 'panel-note';
+      note.textContent = text;
+      area.appendChild(note);
+    });
+  }
+
+  /* ---------- Channel filter ----------
+     NARROWING ONLY. Choosing a channel hides the other channel's sections; it never
+     combines, joins, or re-labels data. "All" shows both, each under its own heading with
+     its own channel tag, so a figure is never ambiguous about which store it describes.
+
+     A pill is rendered only for a channel that is genuinely connected, so this control
+     cannot imply an integration that does not exist. With fewer than two connected
+     channels there is nothing to choose between and the row stays hidden entirely. */
+  let activeChannel = 'all';
+
+  function applyChannelFilter() {
+    document.querySelectorAll('[data-channel-section]').forEach((el) => {
+      const section = el.getAttribute('data-channel-section');
+      // The Etsy sections have their own connected/not-connected visibility, decided by
+      // renderEtsyCatalog. The filter must never un-hide a section that has no data.
+      if (section === 'etsy' && el.dataset.etsyReady !== 'true') return;
+      el.hidden = !(activeChannel === 'all' || activeChannel === section);
+    });
+  }
+
+  function renderChannelFilter(channels) {
+    const row = document.getElementById('channelFilterRow');
+    if (!row) return;
+    const connected = (channels || []).filter((c) => c.adapter_exists && c.configured);
+
+    if (connected.length < 2) {
+      row.hidden = true;
+      row.innerHTML = '';
+      activeChannel = 'all';
+      applyChannelFilter();
+      return;
+    }
+
+    row.hidden = false;
+    row.innerHTML = '';
+    const options = [{ id: 'all', name: 'All' }].concat(connected.map((c) => ({ id: c.id, name: c.name })));
+    options.forEach((option) => {
+      const pill = document.createElement('button');
+      pill.className = 'filter-pill';
+      pill.type = 'button';
+      pill.dataset.filter = option.id;
+      pill.setAttribute('aria-pressed', option.id === activeChannel ? 'true' : 'false');
+      pill.textContent = option.name;
+      pill.addEventListener('click', () => {
+        row.querySelectorAll('.filter-pill').forEach((p) => p.setAttribute('aria-pressed', 'false'));
+        pill.setAttribute('aria-pressed', 'true');
+        activeChannel = option.id;
+        applyChannelFilter();
+      });
+      row.appendChild(pill);
+    });
+    applyChannelFilter();
   }
 
   /* ---------- Performance charts ----------
@@ -1613,6 +1880,22 @@
     return chip;
   }
 
+  // The channel a run was explicitly about, for the meta line of an activity/run/history
+  // row. Returns null when the record carries no channel - which is every run saved
+  // before this field existed and every run whose trigger is not channel-scoped - so
+  // those rows render exactly as they always have. Never guessed from an objective's
+  // wording or a product title: a wrong channel label would attribute one store's work
+  // to another.
+  //
+  // Shopify runs read null today for that reason, and labelling them is a deferred,
+  // separately-scoped task - see agent/core/runHistoryStore.js's `channel` field for the
+  // full rationale. This function already handles 'shopify' the day such a run exists, so
+  // that task needs no change here.
+  function channelLabel(entry) {
+    if (!entry || !entry.channel) return null;
+    return entry.channel === 'etsy' ? 'Etsy' : entry.channel === 'shopify' ? 'Shopify' : entry.channel;
+  }
+
   // One activity/run row - shared by the Recent AI Activity and Recent Runs
   // panels below, both fed from the same GET /overview.activity list (a relay of
   // agent/core/runHistoryStore.js's own saved summaries). "View" reuses the
@@ -1638,7 +1921,9 @@
     main.appendChild(title);
     const meta = document.createElement('div');
     meta.className = 'activity-row-meta';
-    meta.textContent = kindLabel + ' · ' + formatWhen(entry.created_at);
+    // "Etsy · SEO · 3 minutes ago" when the run stated its channel; unchanged otherwise.
+    const channel = channelLabel(entry);
+    meta.textContent = (channel ? channel + ' · ' : '') + kindLabel + ' · ' + formatWhen(entry.created_at);
     main.appendChild(meta);
     row.appendChild(main);
 
@@ -1695,6 +1980,12 @@
       if (!c.adapter_exists) {
         chip.className = 'status-chip unavailable';
         chip.textContent = 'Not available';
+      } else if (c.configured && c.access === 'read_only') {
+        // A connection the server proved is READ-only says so on the chip. Labelling it
+        // plain "Connected" would let an owner reasonably assume the agent can publish
+        // there, which it deliberately cannot.
+        chip.className = 'status-chip read-only';
+        chip.textContent = 'Connected — Read only';
       } else if (c.configured) {
         chip.className = 'status-chip connected';
         chip.textContent = 'Connected';
@@ -2136,6 +2427,9 @@
       }
       renderOverviewBusiness(data.business, data.channels);
       renderChannels(data.channels);
+      // The filter is built from the SAME channel states the section above renders, so a
+      // pill can never exist for a channel the server did not report as connected.
+      renderChannelFilter(data.channels);
       renderGrowthStatus(data.growth || {});
 
       // Overview is a summary, so each list is capped here and the full record stays on
@@ -2173,11 +2467,13 @@
       renderPerformance(res.ok ? data.trends : null);
       renderFunnel(res.ok ? data.funnel : null);
       renderTopProducts(res.ok ? data.top_products : null);
+      renderEtsyCatalog(res.ok ? data.etsy : null);
     } catch (err) {
       renderStoreMetrics(null);
       renderPerformance(null);
       renderFunnel(null);
       renderTopProducts(null);
+      renderEtsyCatalog(null);
     }
   }
 

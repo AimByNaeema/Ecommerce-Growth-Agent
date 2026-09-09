@@ -203,6 +203,18 @@ const TEST_FILES = [
   'shopifyVendorCorrection.test.js',
   'shopifyInventoryCorrection.test.js',
   'shopifyCollectionMembership.test.js',
+  // The read-only Etsy phase. Every one of these mocks global.fetch - none reaches Etsy.
+  'etsyOAuth.test.js',
+  'etsyReadClient.test.js',
+  'etsyChannelIsolation.test.js',
+  'etsyPolicyRules.test.js',
+  'etsyIpRiskDetector.test.js',
+  'etsyComplianceInput.test.js',
+  'etsyShopDataTool.test.js',
+  'etsyListingDataTool.test.js',
+  'etsySecretRedaction.test.js',
+  'etsyReadOnlyEnforcement.test.js',
+  'etsyDashboardIntegration.test.js',
 ];
 
 function runAll() {
