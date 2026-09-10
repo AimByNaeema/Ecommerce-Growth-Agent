@@ -59,6 +59,7 @@ const SESSION_FIELDS = [
   { id: 'pending_items', title: 'Pending items', type: 'array', description: 'What the session is waiting on: { kind, detail, run_id }. kind is approval | information | none.' },
   { id: 'approvals_reference', title: 'Approvals reference', type: 'array', description: 'Run ids whose steps are gated in the existing approval system. The approval records themselves stay in approvals/ - never duplicated here.' },
   { id: 'next_actions', title: 'Next actions', type: 'array', description: 'What the user could do next: { id, title, basis }. Every entry states the fact that produced it.' },
+  { id: 'opportunity_workflows', title: 'Opportunity workflows', type: 'array', description: "One entry per market opportunity this session has prepared: { ref, product, state, compliance_status, channel, channel_reference, stages, approval_id, approval_status, missing_information, run_id, at }. State only - the draft itself stays in the run record, and the approval record stays in the approval system." },
   { id: 'final_result', title: 'Final result', type: 'object', description: "The session's settled outcome once complete, or null." },
   { id: 'run_refs', title: 'Run references', type: 'array', description: 'Run ids produced by this session, in order. The run records themselves live in agent/core/runHistoryStore.js and are never copied here.' },
   { id: 'limitations', title: 'Limitations', type: 'array', description: 'What this session did NOT establish, carried forward across turns.' },
@@ -86,6 +87,7 @@ function createEmptyCommandCenterSession(overrides = {}) {
     pending_items: [],
     approvals_reference: [],
     next_actions: [],
+    opportunity_workflows: [],
     final_result: null,
     run_refs: [],
     limitations: [],
@@ -124,7 +126,7 @@ function validateCommandCenterSessionShape(session) {
   if (session.channel !== null && !SESSION_CHANNELS.includes(session.channel)) {
     errors.push(`channel must be one of: shopify, etsy, multi_channel, or null (stated, never inferred).`);
   }
-  for (const key of ['messages', 'current_plan', 'specialist_tasks', 'specialist_results', 'decisions', 'pending_items', 'approvals_reference', 'next_actions', 'run_refs', 'limitations']) {
+  for (const key of ['messages', 'current_plan', 'specialist_tasks', 'specialist_results', 'decisions', 'pending_items', 'approvals_reference', 'next_actions', 'run_refs', 'limitations', 'opportunity_workflows']) {
     if (!Array.isArray(session[key])) errors.push(`${key} must be an array.`);
   }
   for (const [index, message] of (Array.isArray(session.messages) ? session.messages : []).entries()) {

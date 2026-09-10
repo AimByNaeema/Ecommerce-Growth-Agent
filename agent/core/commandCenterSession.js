@@ -34,6 +34,10 @@
 
 const orchestratorExecutionContract = require('./orchestratorExecutionContract');
 const { saveSession } = require('./commandCenterSessionStore');
+// The opportunity preparation sequence. It defines stages; the EXISTING growth workflow
+// engine runs them. This module still performs no dispatch of its own.
+const { prepareOpportunity } = require('./opportunityPreparationWorkflow');
+const runHistoryStore = require('./runHistoryStore');
 
 // How many prior results are offered to a turn as context. Bounded so a long session
 // cannot grow an unbounded objective string or an unbounded research_params payload.
@@ -49,6 +53,32 @@ const REFERENCE_PATTERNS = [
   /#\s*(\d{1,2})\b/i,
   /\b(?:number|no\.?|opportunity|option|result|item|candidate)\s*#?\s*(\d{1,2})\b/i,
 ];
+
+// "the first opportunity" means #1. Ordinal WORDS are matched separately from the numeric
+// patterns above because they need a following noun to count as a citation - "first" alone
+// ("first, check the stock") is an ordering word, not a reference to a result.
+const ORDINAL_WORDS = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth'];
+const ORDINAL_REFERENCE_PATTERN =
+  /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+(?:opportunity|option|result|item|candidate|one)\b/gi;
+
+// PREPARATION INTENT. "Prepare #1 for listing" is a different request from "tell me about
+// #1": it runs a sequence of specialists rather than one. Recognised by phrase shape and
+// ONLY when the message also cites a result, so a bare "prepare a marketing plan" is
+// untouched. Deterministic - no model call decides this.
+const PREPARATION_INTENT_PATTERN =
+  /\b(?:prepare|evaluate|validate|assess|work up|take .{0,12}forward)\b|\bready\s+(?:it|this|that)\s+for\b|\bfor\s+(?:listing|selling|sale)\b/i;
+
+// Asking to SEE something already produced. Never re-runs anything.
+const RECALL_INTENT_PATTERN =
+  /\b(?:show|see|view|display|open|what(?:'s| is|'re| are))\b[^.?!]{0,30}\b(?:draft|listing|seo|validation|approval|result|workflow|status)\b/i;
+
+function hasPreparationIntent(text) {
+  return typeof text === 'string' && PREPARATION_INTENT_PATTERN.test(text);
+}
+
+function hasRecallIntent(text) {
+  return typeof text === 'string' && RECALL_INTENT_PATTERN.test(text);
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -80,7 +110,39 @@ function extractReferences(text) {
       match = globalPattern.exec(text);
     }
   }
+  // Ordinal words, resolved against the same 1-based numbering.
+  const ordinalPattern = new RegExp(ORDINAL_REFERENCE_PATTERN.source, 'gi');
+  let ordinalMatch = ordinalPattern.exec(text);
+  while (ordinalMatch) {
+    const ref = ORDINAL_WORDS.indexOf(String(ordinalMatch[1]).toLowerCase()) + 1;
+    if (ref >= 1 && !found.includes(ref)) found.push(ref);
+    ordinalMatch = ordinalPattern.exec(text);
+  }
   return found;
+}
+
+// Reads one opportunity back out of a saved run record. The session stores only a
+// reference (run_id + rank), so the full record is the source of truth - nothing is
+// duplicated into session state.
+//
+// Matched by RANK first and by product name second: rank is what the user cited, and the
+// name is the fallback when a record's own numbering differs from the session's running
+// ref counter.
+function findOpportunityInRecord(record, ref, label) {
+  const plan = record && record.result && record.result.routing && Array.isArray(record.result.routing.plan)
+    ? record.result.routing.plan
+    : [];
+  for (const step of plan) {
+    const outputs = (step && step.outputs) || {};
+    const result = outputs.result || outputs;
+    const list = asArray(result && result.top_opportunities);
+    if (list.length === 0) continue;
+    const byName = label ? list.find((item) => item && item.product === label) : null;
+    if (byName) return byName;
+    const byRank = list.find((item) => item && item.rank === ref);
+    if (byRank) return byRank;
+  }
+  return null;
 }
 
 function findResult(session, ref) {
@@ -247,6 +309,14 @@ async function runSessionTurn(
     runChief = orchestratorExecutionContract.runOrchestratorContract,
     summarizeStep = null,
     saveRun = null,
+    // The server's own live approval array, so a request created here lands in the SAME
+    // list the Approval Center reads. Omitted -> a local array, and the request is still
+    // returned on the result.
+    approvalRequests = null,
+    // Both injectable ONLY so tests can drive the turn logic without spending tokens or
+    // touching disk; production passes neither.
+    runPreparation = prepareOpportunity,
+    loadRunRecord = runHistoryStore.getRunRecordById,
   } = {}
 ) {
   if (!session || typeof session !== 'object') throw new Error('runSessionTurn requires a session.');
@@ -268,6 +338,141 @@ async function runSessionTurn(
     session.updated_at = nowIso();
     saveSession(session, sessionDir ? { sessionDir } : undefined);
     return { session, runResult: null, clarification: resolution.clarification };
+  }
+
+  // --- RECALL: the user wants to SEE something this session already produced. -----------
+  // Reads stored state and spends nothing - no orchestrator call, no model call. This is
+  // what stops "show me the draft" from re-running the whole workflow.
+  if (hasRecallIntent(message) && asArray(session.opportunity_workflows).length > 0) {
+    const refs = extractReferences(message);
+    const wanted = refs.length > 0 ? refs[0] : null;
+    const workflow =
+      (wanted !== null
+        ? asArray(session.opportunity_workflows).find((w) => w.ref === wanted)
+        : asArray(session.opportunity_workflows)[asArray(session.opportunity_workflows).length - 1]) || null;
+    if (workflow) {
+      const text =
+        `Opportunity #${workflow.ref} (${workflow.product}) is at ${workflow.state}. ` +
+        `Compliance: ${workflow.compliance_status}. ` +
+        (workflow.approval_id ? `Approval ${workflow.approval_id} is ${workflow.approval_status}. ` : '') +
+        (asArray(workflow.missing_information).length > 0
+          ? `${workflow.missing_information.length} product fact(s) remain NEEDS_INFORMATION.`
+          : 'No product facts are outstanding.');
+      session.messages.push({ role: 'chief', text, at: nowIso(), run_id: workflow.run_id || null });
+      session.status = 'waiting_for_user';
+      session.updated_at = nowIso();
+      saveSession(session, sessionDir ? { sessionDir } : undefined);
+      return { session, runResult: null, recalled: workflow };
+    }
+  }
+
+  // --- PREPARE: run the opportunity preparation sequence for a resolved opportunity. ----
+  if (hasPreparationIntent(message) && resolution.resolved.length > 0) {
+    const target = resolution.resolved[0];
+    // The full opportunity lives in the run record; the session holds only a reference.
+    const record = target.run_id ? loadRunRecord(target.run_id) : null;
+    const opportunity = findOpportunityInRecord(record, target.ref, target.label);
+    if (!opportunity) {
+      const text =
+        `#${target.ref} ("${target.label}") is recorded in this session, but its full research result could not be read back, so nothing was prepared.`;
+      session.messages.push({ role: 'chief', text, at: nowIso(), run_id: null });
+      session.status = 'waiting_for_user';
+      session.limitations.push(text);
+      session.updated_at = nowIso();
+      saveSession(session, sessionDir ? { sessionDir } : undefined);
+      return { session, runResult: null, error: text };
+    }
+
+    let prepared;
+    try {
+      prepared = await runPreparation({
+        opportunity,
+        sessionId: session.session_id,
+        runId: target.run_id,
+        businessId,
+        approvalRequests,
+      });
+    } catch (err) {
+      const text = `Preparing #${target.ref} could not complete: ${err.message}`;
+      session.messages.push({ role: 'chief', text, at: nowIso(), run_id: null });
+      session.status = 'waiting_for_user';
+      session.limitations.push(text);
+      session.updated_at = nowIso();
+      saveSession(session, sessionDir ? { sessionDir } : undefined);
+      return { session, runResult: null, error: err.message };
+    }
+
+    // Workflow state lives on the session so a later turn can read it without re-running.
+    const entry = {
+      ref: target.ref,
+      product: prepared.opportunity.product,
+      state: prepared.state,
+      compliance_status: prepared.compliance ? prepared.compliance.status : null,
+      // The channel the OPPORTUNITY stated, never inferred here.
+      channel: prepared.opportunity.channel || null,
+      channel_reference: prepared.opportunity.channel_reference || null,
+      stages: Object.keys(prepared.stages || {}).reduce((acc, key) => {
+        acc[key] = prepared.stages[key] ? prepared.stages[key].status : null;
+        return acc;
+      }, {}),
+      approval_id: prepared.approval ? prepared.approval.id : null,
+      approval_status: prepared.approval ? prepared.approval.status : null,
+      missing_information: prepared.missing_information || [],
+      run_id: prepared.workflow_run_id || null,
+      at: nowIso(),
+    };
+    session.opportunity_workflows = asArray(session.opportunity_workflows)
+      .filter((w) => w.ref !== entry.ref)
+      .concat([entry]);
+
+    if (entry.run_id && !session.run_refs.includes(entry.run_id)) session.run_refs.push(entry.run_id);
+    if (prepared.approval && !session.approvals_reference.includes(entry.run_id || entry.approval_id)) {
+      session.approvals_reference.push(entry.run_id || entry.approval_id);
+    }
+    session.status = prepared.approval ? 'waiting_for_approval' : 'waiting_for_user';
+    session.pending_items = prepared.approval
+      ? [{ kind: 'approval', detail: `Listing draft for #${entry.ref} needs your decision before anything could be published.`, run_id: entry.run_id }]
+      : [];
+    for (const limitation of asArray(prepared.limitations)) {
+      if (!session.limitations.includes(limitation)) session.limitations.push(limitation);
+    }
+
+    const text =
+      `Opportunity #${entry.ref} (${entry.product}) is now at ${entry.state}. ` +
+      `Compliance returned ${entry.compliance_status}. ` +
+      (entry.approval_id
+        ? `Approval ${entry.approval_id} is pending your decision - nothing has been published anywhere.`
+        : 'No approval was requested.') +
+      (entry.missing_information.length > 0
+        ? ` ${entry.missing_information.length} product fact(s) are NEEDS_INFORMATION rather than guessed.`
+        : '');
+    session.messages.push({ role: 'chief', text, at: nowIso(), run_id: entry.run_id });
+    // Every next action states the fact that produced it, so none of them may claim a draft
+    // exists when the workflow stopped before writing one.
+    if (entry.state === 'COMPLIANCE_BLOCKED') {
+      session.next_actions = [
+        {
+          id: 'view_compliance',
+          title: `Show why #${entry.ref} was blocked`,
+          basis: `Compliance returned ${entry.compliance_status} for #${entry.ref}, so no listing draft was prepared.`,
+        },
+      ];
+    } else if (entry.state === 'NEEDS_INFORMATION') {
+      session.next_actions = [
+        {
+          id: 'supply_product_facts',
+          title: `Supply the missing product facts for #${entry.ref}`,
+          basis: `${entry.missing_information.length} product fact(s) are not established by the research, so no reviewable draft could be composed for #${entry.ref}.`,
+        },
+      ];
+    } else {
+      session.next_actions = [
+        { id: 'view_draft', title: `Show the draft for #${entry.ref}`, basis: `A listing draft was produced and stored for #${entry.ref}.` },
+      ];
+    }
+    session.updated_at = nowIso();
+    saveSession(session, sessionDir ? { sessionDir } : undefined);
+    return { session, runResult: null, prepared };
   }
 
   const effectiveResearchParams = buildSessionResearchParams(session, resolution.resolved, researchParams);
@@ -355,6 +560,9 @@ module.exports = {
   REFERENCE_PATTERNS,
   extractReferences,
   findResult,
+  findOpportunityInRecord,
+  hasPreparationIntent,
+  hasRecallIntent,
   resolveObjective,
   buildSessionResearchParams,
   recordResults,

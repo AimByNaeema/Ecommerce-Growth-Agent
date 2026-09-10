@@ -600,6 +600,59 @@ function extractOpportunities(record, summary) {
   return found;
 }
 
+// The catalogue-expansion research result carried inside one saved run record, if it has
+// one. RELAY ONLY: every value below is read straight out of what
+// workflows/customerMarketOpportunityWorkflow.js already produced and
+// agent/core/runHistoryStore.js already saved. Nothing is recomputed, re-ranked,
+// re-scored or filled in here, and no research is re-run - this reads a file on disk.
+//
+// WHY IT LIVES ON GET /overview. That route already loads every saved record locally to
+// build its specialist rollup and opportunity list, and it is contractually zero-network.
+// Surfacing the newest research result from the SAME pass costs one extra property read
+// per record. The alternative - having the browser fetch /history and then GET each
+// record until it finds one with opportunities - would be N round trips for data this
+// loop already holds.
+//
+// Returns null when the record carries no such result, which is the normal case for every
+// other kind of run.
+function extractMarketResearchResult(record, summary) {
+  const plan = record && record.result && record.result.routing && Array.isArray(record.result.routing.plan)
+    ? record.result.routing.plan
+    : [];
+  for (const step of plan) {
+    const outputs = step && step.outputs ? step.outputs : {};
+    const result = outputs.result || outputs;
+    if (!result || !Array.isArray(result.top_opportunities)) continue;
+    return {
+      available: true,
+      run_id: summary.run_id || null,
+      session_id: record.session_id || null,
+      objective: record.objective || null,
+      // The run's own saved status and the research result's own status are different
+      // facts (a run can succeed while the research reports 'partial'), so both are kept.
+      run_status: record.status || null,
+      research_status: result.status || null,
+      created_at: record.created_at || null,
+      // Verbatim. `candidate_count` is the real funnel; a missing key stays missing rather
+      // than becoming 0, so the dashboard can tell "measured zero" from "not reported".
+      candidate_count: result.candidate_count || null,
+      market_scope: result.market_scope || null,
+      research_summary: result.research_summary
+        ? {
+            verified_source_count: result.research_summary.verified_source_count,
+            sources_used: Array.isArray(result.research_summary.sources_used) ? result.research_summary.sources_used.length : null,
+            model_calls: result.research_summary.model_calls,
+            generated_at: result.research_summary.generated_at || null,
+          }
+        : null,
+      opportunities: result.top_opportunities,
+      excluded_count: Array.isArray(result.excluded_opportunities) ? result.excluded_opportunities.length : null,
+      limitations: Array.isArray(result.limitations) ? result.limitations : [],
+    };
+  }
+  return null;
+}
+
 // Counts the approvals a saved record genuinely recorded, split by whether a human
 // decision is still outstanding. Reads only the approval objects
 // agent/core/executionState.js already stores on each step - never a second approval
@@ -2216,6 +2269,9 @@ function createApp() {
     }
 
     const specialists = buildSpecialistRollup(summaries);
+    // summaries are newest-first (listRunRecordSummaries sorts by created_at), so the
+    // FIRST record carrying a research result is the latest one. Nothing re-runs.
+    let marketResearch = null;
     const opportunities = [];
     const approvals = { pending: 0, recorded: 0 };
 
@@ -2235,6 +2291,7 @@ function createApp() {
       loadedRecords.push(record);
 
       opportunities.push(...extractOpportunities(record, summary));
+      if (!marketResearch) marketResearch = extractMarketResearchResult(record, summary);
 
       const recordApprovals = countRecordApprovals(record);
       approvals.pending += recordApprovals.pending;
@@ -2288,6 +2345,16 @@ function createApp() {
         last_run_at: summaries.length > 0 ? summaries[0].created_at || null : null,
       },
       opportunities: opportunities.slice(0, OVERVIEW_OPPORTUNITY_LIMIT),
+      // The latest saved catalogue-expansion research, relayed verbatim, or an honest
+      // unavailable with the reason. Never triggers research - see
+      // extractMarketResearchResult's own header.
+      market_research:
+        marketResearch || {
+          available: false,
+          reason: historyReadable
+            ? 'No market research run yet.'
+            : 'Saved run history could not be read, so it is unknown whether market research has been run.',
+        },
       ai_impact: aiImpact,
       next_actions: nextActions,
       orchestrator,

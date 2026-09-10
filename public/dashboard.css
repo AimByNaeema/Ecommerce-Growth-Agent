@@ -1243,3 +1243,121 @@
     }
     .section-row-right { gap: 8px; }
   }
+
+  /* ============ Market opportunities ============
+     Reuses the existing panel-card / section-label / status-chip vocabulary rather than
+     introducing a second visual system. Sized to stay compact on Overview (top 3) and to
+     stay readable at 360px, where the signal grid collapses to one column and text wraps
+     rather than shrinking. */
+  .market-opportunity { padding: 14px 16px; margin-bottom: 12px; }
+
+  .market-opportunity-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .market-opportunity-title {
+    color: var(--ink); font-weight: 600; font-size: 14px; line-height: 1.4;
+    /* Wraps rather than truncating: an opportunity name the reader cannot finish is
+       worse than one that takes two lines. */
+    min-width: 0; overflow-wrap: anywhere;
+  }
+  .market-opportunity-market {
+    font-size: 11px; color: var(--ink-faint); margin-top: 2px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .market-opportunity-fit {
+    font-size: 12.5px; color: var(--ink-soft); line-height: 1.55; margin-top: 8px;
+  }
+  .market-opportunity-scores {
+    font-size: 11.5px; color: var(--ink-faint); margin-top: 10px; line-height: 1.5;
+  }
+
+  .market-signal-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 10px; margin-top: 12px;
+  }
+  .market-signal {
+    background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: 10px; padding: 8px 10px; min-width: 0;
+  }
+  .market-signal-label {
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--ink-faint);
+  }
+  .market-signal-value {
+    font-size: 12.5px; color: var(--ink); margin-top: 4px; line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  /* Same treatment the store metric tiles already give an absent value, so "Unavailable"
+     reads consistently across the dashboard and can never be mistaken for a measurement. */
+  .market-signal-value.unavailable { color: var(--ink-faint); font-style: italic; }
+  .market-signal-grade {
+    font-size: 10px; color: var(--ink-faint); margin-top: 3px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+
+  .market-evidence-row {
+    font-size: 12px; color: var(--ink-soft); padding: 6px 0;
+    border-bottom: 1px solid var(--border); line-height: 1.5; overflow-wrap: anywhere;
+  }
+  .market-evidence-row:last-child { border-bottom: none; }
+  .market-evidence-row a { color: var(--accent); text-decoration: none; }
+  .market-evidence-row a:hover { text-decoration: underline; }
+  .market-evidence-meta { color: var(--ink-faint); font-size: 11px; }
+
+  @media (max-width: 420px) {
+    /* One column, full-width signals - readable rather than four crushed cells. */
+    .market-signal-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ============ Opportunity preparation progress ============
+     The six-step strip on the Chief Orchestrator page: Opportunity -> Validation ->
+     Compliance -> SEO -> Listing draft -> Approval. Reuses panel-card, status-chip and
+     section-channel-tag rather than introducing a second visual system.
+
+     There is deliberately no publish/apply control styled here, because none exists: the
+     workflow ends at a pending human approval. */
+  .workflow-card { padding: 14px 16px; margin-bottom: 12px; }
+
+  .workflow-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .workflow-title {
+    color: var(--ink); font-weight: 600; font-size: 14px; line-height: 1.4;
+    min-width: 0; overflow-wrap: anywhere;
+  }
+
+  .workflow-steps {
+    display: flex; align-items: flex-start; flex-wrap: wrap;
+    gap: 6px 8px; margin-top: 12px;
+  }
+  .workflow-step { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .workflow-step-name {
+    font-size: 10px; color: var(--ink-faint);
+    text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;
+  }
+  /* Same chip shape as .status-chip, scoped so a step value never has to borrow a class
+     whose meaning it does not carry. */
+  .workflow-step-value {
+    display: inline-block; padding: 3px 8px; border-radius: 999px;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; white-space: nowrap;
+  }
+  .workflow-step-value.ok { background: var(--growth-soft); color: var(--growth); }
+  .workflow-step-value.warn { background: var(--warn-soft); color: var(--warn); }
+  .workflow-step-value.error { background: var(--danger-soft); color: var(--danger); }
+  .workflow-step-value.idle {
+    background: var(--surface-raised); color: var(--ink-faint); border: 1px solid var(--border);
+  }
+
+  .workflow-arrow {
+    color: var(--ink-faint); font-size: 12px; align-self: flex-end; padding-bottom: 4px;
+  }
+
+  .workflow-readonly { margin-top: 10px; color: var(--ink-soft); }
+
+  @media (max-width: 560px) {
+    /* The arrows stop earning their space once the strip wraps to several lines. */
+    .workflow-arrow { display: none; }
+    .workflow-steps { gap: 8px 14px; }
+  }

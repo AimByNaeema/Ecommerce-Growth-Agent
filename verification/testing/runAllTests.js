@@ -218,6 +218,8 @@ const TEST_FILES = [
   'customerMarketOpportunity.test.js',
   'commandCenterSession.test.js',
   'catalogueExpansionRouting.test.js',
+  'marketOpportunityDashboard.test.js',
+  'opportunityPreparationWorkflow.test.js',
 ];
 
 function runAll() {

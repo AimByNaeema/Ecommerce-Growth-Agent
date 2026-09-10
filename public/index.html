@@ -158,6 +158,16 @@
       </div>
       <div id="opportunityListArea"><div class="panel-card panel-empty">Loading…</div></div>
 
+      <!-- Top market opportunities: the newest saved catalogue-expansion research,
+           capped at 3 so Overview stays an executive summary. The full list lives in the
+           existing History detail view - no new page. This section READS a saved result;
+           opening the dashboard never runs research. -->
+      <div class="section-row" id="marketOpportunityHeader">
+        <div class="section-label">Top market opportunities <span class="section-channel-tag" id="marketOpportunityScopeTag" hidden></span></div>
+        <button class="section-link" id="viewAllMarketOpportunitiesLink" type="button" hidden>View all →</button>
+      </div>
+      <div id="marketOpportunityArea"><div class="panel-card panel-empty">Loading…</div></div>
+
       <!-- Next best actions (top 3 only) -->
       <div class="section-label">Next best actions</div>
       <div id="nextActionsArea"><div class="panel-card panel-empty">Loading…</div></div>
@@ -298,6 +308,12 @@
         <button class="run-btn" id="chiefRunBtn" type="button">Ask the Chief</button>
         <span class="run-hint" id="chiefRunHint"></span>
       </div>
+
+      <!-- Opportunity preparation progress. Rendered ONLY from session.opportunity_workflows,
+           which is written from real stage outcomes - this area shows no stage that did not
+           actually run. There is deliberately no Publish button anywhere in it: this
+           workflow stops at a human approval and reaches no marketplace. -->
+      <div id="opportunityWorkflowArea" hidden></div>
 
       <!-- What this session can do next, and what it is waiting on. Each entry names the
            fact that produced it - never an invented suggestion. -->

@@ -177,6 +177,10 @@ function buildPausedResponse(ctx, pendingApproval, nextStageIndex) {
     usage_summary: summarizeUsage(ctx.runUsageLedger),
     _resumeState: {
       nextStageIndex,
+      // THIS run's stage list travels with the pause. Without it a paused non-default
+      // sequence would resume into the growth workflow's own stages - running the wrong
+      // specialists against a plan that was never theirs.
+      stages: ctx.stages || null,
       stageInputs: ctx.stageInputs,
       sharedProductIdentity: ctx.sharedProductIdentity,
       runId: ctx.runId,
@@ -253,8 +257,16 @@ function buildStoppedResponse(ctx) {
 // stage 0) and resumeGrowthWorkflow (from wherever it left off), so the stage-running
 // logic exists in exactly one place.
 async function executeStagesFrom(startIndex, ctx) {
-  for (let i = startIndex; i < STAGE_DEFINITIONS.length; i += 1) {
-    const stageDef = STAGE_DEFINITIONS[i];
+  // ctx.stages is THIS run's stage list. It defaults to STAGE_DEFINITIONS, so the growth
+  // workflow's own behaviour is unchanged; a caller may supply a different ordered list to
+  // run a different named sequence through this same engine rather than writing a second
+  // one (CLAUDE.md rule 4 - see agent/core/opportunityPreparationWorkflow.js, which
+  // defines the opportunity -> validation -> SEO -> listing sequence and nothing else).
+  // Every stage still executes through buildPlanStep with the same trackers, approval
+  // gating, audit and usage accounting - this parameterises WHICH stages run, never HOW.
+  const stages = Array.isArray(ctx.stages) && ctx.stages.length > 0 ? ctx.stages : STAGE_DEFINITIONS;
+  for (let i = startIndex; i < stages.length; i += 1) {
+    const stageDef = stages[i];
     const target = buildSpecialistTarget(stageDef.specialistId);
     const explicitParams = ctx.stageInputs[stageDef.key] || null;
 
@@ -310,11 +322,13 @@ async function executeStagesFrom(startIndex, ctx) {
 // analytics, optimization } map of caller-supplied researchParams per stage - genuine
 // business decisions (which markets, which product, which calendar date/platform)
 // this file never invents. See STAGE_KEYS for the exact accepted keys.
-async function runGrowthWorkflow(businessId = null, stageInputs = {}) {
-  const runId = `growth-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+async function runGrowthWorkflow(businessId = null, stageInputs = {}, { stages = null, runIdPrefix = 'growth-run' } = {}) {
+  const runId = `${runIdPrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const ctx = {
     runId,
     businessId,
+    // null here means "the growth workflow's own 8 stages" - the exact prior behaviour.
+    stages: stages || null,
     stageInputs: stageInputs || {},
     sharedProductIdentity: null,
     plan: [],
@@ -341,6 +355,7 @@ async function resumeGrowthWorkflow(decidedApprovalRequest, pausedWorkflowState)
   const ctx = {
     runId: pausedWorkflowState.runId,
     businessId: pausedWorkflowState.businessId,
+    stages: pausedWorkflowState.stages || null,
     stageInputs: pausedWorkflowState.stageInputs || {},
     sharedProductIdentity: pausedWorkflowState.sharedProductIdentity || null,
     plan: pausedWorkflowState.plan,
@@ -365,7 +380,11 @@ async function resumeGrowthWorkflow(decidedApprovalRequest, pausedWorkflowState)
   const pausedStep = ctx.plan[pausedStageIndex];
   ctx.plan[pausedStageIndex] = reviseStepAfterResume(pausedStep, resumedOutcome);
 
-  const resumedStageDef = STAGE_DEFINITIONS[pausedStageIndex];
+  const resumedStages =
+    Array.isArray(pausedWorkflowState.stages) && pausedWorkflowState.stages.length > 0
+      ? pausedWorkflowState.stages
+      : STAGE_DEFINITIONS;
+  const resumedStageDef = resumedStages[pausedStageIndex];
   if (resumedStageDef && resumedStageDef.key === 'product' && resumedOutcome.status === 'success' && resumedOutcome.data) {
     const output = resumedOutcome.data.result || null;
     if (output && isNonEmptyString(output.product_identity)) {

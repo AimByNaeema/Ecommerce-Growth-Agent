@@ -839,6 +839,123 @@
     } else {
       nextActions.hidden = true;
     }
+
+    renderOpportunityWorkflows();
+  }
+
+  /* Opportunity preparation progress, rendered ONLY from session.opportunity_workflows.
+     Every step below shows the real recorded outcome; a stage that did not run shows
+     "not run", never a tick. There is no Publish control here and there is no code path
+     to one: the workflow ends at a pending human approval (see
+     agent/core/opportunityPreparationWorkflow.js, which has no PUBLISH_AUTHORIZED state). */
+  // Maps one recorded workflow entry onto the six display steps. Returns the REAL value for
+  // each - never a derived "must have passed because a later step ran".
+  function workflowStepValues(entry) {
+    var stages = entry.stages || {};
+    return [
+      { label: 'Opportunity', value: '#' + entry.ref, state: 'done' },
+      { label: 'Validation', value: stages.validation || 'not run', state: stages.validation || 'none' },
+      { label: 'Compliance', value: entry.compliance_status || 'not run', state: entry.compliance_status || 'none' },
+      { label: 'SEO', value: stages.seo || 'not run', state: stages.seo || 'none' },
+      { label: 'Listing draft', value: stages.listing || 'not run', state: stages.listing || 'none' },
+      {
+        label: 'Approval',
+        value: entry.approval_id ? entry.approval_status || 'pending' : 'not requested',
+        state: entry.approval_id ? entry.approval_status || 'pending' : 'none',
+      },
+    ];
+  }
+
+  function renderOpportunityWorkflows() {
+    var area = document.getElementById('opportunityWorkflowArea');
+    if (!area) return;
+    var workflows = (currentSession && currentSession.opportunity_workflows) || [];
+    if (workflows.length === 0) {
+      area.hidden = true;
+      area.innerHTML = '';
+      return;
+    }
+
+    area.hidden = false;
+    area.innerHTML = '';
+    workflows.forEach(function (entry) {
+      var card = document.createElement('div');
+      card.className = 'panel-card workflow-card';
+
+      var head = document.createElement('div');
+      head.className = 'workflow-head';
+      var title = document.createElement('span');
+      title.className = 'workflow-title';
+      title.textContent = '#' + entry.ref + '  ' + (entry.product || 'Opportunity');
+      head.appendChild(title);
+      var state = document.createElement('span');
+      state.className = 'status-chip ' + workflowStateClass(entry.state);
+      state.textContent = String(entry.state || '').replace(/_/g, ' ');
+      head.appendChild(state);
+      // The channel is shown only when the record STATED one - never inferred, and never
+      // defaulted to Shopify.
+      if (entry.channel) {
+        var chan = document.createElement('span');
+        chan.className = 'section-channel-tag';
+        chan.textContent = entry.channel;
+        head.appendChild(chan);
+      }
+      card.appendChild(head);
+
+      var steps = document.createElement('div');
+      steps.className = 'workflow-steps';
+      workflowStepValues(entry).forEach(function (step, index) {
+        if (index > 0) {
+          var arrow = document.createElement('span');
+          arrow.className = 'workflow-arrow';
+          arrow.textContent = '→';
+          steps.appendChild(arrow);
+        }
+        var cell = document.createElement('span');
+        cell.className = 'workflow-step';
+        var name = document.createElement('span');
+        name.className = 'workflow-step-name';
+        name.textContent = step.label;
+        var val = document.createElement('span');
+        val.className = 'workflow-step-value ' + workflowStateClass(step.state);
+        val.textContent = step.value;
+        cell.appendChild(name);
+        cell.appendChild(val);
+        steps.appendChild(cell);
+      });
+      card.appendChild(steps);
+
+      // Etsy is read-only in this project. Said plainly, on the card, so nobody waits for a
+      // Publish control that does not and will not exist here.
+      if (entry.channel === 'etsy') {
+        var note = document.createElement('div');
+        note.className = 'panel-note workflow-readonly';
+        note.textContent = 'Read-only — publishing unavailable. This draft can be reviewed and approved, but it cannot be published to Etsy from this project.';
+        card.appendChild(note);
+      }
+
+      // What the research did not establish, named rather than filled in.
+      var missing = entry.missing_information || [];
+      if (missing.length > 0) {
+        var miss = document.createElement('div');
+        miss.className = 'panel-note';
+        miss.textContent =
+          missing.length + ' product fact(s) not established by the research, reported rather than guessed: ' + missing.join(', ') + '.';
+        card.appendChild(miss);
+      }
+
+      area.appendChild(card);
+    });
+  }
+
+  // Reuses the dashboard's existing status-chip vocabulary. An unrecognised value gets the
+  // neutral class rather than being coerced into "ok".
+  function workflowStateClass(value) {
+    var v = String(value || '').toLowerCase();
+    if (v === 'complete' || v === 'pass' || v === 'done' || v === 'approved') return 'ok';
+    if (v === 'block' || v === 'compliance_blocked' || v === 'failed' || v === 'rejected') return 'error';
+    if (v === 'review' || v === 'blocked' || v === 'needs_information' || v === 'awaiting_approval' || v === 'pending') return 'warn';
+    return 'idle';
   }
 
   async function loadSessionList() {
@@ -1226,6 +1343,12 @@
     }
 
     container.appendChild(card);
+
+    // A saved catalogue-expansion run gets its FULL opportunity list rendered here, in the
+    // EXISTING History detail area, beneath the run card. This is the "up to 10" surface:
+    // it shows exactly as many as the research supported and is never padded. Any other
+    // kind of run is unaffected - the helper returns false and adds nothing.
+    renderFullMarketOpportunities(record, container);
   }
 
   /* ==========================================================================
@@ -1956,6 +2079,363 @@
   // growth_opportunity_drafts + each specialist's own recommendations). No
   // ranking or scoring happens here; items are shown in the order the server
   // returned them.
+
+  /* ---------- Top market opportunities ----------
+     RELAY ONLY. Every value drawn here comes from GET /overview's `market_research`
+     block, which server.js read straight out of a SAVED run record. This file computes no
+     score, re-ranks nothing, derives no trend, and calculates no customer fit - all of
+     that already happened in the research pipeline and is displayed as it was recorded.
+
+     OPENING THE DASHBOARD NEVER RUNS RESEARCH. There is no fetch here beyond the
+     /overview call the page already made; if no research has been saved, the section says
+     so rather than starting one.
+
+     NULL IS NOT ZERO. A metric the research reported as null renders "Unavailable" with
+     the reason the backend gave. A real measured 0 renders as 0. */
+  const OVERVIEW_MARKET_OPPORTUNITY_LIMIT = 3;
+  let latestMarketResearch = null;
+
+  // A signal block ({metric, value, unit, grade, assessment, ...}) as one readable line.
+  // A number survives only when the research kept one; otherwise its own assessment is
+  // shown, and failing that an explicit "Unavailable".
+  function marketSignalText(signal) {
+    if (!signal || typeof signal !== 'object') return 'Unavailable';
+    if (signal.value !== null && signal.value !== undefined) {
+      return String(signal.value) + (signal.unit ? ' ' + signal.unit : '');
+    }
+    if (signal.assessment) return signal.assessment;
+    return 'Unavailable';
+  }
+
+  // The grade the research assigned (measured / estimated / derived / inferred / unknown),
+  // shown alongside a value so a characterisation can never read as a measurement.
+  function marketGradeText(signal) {
+    return signal && signal.grade ? signal.grade : null;
+  }
+
+  function marketComplianceChip(compliance) {
+    const status = compliance && compliance.status ? compliance.status : null;
+    const chip = document.createElement('span');
+    // PASS reads as connected/green; REVIEW and BLOCK deliberately do NOT - a REVIEW is
+    // never presented as cleared, and a BLOCK never as recommended.
+    chip.className = 'status-chip ' + (status === 'PASS' ? 'connected' : status === 'BLOCK' ? 'error' : 'not-connected');
+    chip.textContent = status ? (status === 'REVIEW' ? 'REVIEW — needs a human' : status) : 'No verdict';
+    return chip;
+  }
+
+  // One opportunity. `compact` drops the evidence/why-this-fits detail so Overview stays
+  // an executive summary; the History detail view renders the full form.
+  function marketOpportunityCard(opportunity, compact) {
+    const card = document.createElement('div');
+    card.className = 'panel-card market-opportunity';
+
+    const head = document.createElement('div');
+    head.className = 'market-opportunity-head';
+    const name = document.createElement('div');
+    name.className = 'market-opportunity-title';
+    name.textContent = '#' + opportunity.rank + '  ' + (opportunity.product || '(unnamed opportunity)');
+    head.appendChild(name);
+    head.appendChild(marketComplianceChip(opportunity.compliance));
+    card.appendChild(head);
+
+    if (opportunity.market) {
+      const market = document.createElement('div');
+      market.className = 'market-opportunity-market';
+      market.textContent = opportunity.market;
+      card.appendChild(market);
+    }
+
+    if (opportunity.customer_fit_reason) {
+      const fit = document.createElement('div');
+      fit.className = 'market-opportunity-fit';
+      fit.textContent = opportunity.customer_fit_reason;
+      card.appendChild(fit);
+    }
+
+    // The four assessments, each with the research's own grade. Nothing is inferred here -
+    // an unavailable metric says so.
+    const grid = document.createElement('div');
+    grid.className = 'market-signal-grid';
+    [
+      ['Demand', opportunity.demand],
+      ['Competition', opportunity.competition],
+      ['Trend', opportunity.trend],
+      ['Commercial', opportunity.commercial],
+    ].forEach(function (pair) {
+      const label = pair[0];
+      const signal = pair[1];
+      const cell = document.createElement('div');
+      cell.className = 'market-signal';
+      const lab = document.createElement('div');
+      lab.className = 'market-signal-label';
+      lab.textContent = label;
+      const val = document.createElement('div');
+      val.className = 'market-signal-value';
+      // Trend carries its own classification vocabulary, used verbatim - "seasonal" is
+      // never shown as "growing", and "unknown" is never shown as "stable".
+      val.textContent = label === 'Trend'
+        ? (signal && signal.classification ? signal.classification : 'unknown')
+        : marketSignalText(signal);
+      if (val.textContent === 'Unavailable') val.classList.add('unavailable');
+      cell.appendChild(lab);
+      cell.appendChild(val);
+      const grade = marketGradeText(signal);
+      if (grade) {
+        const g = document.createElement('div');
+        g.className = 'market-signal-grade';
+        g.textContent = grade;
+        cell.appendChild(g);
+      }
+      grid.appendChild(cell);
+    });
+    card.appendChild(grid);
+
+    const scores = opportunity.scores || {};
+    const scoreLine = document.createElement('div');
+    scoreLine.className = 'market-opportunity-scores';
+    const bits = [];
+    if (typeof scores.rank_score === 'number') bits.push('Rank score ' + scores.rank_score);
+    if (typeof scores.customer_fit === 'number') bits.push('Customer fit ' + scores.customer_fit);
+    if (typeof scores.evidence_coverage === 'number') bits.push('Evidence coverage ' + scores.evidence_coverage);
+    if (opportunity.confidence) bits.push('Confidence: ' + opportunity.confidence);
+    scoreLine.textContent = bits.join(' · ');
+    card.appendChild(scoreLine);
+
+    // The research's own statement of what its ranking means, verbatim - so the number
+    // above can never be read as a sales or profit prediction.
+    if (scores.rank_basis) {
+      const basis = document.createElement('div');
+      basis.className = 'panel-note';
+      basis.textContent = scores.rank_basis;
+      card.appendChild(basis);
+    }
+
+    if (compact) return card;
+
+    // --- full form only: why this fits, and the sources ---
+    const matched = scores.matched_terms || {};
+    const reasons = [];
+    (matched.primary_market || []).forEach(function (t) { reasons.push('In this business’s primary market: ' + t); });
+    (matched.related_market || []).forEach(function (t) { reasons.push('Overlaps a category it already sells: ' + t); });
+    (matched.buyer_intent || []).forEach(function (t) { reasons.push('Shares a recurring catalogue term: ' + t); });
+    if (reasons.length > 0) {
+      const why = document.createElement('details');
+      why.className = 'result-details';
+      const whyLabel = document.createElement('summary');
+      whyLabel.textContent = 'Why this fits (' + reasons.length + ')';
+      why.appendChild(whyLabel);
+      reasons.forEach(function (reason) {
+        const row = document.createElement('div');
+        row.className = 'market-evidence-row';
+        row.textContent = reason;
+        why.appendChild(row);
+      });
+      card.appendChild(why);
+    }
+
+    // Sources: only URLs the research actually recorded. None are constructed here.
+    const evidence = Array.isArray(opportunity.evidence) ? opportunity.evidence : [];
+    const urls = [];
+    evidence.forEach(function (item) {
+      if (item && item.source_url && urls.indexOf(item.source_url) === -1) urls.push(item.source_url);
+    });
+    if (urls.length > 0) {
+      const sources = document.createElement('details');
+      sources.className = 'result-details';
+      const sourcesLabel = document.createElement('summary');
+      sourcesLabel.textContent = 'Sources (' + urls.length + ')';
+      sources.appendChild(sourcesLabel);
+      evidence.forEach(function (item) {
+        if (!item || !item.source_url) return;
+        const row = document.createElement('div');
+        row.className = 'market-evidence-row';
+        const link = document.createElement('a');
+        link.href = item.source_url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = item.source_url;
+        const meta = document.createElement('span');
+        meta.className = 'market-evidence-meta';
+        const metaBits = [];
+        if (item.metric) metaBits.push(item.metric);
+        if (item.grade) metaBits.push(item.grade);
+        if (item.retrieved_at) metaBits.push(new Date(item.retrieved_at).toLocaleString());
+        meta.textContent = metaBits.length > 0 ? '  ' + metaBits.join(' · ') : '';
+        row.appendChild(link);
+        row.appendChild(meta);
+        sources.appendChild(row);
+      });
+      card.appendChild(sources);
+    } else {
+      const none = document.createElement('div');
+      none.className = 'panel-note';
+      none.textContent = 'No source URL was recorded for this opportunity.';
+      card.appendChild(none);
+    }
+
+    return card;
+  }
+
+  // The research funnel and provenance, as real counts. A count the result did not carry
+  // renders "Unavailable" - never 0, because a measured zero and a missing figure are
+  // different facts.
+  function marketResearchSummaryCard(research) {
+    const card = document.createElement('div');
+    card.className = 'panel-card';
+
+    const counts = research.candidate_count || null;
+    const summary = research.research_summary || null;
+    const scope = research.market_scope || null;
+    const evidenced = (research.opportunities || []).filter(function (o) {
+      return Array.isArray(o.evidence) && o.evidence.length > 0;
+    }).length;
+
+    const grid = document.createElement('div');
+    grid.className = 'market-signal-grid';
+    [
+      ['Candidates discovered', counts ? counts.discovered : undefined],
+      ['Unique candidates', counts ? counts.after_deduplication : undefined],
+      ['Eligible after compliance', counts ? counts.compliance_eligible : undefined],
+      ['Ranked', counts ? counts.ranked : undefined],
+      ['Results returned', (research.opportunities || []).length],
+      ['Evidence-backed', evidenced],
+      ['Verified sources', summary ? summary.verified_source_count : undefined],
+    ].forEach(function (pair) {
+      const cell = document.createElement('div');
+      cell.className = 'market-signal';
+      const lab = document.createElement('div');
+      lab.className = 'market-signal-label';
+      lab.textContent = pair[0];
+      const val = document.createElement('div');
+      val.className = 'market-signal-value';
+      // typeof check, NOT truthiness - a genuine 0 must display as 0.
+      if (typeof pair[1] === 'number') {
+        val.textContent = String(pair[1]);
+      } else {
+        val.textContent = 'Unavailable';
+        val.classList.add('unavailable');
+      }
+      cell.appendChild(lab);
+      cell.appendChild(val);
+      grid.appendChild(cell);
+    });
+    card.appendChild(grid);
+
+    const meta = document.createElement('div');
+    meta.className = 'panel-note';
+    const metaBits = [];
+    if (scope && scope.primary_market) metaBits.push('Market scope: ' + scope.primary_market);
+    if (scope && Array.isArray(scope.channels) && scope.channels.length > 0) {
+      // The channels the customer CONTEXT came from, exactly as the research recorded
+      // them. Never a claim that an opportunity belongs to a channel.
+      metaBits.push('Catalogue context: ' + scope.channels.join(' + '));
+    }
+    const when = (summary && summary.generated_at) || research.created_at;
+    metaBits.push(when ? 'Last research: ' + new Date(when).toLocaleString() : 'Last research: Unavailable');
+    meta.textContent = metaBits.join('  ·  ');
+    card.appendChild(meta);
+
+    (research.limitations || []).forEach(function (limitation) {
+      const row = document.createElement('div');
+      row.className = 'panel-note';
+      row.textContent = limitation;
+      card.appendChild(row);
+    });
+
+    return card;
+  }
+
+  function renderMarketOpportunities(research) {
+    const area = document.getElementById('marketOpportunityArea');
+    const link = document.getElementById('viewAllMarketOpportunitiesLink');
+    const scopeTag = document.getElementById('marketOpportunityScopeTag');
+    if (!area) return;
+    area.innerHTML = '';
+    latestMarketResearch = research && research.available ? research : null;
+
+    if (!research || !research.available) {
+      const empty = document.createElement('div');
+      empty.className = 'panel-card panel-empty';
+      // The backend's own reason, verbatim.
+      empty.textContent = (research && research.reason) || 'No market research run yet.';
+      area.appendChild(empty);
+      if (link) link.hidden = true;
+      if (scopeTag) scopeTag.hidden = true;
+      return;
+    }
+
+    const opportunities = Array.isArray(research.opportunities) ? research.opportunities : [];
+
+    if (scopeTag && research.market_scope && research.market_scope.primary_market) {
+      scopeTag.hidden = false;
+      scopeTag.textContent = research.market_scope.primary_market;
+    } else if (scopeTag) {
+      scopeTag.hidden = true;
+    }
+
+    const status = document.createElement('div');
+    status.className = 'panel-note';
+    status.textContent = opportunities.length === 0
+      ? 'Research ' + (research.research_status || 'completed') + ' — no qualifying opportunities were supported by the available evidence.'
+      : 'Research ' + (research.research_status || 'completed') + ' — ' + opportunities.length + ' opportunit' + (opportunities.length === 1 ? 'y' : 'ies') + ' identified.';
+    area.appendChild(status);
+
+    if (opportunities.length === 0) {
+      area.appendChild(marketResearchSummaryCard(research));
+      if (link) link.hidden = true;
+      return;
+    }
+
+    opportunities.slice(0, OVERVIEW_MARKET_OPPORTUNITY_LIMIT).forEach(function (opportunity) {
+      area.appendChild(marketOpportunityCard(opportunity, true));
+    });
+    area.appendChild(marketResearchSummaryCard(research));
+
+    // "View all" opens the EXISTING History detail view for this run - no new page, and
+    // no second fetch of the research itself.
+    if (link) {
+      link.hidden = opportunities.length <= OVERVIEW_MARKET_OPPORTUNITY_LIMIT || !research.run_id;
+      link.textContent = 'View all ' + opportunities.length + ' →';
+    }
+  }
+
+  // The full list, rendered into the EXISTING History detail area (see
+  // renderStoredRecordDetail). Up to 10 - or however many the research actually
+  // supported. Never padded.
+  function renderFullMarketOpportunities(record, container) {
+    const plan = record && record.result && record.result.routing && Array.isArray(record.result.routing.plan)
+      ? record.result.routing.plan
+      : [];
+    let result = null;
+    plan.forEach(function (step) {
+      const outputs = (step && step.outputs) || {};
+      const candidate = outputs.result || outputs;
+      if (!result && candidate && Array.isArray(candidate.top_opportunities)) result = candidate;
+    });
+    if (!result) return false;
+
+    const heading = document.createElement('div');
+    heading.className = 'section-label';
+    heading.textContent = 'Market opportunities (' + result.top_opportunities.length + ')';
+    container.appendChild(heading);
+
+    result.top_opportunities.forEach(function (opportunity) {
+      container.appendChild(marketOpportunityCard(opportunity, false));
+    });
+
+    container.appendChild(
+      marketResearchSummaryCard({
+        available: true,
+        opportunities: result.top_opportunities,
+        candidate_count: result.candidate_count || null,
+        market_scope: result.market_scope || null,
+        research_summary: result.research_summary || null,
+        limitations: result.limitations || [],
+        created_at: record.created_at,
+      })
+    );
+    return true;
+  }
   function renderOpportunities(list) {
     const area = document.getElementById('opportunityListArea');
     area.innerHTML = '';
@@ -2632,6 +3112,10 @@
       const viewAllOpps = document.getElementById('viewAllOpportunitiesLink');
       if (viewAllOpps) viewAllOpps.hidden = allOpportunities.length <= OVERVIEW_OPPORTUNITY_LIMIT;
 
+      // The newest SAVED market research, relayed from the same /overview response.
+      // No extra fetch, and nothing here starts a research run.
+      renderMarketOpportunities(data.market_research || null);
+
       renderSpecialistSummary(data.specialists || {});
       const activity = data.activity || [];
       renderActivityList(
@@ -2697,6 +3181,14 @@
   wireOverviewLink('viewAllActivityLink', () => selectPage('history'));
   wireOverviewLink('viewAiActivityLink', () => selectPage('history'));
   wireOverviewLink('viewAllOpportunitiesLink', () => selectPage('history'));
+  // Opens the existing History detail view for the research run itself - no new page,
+  // and no second request for the research.
+  wireOverviewLink('viewAllMarketOpportunitiesLink', () => {
+    if (latestMarketResearch && latestMarketResearch.run_id) {
+      selectPage('history');
+      loadHistoryDetail(latestMarketResearch.run_id);
+    }
+  });
   wireOverviewLink('viewUsageHistoryLink', () => selectPage('history'));
   wireOverviewLink('reviewApprovalsLink', () => selectPage('approvals'));
   wireOverviewLink('openSpecialistsLink', () => selectPage('specialists'));
