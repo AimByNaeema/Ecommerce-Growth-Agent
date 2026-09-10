@@ -11,6 +11,7 @@
     specialists: { nav: 'navSpecialists', page: 'pageSpecialists', title: 'Run a Specialist', subtitle: 'Run one specialist directly against a specific objective you write.' },
     orchestrator: { nav: 'navOrchestrator', page: 'pageOrchestrator', title: 'Chief Orchestrator', subtitle: 'Give the Chief a goal — it decides which specialist(s) to use.' },
     approvals: { nav: 'navApprovals', page: 'pageApprovals', title: 'Approval Center', subtitle: 'Every human sign-off the Chief has requested this session.' },
+    workflow: { nav: 'navWorkflow', page: 'pageWorkflow', title: 'How AVENLY AI works', subtitle: 'Your AI sales team, and where you stay in control.' },
     history: { nav: 'navHistory', page: 'pageHistory', title: 'History', subtitle: 'Saved results from past runs, stored on the server - these survive a refresh.' },
   };
 
@@ -28,6 +29,7 @@
     pageTitleEl.textContent = entry.title;
     pageSubtitleEl.textContent = entry.subtitle;
     if (name === 'approvals') renderApprovalList();
+    if (name === 'workflow') loadWorkflow();
     if (name === 'history') renderHistoryList();
     // loadOverview() is declared further down this file (function declarations are
     // hoisted), and is also called once at the bottom for the initial page load,
@@ -3200,3 +3202,446 @@
   // `pageOverview` carrying the `active` class by default), so it must hydrate
   // itself once here rather than waiting for a nav click that may never come.
   loadOverview();
+
+
+  /* ==========================================================================
+     HOW AVENLY AI WORKS - the customer-facing workflow map.
+
+     PRESENTATION ONLY. Every status here comes from GET /workflow/state, which
+     projects the REAL saved run. Nothing on this page executes anything, and no
+     node is ever coloured "completed" by this file's own choice - it renders the
+     state the server derived. With no run, every node reads "Not run".
+
+     The stage copy (purpose, inputs, outputs) also comes from the server, out of
+     agent/core/workflowNarrative.js - the same definitions the PDF is built from,
+     so the page and the document cannot drift apart.
+     ========================================================================== */
+  let workflowData = null;
+
+  // The customer-facing state -> the dashboard's existing chip vocabulary. An
+  // unrecognised state gets the neutral chip rather than being flattered into "ok".
+  function workflowToneClass(tone) {
+    if (tone === 'ok') return 'ok';
+    if (tone === 'active') return 'warn';
+    if (tone === 'warn') return 'warn';
+    if (tone === 'error') return 'error';
+    return 'idle';
+  }
+
+  function workflowNode(stageKey, definition, state) {
+    const node = document.createElement('button');
+    node.type = 'button';
+    node.className = 'workflow-node';
+    node.dataset.stage = stageKey;
+    node.dataset.kind = definition.kind;
+    node.dataset.state = state.state;
+    node.setAttribute('aria-label', definition.title + ' - ' + state.state_label);
+
+    const head = document.createElement('div');
+    head.className = 'workflow-node-head';
+    const title = document.createElement('span');
+    title.className = 'workflow-node-title';
+    title.textContent = definition.title;
+    head.appendChild(title);
+    const chip = document.createElement('span');
+    chip.className = 'status-chip ' + workflowToneClass(state.state_tone);
+    chip.textContent = state.state_label;
+    head.appendChild(chip);
+    node.appendChild(head);
+
+    const role = document.createElement('div');
+    role.className = 'workflow-node-role';
+    role.textContent = definition.kind === 'agent' ? 'Specialist agent' : definition.kind === 'gate' ? 'Gate' : definition.kind === 'boundary' ? 'Boundary' : definition.kind === 'orchestrator' ? 'Coordinator' : 'Your input';
+    node.appendChild(role);
+
+    const purpose = document.createElement('div');
+    purpose.className = 'workflow-node-purpose';
+    purpose.textContent = definition.purpose;
+    node.appendChild(purpose);
+
+    node.addEventListener('click', () => openWorkflowDrawer(stageKey));
+    return node;
+  }
+
+  function workflowConnector(label) {
+    const wrap = document.createElement('div');
+    wrap.className = 'workflow-connector';
+    wrap.setAttribute('aria-hidden', 'true');
+    const arrow = document.createElement('span');
+    arrow.className = 'workflow-connector-arrow';
+    arrow.textContent = '↓';
+    wrap.appendChild(arrow);
+    if (label) {
+      const text = document.createElement('span');
+      text.className = 'workflow-connector-label';
+      text.textContent = label;
+      wrap.appendChild(text);
+    }
+    return wrap;
+  }
+
+  function renderWorkflowGraph() {
+    const graph = document.getElementById('workflowGraph');
+    const loop = document.getElementById('workflowLoop');
+    if (!graph || !workflowData) return;
+    const definitions = {};
+    (workflowData.stage_definitions || []).forEach((d) => { definitions[d.key] = d; });
+
+    graph.innerHTML = '';
+    (workflowData.primary_flow || []).forEach((key, index) => {
+      const definition = definitions[key];
+      const state = workflowData.stages[key];
+      if (!definition || !state) return;
+      graph.appendChild(workflowNode(key, definition, state));
+      if (index < workflowData.primary_flow.length - 1) {
+        const next = definitions[workflowData.primary_flow[index + 1]];
+        graph.appendChild(workflowConnector(next && next.kind === 'gate' ? 'must pass this gate' : ''));
+      }
+    });
+
+    loop.innerHTML = '';
+    (workflowData.growth_loop || []).forEach((key, index) => {
+      const definition = definitions[key];
+      const state = workflowData.stages[key];
+      if (!definition || !state) return;
+      loop.appendChild(workflowNode(key, definition, state));
+      if (index < workflowData.growth_loop.length - 1) loop.appendChild(workflowConnector(''));
+    });
+    const back = document.createElement('div');
+    back.className = 'workflow-loopback';
+    back.textContent = 'Recommendations feed back into Marketing strategy, so the next cycle starts from what actually happened.';
+    loop.appendChild(back);
+  }
+
+  function drawerRow(label, value, { muted = false } = {}) {
+    const row = document.createElement('div');
+    row.className = 'workflow-drawer-row';
+    const key = document.createElement('div');
+    key.className = 'workflow-drawer-label';
+    key.textContent = label;
+    const val = document.createElement('div');
+    val.className = 'workflow-drawer-value' + (muted ? ' unavailable' : '');
+    val.textContent = value;
+    row.appendChild(key);
+    row.appendChild(val);
+    return row;
+  }
+
+  function drawerList(label, items) {
+    const row = document.createElement('div');
+    row.className = 'workflow-drawer-row';
+    const key = document.createElement('div');
+    key.className = 'workflow-drawer-label';
+    key.textContent = label;
+    row.appendChild(key);
+    const list = document.createElement('ul');
+    list.className = 'workflow-drawer-list';
+    (items || []).forEach((item) => {
+      const li = document.createElement('li');
+      li.textContent = item;
+      list.appendChild(li);
+    });
+    row.appendChild(list);
+    return row;
+  }
+
+  function openWorkflowDrawer(stageKey) {
+    if (!workflowData) return;
+    const definition = (workflowData.stage_definitions || []).find((d) => d.key === stageKey);
+    const state = workflowData.stages[stageKey];
+    if (!definition || !state) return;
+
+    document.getElementById('workflowDrawerTitle').textContent = definition.title;
+    document.getElementById('workflowDrawerKind').textContent =
+      (definition.kind === 'agent' ? 'Specialist agent' : definition.kind === 'gate' ? 'Gate' : definition.kind === 'boundary' ? 'Boundary' : definition.kind === 'orchestrator' ? 'Coordinator' : 'Your input');
+
+    const body = document.getElementById('workflowDrawerBody');
+    body.innerHTML = '';
+
+    // Current status first - it is the thing a customer is actually asking about.
+    const statusRow = document.createElement('div');
+    statusRow.className = 'workflow-drawer-status';
+    const chip = document.createElement('span');
+    chip.className = 'status-chip ' + workflowToneClass(state.state_tone);
+    chip.textContent = state.state_label;
+    statusRow.appendChild(chip);
+    const meaning = document.createElement('span');
+    meaning.className = 'workflow-drawer-meaning';
+    meaning.textContent = (workflowData.node_states[state.state] || {}).meaning || '';
+    statusRow.appendChild(meaning);
+    body.appendChild(statusRow);
+
+    body.appendChild(drawerRow('Purpose', definition.purpose));
+    body.appendChild(drawerRow('What it does', definition.does));
+    body.appendChild(drawerList('Inputs', definition.inputs));
+    body.appendChild(drawerList('Outputs', definition.outputs));
+    body.appendChild(drawerRow('Next step', definition.next_step || definition.nextStep));
+
+    // Only what this run actually recorded. Never invented, and explicitly marked when
+    // there is nothing to show.
+    const hasDetail = state.detail && !/^Unavailable for this run/i.test(state.detail);
+    body.appendChild(drawerRow('In this run', hasDetail ? state.detail : 'Unavailable for this run.', { muted: !hasDetail }));
+
+    if ((state.evidence || []).length > 0) {
+      const row = document.createElement('div');
+      row.className = 'workflow-drawer-row';
+      const key = document.createElement('div');
+      key.className = 'workflow-drawer-label';
+      key.textContent = 'Evidence';
+      row.appendChild(key);
+      const list = document.createElement('ul');
+      list.className = 'workflow-drawer-list';
+      state.evidence.slice(0, 8).forEach((url) => {
+        const li = document.createElement('li');
+        const link = document.createElement('a');
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = url;
+        li.appendChild(link);
+        list.appendChild(li);
+      });
+      row.appendChild(list);
+      body.appendChild(row);
+    } else {
+      body.appendChild(drawerRow('Evidence', 'Unavailable for this run.', { muted: true }));
+    }
+
+    if (Array.isArray(definition.verdicts)) {
+      const row = document.createElement('div');
+      row.className = 'workflow-drawer-row';
+      const key = document.createElement('div');
+      key.className = 'workflow-drawer-label';
+      key.textContent = 'Possible outcomes';
+      row.appendChild(key);
+      definition.verdicts.forEach((verdict) => {
+        const item = document.createElement('div');
+        item.className = 'workflow-verdict';
+        const badge = document.createElement('span');
+        badge.className = 'status-chip ' + (/BLOCK|rejected/i.test(verdict.id) ? 'error' : /REVIEW|pending/i.test(verdict.id) ? 'warn' : 'ok');
+        badge.textContent = verdict.label;
+        const text = document.createElement('span');
+        text.textContent = verdict.meaning;
+        item.appendChild(badge);
+        item.appendChild(text);
+        row.appendChild(item);
+      });
+      body.appendChild(row);
+    }
+
+    const drawer = document.getElementById('workflowDrawer');
+    drawer.hidden = false;
+    document.getElementById('workflowDrawerClose').focus();
+  }
+
+  function closeWorkflowDrawer() {
+    const drawer = document.getElementById('workflowDrawer');
+    if (drawer) drawer.hidden = true;
+  }
+
+  /* The evidence chain behind one persisted opportunity. Every value is relayed from
+     the saved run; a figure no source stated is shown with the server's own
+     "not available" sentence, never as 0. */
+  function renderEvidenceChain(payload) {
+    const area = document.getElementById('workflowEvidenceArea');
+    area.innerHTML = '';
+    if (!payload || !payload.available || !payload.chain) {
+      const empty = document.createElement('div');
+      empty.className = 'panel-card panel-empty';
+      empty.textContent = (payload && payload.error) || 'No saved product opportunity to explain yet. Ask the Chief to research the market first.';
+      area.appendChild(empty);
+      return;
+    }
+    const chain = payload.chain;
+    const unavailable = payload.unavailable_text || 'Not available from the connected research sources.';
+
+    const card = document.createElement('div');
+    card.className = 'panel-card';
+    const title = document.createElement('div');
+    title.className = 'workflow-node-title';
+    title.textContent = '#' + chain.rank + '  ' + (chain.product || 'Opportunity');
+    card.appendChild(title);
+
+    function step(heading, render) {
+      const block = document.createElement('div');
+      block.className = 'workflow-chain-step';
+      const label = document.createElement('div');
+      label.className = 'workflow-drawer-label';
+      label.textContent = heading;
+      block.appendChild(label);
+      render(block);
+      card.appendChild(block);
+    }
+
+    step('Research evidence', (block) => {
+      const sources = (chain.research_evidence && chain.research_evidence.sources) || [];
+      if (sources.length === 0) {
+        const p = document.createElement('div');
+        p.className = 'workflow-drawer-value unavailable';
+        p.textContent = unavailable;
+        block.appendChild(p);
+        return;
+      }
+      const list = document.createElement('ul');
+      list.className = 'workflow-drawer-list';
+      sources.forEach((url) => {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = url;
+        li.appendChild(a);
+        list.appendChild(li);
+      });
+      block.appendChild(list);
+    });
+
+    step('Fit with your catalogue', (block) => {
+      const p = document.createElement('div');
+      const reason = chain.customer_fit && chain.customer_fit.reason;
+      p.className = 'workflow-drawer-value' + (reason ? '' : ' unavailable');
+      p.textContent = reason || unavailable;
+      block.appendChild(p);
+    });
+
+    step('Opportunity evaluation', (block) => {
+      const evaluation = chain.opportunity_evaluation || {};
+      const grid = document.createElement('div');
+      grid.className = 'market-signal-grid';
+      [['Demand', 'demand'], ['Competition', 'competition'], ['Trend', 'trend'], ['Commercial', 'commercial']].forEach((pair) => {
+        const signal = evaluation[pair[1]] || {};
+        const cell = document.createElement('div');
+        cell.className = 'market-signal';
+        const lab = document.createElement('div');
+        lab.className = 'market-signal-label';
+        lab.textContent = pair[0];
+        const val = document.createElement('div');
+        // A real value only when one exists; otherwise the assessment; otherwise the
+        // shared unavailable sentence. Never a zero standing in for "unknown".
+        let text;
+        if (signal.value !== null && signal.value !== undefined) text = String(signal.value) + (signal.unit ? ' ' + signal.unit : '');
+        else if (signal.classification && signal.classification !== 'unknown') text = signal.classification;
+        else if (signal.assessment) text = signal.assessment;
+        else text = unavailable;
+        val.className = 'market-signal-value' + (text === unavailable ? ' unavailable' : '');
+        val.textContent = text;
+        cell.appendChild(lab);
+        cell.appendChild(val);
+        if (signal.grade) {
+          const grade = document.createElement('div');
+          grade.className = 'market-signal-grade';
+          grade.textContent = signal.grade;
+          cell.appendChild(grade);
+        }
+        grid.appendChild(cell);
+      });
+      block.appendChild(grid);
+      if (evaluation.rank_basis) {
+        const basis = document.createElement('div');
+        basis.className = 'panel-note';
+        basis.textContent = evaluation.rank_basis;
+        block.appendChild(basis);
+      }
+    });
+
+    step('Compliance', (block) => {
+      const status = chain.compliance && chain.compliance.status;
+      const chip = document.createElement('span');
+      chip.className = 'status-chip ' + (status === 'PASS' ? 'ok' : status === 'BLOCK' ? 'error' : status ? 'warn' : 'idle');
+      chip.textContent = status ? (status === 'REVIEW' ? 'REVIEW - needs a human' : status) : 'No verdict recorded';
+      block.appendChild(chip);
+      const note = document.createElement('div');
+      note.className = 'panel-note';
+      note.textContent = 'A compliance PASS is not approval. Approval is a separate decision, and it is yours.';
+      block.appendChild(note);
+    });
+
+    step('SEO and listing preparation', (block) => {
+      const preparation = chain.preparation || {};
+      const p = document.createElement('div');
+      p.className = 'workflow-drawer-value' + (preparation.state ? '' : ' unavailable');
+      p.textContent = preparation.state ? 'Prepared to ' + String(preparation.state).replace(/_/g, ' ') + '.' : 'Not prepared for listing yet.';
+      block.appendChild(p);
+      if ((preparation.missing_information || []).length > 0) {
+        const missing = document.createElement('div');
+        missing.className = 'panel-note';
+        missing.textContent = preparation.missing_information.length + ' product fact(s) are not established by the research and are reported rather than guessed: ' + preparation.missing_information.join(', ') + '.';
+        block.appendChild(missing);
+      }
+    });
+
+    area.appendChild(card);
+  }
+
+  async function loadWorkflowEvidence(rank) {
+    try {
+      const res = await apiFetch('/workflow/evidence/' + encodeURIComponent(rank));
+      const data = await res.json().catch(() => ({}));
+      renderEvidenceChain(res.ok ? data : { available: false, error: data.error });
+    } catch (err) {
+      renderEvidenceChain({ available: false, error: 'Could not reach the server.' });
+    }
+  }
+
+  async function loadWorkflow() {
+    const note = document.getElementById('workflowRunNote');
+    const tag = document.getElementById('workflowRunTag');
+    try {
+      const res = await apiFetch('/workflow/state');
+      if (!res.ok) {
+        note.textContent = 'Could not load the workflow view.';
+        return;
+      }
+      workflowData = await res.json();
+      renderWorkflowGraph();
+
+      if (workflowData.has_run) {
+        tag.hidden = false;
+        tag.textContent = 'Live run';
+        note.textContent = workflowData.objective
+          ? 'Showing your most recent run: "' + workflowData.objective + '"'
+          : 'Showing your most recent run.';
+      } else {
+        tag.hidden = true;
+        note.textContent = 'Ready. Nothing has run yet, so every step below shows as not run.';
+      }
+
+      // The evidence chain for the top persisted opportunity, when one exists.
+      loadWorkflowEvidence(1);
+    } catch (err) {
+      note.textContent = 'Could not reach the server.';
+    }
+  }
+
+  (function wireWorkflowControls() {
+    const close = document.getElementById('workflowDrawerClose');
+    const scrim = document.getElementById('workflowDrawerScrim');
+    if (close) close.addEventListener('click', closeWorkflowDrawer);
+    if (scrim) scrim.addEventListener('click', closeWorkflowDrawer);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeWorkflowDrawer();
+    });
+    const link = document.getElementById('workflowPdfLink');
+    if (link) {
+      // The endpoint is protected, so the PDF is fetched with the session's key and handed
+      // to the browser as a blob - the key is never placed in a URL.
+      link.addEventListener('click', async (event) => {
+        event.preventDefault();
+        link.textContent = 'Preparing PDF…';
+        try {
+          const res = await apiFetch('/workflow/document.pdf');
+          if (!res.ok) { link.textContent = 'Download PDF ↓'; return; }
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement('a');
+          anchor.href = url;
+          anchor.download = 'AVENLY-AI-How-Your-AI-Sales-Operating-System-Works.pdf';
+          document.body.appendChild(anchor);
+          anchor.click();
+          document.body.removeChild(anchor);
+          URL.revokeObjectURL(url);
+        } catch (err) {
+          /* Leave the control usable; the note below already explains connectivity. */
+        }
+        link.textContent = 'Download PDF ↓';
+      });
+    }
+  })();

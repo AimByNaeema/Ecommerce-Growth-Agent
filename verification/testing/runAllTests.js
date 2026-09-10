@@ -222,6 +222,7 @@ const TEST_FILES = [
   'opportunityPreparationWorkflow.test.js',
   'geminiWebGrounding.test.js',
   'tavilySearchProvider.test.js',
+  'workflowDocumentation.test.js',
 ];
 
 function runAll() {

@@ -55,6 +55,9 @@ const runHistoryStore = require('./agent/core/runHistoryStore');
 // dispatch of its own - every turn ends in one call to the SAME runOrchestratorContract
 // this file's /orchestrate route already uses.
 const commandCenterSession = require('./agent/core/commandCenterSession');
+const workflowStateProjection = require('./agent/core/workflowStateProjection');
+const workflowNarrative = require('./agent/core/workflowNarrative');
+const workflowDocument = require('./documents/workflowDocument');
 const commandCenterSessionStore = require('./agent/core/commandCenterSessionStore');
 // The HTTP boundary's authentication + rate limiting (CLAUDE.md section 3's
 // "Security"). Every endpoint below that can reach real store data, call an external
@@ -2579,6 +2582,80 @@ function createApp() {
       return;
     }
     res.json(session);
+  });
+
+  // The customer-facing workflow map. A PRESENTATION SURFACE ONLY: it runs nothing and
+  // stores nothing - agent/core/workflowStateProjection.js reads the newest saved run (and
+  // a session, when one is named) and projects it onto the stages a customer sees. With no
+  // saved run it honestly reports every stage as 'not run' rather than inventing a demo.
+  // Zero network calls, exactly like GET /overview.
+  app.get('/workflow/state', protect, (req, res) => {
+    try {
+      const summaries = runHistoryStore.listRunRecordSummaries({ limit: 25 });
+      // Newest-first, so the first record carrying a real plan is the current one.
+      let record = null;
+      for (const summary of summaries) {
+        const candidate = runHistoryStore.getRunRecordById(summary.run_id);
+        if (candidate && candidate.result && candidate.result.routing) { record = candidate; break; }
+      }
+      const sessionId = typeof req.query.session_id === 'string' ? req.query.session_id.trim() : '';
+      const session = sessionId ? commandCenterSessionStore.getSessionById(sessionId) : null;
+      res.json({
+        ...workflowStateProjection.deriveWorkflowState({ record, session }),
+        ...workflowNarrative.getCustomerWorkflowDefinition(),
+      });
+    } catch (err) {
+      console.error('GET /workflow/state failed:', err.message);
+      res.status(500).json({ error: 'Could not build the workflow view right now.' });
+    }
+  });
+
+  // The evidence chain behind ONE persisted opportunity - relayed from the saved research
+  // run, never recomputed. A rank with no saved opportunity is an honest 404.
+  app.get('/workflow/evidence/:rank', protect, (req, res) => {
+    const rank = Number(req.params.rank);
+    if (!Number.isInteger(rank) || rank < 1) {
+      res.status(400).json({ error: 'rank must be a positive integer.' });
+      return;
+    }
+    try {
+      for (const summary of runHistoryStore.listRunRecordSummaries({ limit: 25 })) {
+        const record = runHistoryStore.getRunRecordById(summary.run_id);
+        const research = extractMarketResearchResult(record, summary);
+        if (!research) continue;
+        const opportunity = (research.opportunities || []).find((item) => item && item.rank === rank);
+        if (!opportunity) continue;
+        const sessionId = typeof req.query.session_id === 'string' ? req.query.session_id.trim() : '';
+        const session = sessionId ? commandCenterSessionStore.getSessionById(sessionId) : null;
+        const chain = workflowStateProjection.attachPreparation(
+          workflowStateProjection.buildEvidenceChain(opportunity),
+          session
+        );
+        res.json({ available: true, run_id: research.run_id, chain, unavailable_text: workflowNarrative.getCustomerWorkflowDefinition().unavailable_text });
+        return;
+      }
+      res.status(404).json({ available: false, error: 'No saved research opportunity with that rank.' });
+    } catch (err) {
+      console.error('GET /workflow/evidence failed:', err.message);
+      res.status(500).json({ error: 'Could not read the evidence chain right now.' });
+    }
+  });
+
+  // The customer-facing PDF, generated from the SAME definitions the dashboard renders
+  // (agent/core/workflowNarrative.js), so the document and the product cannot drift.
+  // It documents how the system works and carries no run data, no credentials and no
+  // customer records.
+  app.get('/workflow/document.pdf', protect, (req, res) => {
+    try {
+      const pdf = workflowDocument.buildWorkflowDocument();
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${workflowDocument.DOCUMENT_FILENAME}"`);
+      res.setHeader('Content-Length', String(pdf.length));
+      res.end(pdf);
+    } catch (err) {
+      console.error('GET /workflow/document.pdf failed:', err.message);
+      res.status(500).json({ error: 'Could not generate the document right now.' });
+    }
   });
 
   // Read-only views onto agent/core/runHistoryStore.js's saved runs - what makes

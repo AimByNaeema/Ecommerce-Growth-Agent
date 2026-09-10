@@ -41,6 +41,10 @@
         Approval Center
         <span class="nav-badge" id="approvalNavBadge" hidden>0</span>
       </button>
+      <button class="nav-item" id="navWorkflow" role="tab" aria-current="false" type="button">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.5" y="2.5" width="6" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11.5" y="12.5" width="6" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 7.5v4a3 3 0 0 0 3 3h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        How it works
+      </button>
       <button class="nav-item" id="navHistory" role="tab" aria-current="false" type="button">
         <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="7.25" stroke="currentColor" stroke-width="1.5"/><path d="M10 6v4l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         History
@@ -341,6 +345,46 @@
     </section>
 
     <!-- ============ HISTORY PAGE ============ -->
+    <!-- How AVENLY AI works: a customer-facing map of the workflow. Every node's status
+         is read from the REAL run via GET /workflow/state - with no run, every node reads
+         "Not run". Nothing here executes anything. -->
+    <section class="page" id="pageWorkflow">
+      <div class="page-intro">
+        <p>This is how your AI sales team handles a goal. The Chief runs only the specialists your goal actually needs, so the status on each step shows what really ran for you — not a script.</p>
+      </div>
+
+      <div class="section-row">
+        <div class="section-label">Workflow <span class="section-channel-tag" id="workflowRunTag" hidden></span></div>
+        <div class="section-row-right">
+          <a class="section-link" id="workflowPdfLink" href="#" download>Download PDF &darr;</a>
+        </div>
+      </div>
+      <div class="panel-card panel-note" id="workflowRunNote">Loading&hellip;</div>
+
+      <div id="workflowGraph" class="workflow-graph"></div>
+
+      <div class="section-label">The growth loop</div>
+      <div id="workflowLoop" class="workflow-graph workflow-loop"></div>
+
+      <div class="section-label">Why was a product recommended?</div>
+      <div id="workflowEvidenceArea"></div>
+
+      <!-- Agent detail drawer. Hidden until a node is chosen. -->
+      <div class="workflow-drawer" id="workflowDrawer" hidden>
+        <div class="workflow-drawer-scrim" id="workflowDrawerScrim"></div>
+        <aside class="workflow-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="workflowDrawerTitle">
+          <div class="workflow-drawer-head">
+            <div>
+              <div class="workflow-drawer-title" id="workflowDrawerTitle"></div>
+              <div class="workflow-drawer-kind" id="workflowDrawerKind"></div>
+            </div>
+            <button class="workflow-drawer-close" id="workflowDrawerClose" type="button" aria-label="Close">&times;</button>
+          </div>
+          <div class="workflow-drawer-body" id="workflowDrawerBody"></div>
+        </aside>
+      </div>
+    </section>
+
     <section class="page" id="pageHistory">
       <div class="page-intro">
         <p>Every real run from "Run a Specialist" and "Chief Orchestrator" is saved here automatically on the server, so it survives a page refresh or a server restart - unlike the rest of this dashboard's session-only state. Nothing here is sample data, and a run from before this page existed simply won't appear.</p>
