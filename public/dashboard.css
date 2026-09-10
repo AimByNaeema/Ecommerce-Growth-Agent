@@ -784,6 +784,38 @@
      allowed to wrap under it on a narrow screen rather than squeezing the title. */
   .etsy-listing-actions { display: flex; gap: 10px; flex-shrink: 0; }
 
+  /* ============ Command Center session ============
+     The conversation layer on the Chief Orchestrator page. Reuses the existing panel-card,
+     section-row and channel-tag vocabulary rather than introducing a second visual system. */
+  .session-select {
+    font-family: inherit; font-size: 12.5px; color: var(--ink-soft);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 100px; padding: 6px 12px; max-width: 260px; cursor: pointer;
+  }
+  .session-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .session-goal-label {
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--ink-faint); margin-bottom: 6px;
+  }
+  .session-goal { color: var(--ink); font-size: 14px; line-height: 1.5; }
+
+  .session-message { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .session-message:last-child { border-bottom: none; }
+  .session-message-role {
+    flex-shrink: 0; width: 48px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--ink-faint); padding-top: 2px;
+  }
+  .session-message-text { color: var(--ink-soft); font-size: 13px; line-height: 1.55; white-space: pre-wrap; min-width: 0; }
+  .session-message.from-chief .session-message-text { color: var(--ink); }
+
+  .session-result-row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 6px 0; font-size: 12.5px; color: var(--ink-soft);
+  }
+  .session-result-name { color: var(--ink); }
+
   .panel-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
     padding: 16px 18px; margin-bottom: 26px;

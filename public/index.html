@@ -268,15 +268,40 @@
         <p>Tell the Chief what you want to accomplish, in your own words — you don't pick a specialist here. The Chief decides on its own which specialist(s) the goal needs and how to route it. If any step needs your sign-off before it runs, the Chief stops and asks you right here, before doing it — nothing consequential happens without your approval.</p>
       </div>
 
+      <!-- Session bar: which conversation this is, and how to start or resume one.
+           Hidden until at least one session exists, so a first-time user sees exactly
+           the page they saw before. -->
+      <div class="section-row" id="sessionBar">
+        <div class="section-label">
+          Session <span class="section-channel-tag" id="sessionStatusTag" hidden></span>
+        </div>
+        <div class="section-row-right">
+          <select class="session-select" id="sessionSelect" aria-label="Resume a session" hidden></select>
+          <button class="section-link" id="newSessionBtn" type="button">New session →</button>
+        </div>
+      </div>
+      <div class="panel-card" id="sessionGoalCard" hidden>
+        <div class="session-goal-label">Goal for this session</div>
+        <div class="session-goal" id="sessionGoal"></div>
+        <div class="panel-note" id="sessionMeta"></div>
+      </div>
+
+      <!-- The conversation. Empty until a session has a turn. -->
+      <div id="sessionConversation" hidden></div>
+
       <div class="objective-block">
         <label class="objective-label" for="chiefObjective">Your goal</label>
-        <textarea id="chiefObjective" class="objective-input" rows="3" placeholder="e.g. Look at our real Shopify sales and suggest one SEO fix and one marketing angle to grow revenue this month."></textarea>
+        <textarea id="chiefObjective" class="objective-input" rows="3" placeholder="e.g. Scan the global market for products related to my existing products and give me the best opportunities."></textarea>
       </div>
 
       <div class="run-row">
         <button class="run-btn" id="chiefRunBtn" type="button">Ask the Chief</button>
         <span class="run-hint" id="chiefRunHint"></span>
       </div>
+
+      <!-- What this session can do next, and what it is waiting on. Each entry names the
+           fact that produced it - never an invented suggestion. -->
+      <div id="sessionNextActions" hidden></div>
 
       <div id="chiefResultArea"></div>
     </section>

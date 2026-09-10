@@ -215,6 +215,9 @@ const TEST_FILES = [
   'etsySecretRedaction.test.js',
   'etsyReadOnlyEnforcement.test.js',
   'etsyDashboardIntegration.test.js',
+  'customerMarketOpportunity.test.js',
+  'commandCenterSession.test.js',
+  'catalogueExpansionRouting.test.js',
 ];
 
 function runAll() {

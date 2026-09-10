@@ -51,6 +51,11 @@ const { decideApprovalRequest, getApprovalRequestById } = require('./approvals/a
 // trackers, not their saved JSON shape - see those Maps' and saveWorkflowRunRecord's own
 // comments below.
 const runHistoryStore = require('./agent/core/runHistoryStore');
+// The Command Center session layer and its store. The session layer contains no routing or
+// dispatch of its own - every turn ends in one call to the SAME runOrchestratorContract
+// this file's /orchestrate route already uses.
+const commandCenterSession = require('./agent/core/commandCenterSession');
+const commandCenterSessionStore = require('./agent/core/commandCenterSessionStore');
 // The HTTP boundary's authentication + rate limiting (CLAUDE.md section 3's
 // "Security"). Every endpoint below that can reach real store data, call an external
 // service, or spend model/API budget goes through both - see security/
@@ -2401,6 +2406,112 @@ function createApp() {
       console.error('GET /store/metrics failed:', err.message);
       res.status(502).json({ error: 'Could not read live store metrics right now. Please try again shortly.' });
     }
+  });
+
+  /* ---------- Command Center sessions ----------
+     The multi-turn surface over the SAME Chief these endpoints already expose. A session
+     adds memory of what was asked and produced so a later turn can say "deep research #3";
+     it adds no routing, no dispatch and no second orchestrator - every turn ends in one
+     call to runOrchestratorContract, via agent/core/commandCenterSession.js.
+
+     Each turn saves a normal run record through agent/core/runHistoryStore.js under its own
+     run id, so a session's work appears on the History page exactly like any other run and
+     the two can never drift apart. The session file references those run ids and never
+     copies a run into itself.
+
+     NO SECRET REACHES A SESSION: the store refuses to persist any credential-shaped key
+     (agent/core/commandCenterSessionModel.js's SESSION_FORBIDDEN_KEY_PATTERN), so this is
+     enforced at the boundary rather than trusted to callers. */
+  app.post('/session', protect, (req, res) => {
+    const { goal, channel } = req.body || {};
+    if (typeof goal !== 'string' || !goal.trim()) {
+      res.status(400).json({ error: 'A non-empty "goal" string is required.' });
+      return;
+    }
+    // Channel is STATED or absent - never derived from the goal's wording. A wrong channel
+    // label would attribute one store's work to another.
+    if (channel !== undefined && channel !== null && !['shopify', 'etsy', 'multi_channel'].includes(channel)) {
+      res.status(400).json({ error: 'If provided, "channel" must be one of: shopify, etsy, multi_channel.' });
+      return;
+    }
+    try {
+      const session = commandCenterSessionStore.createSession({ goal: goal.trim(), channel: channel || null });
+      res.json(session);
+    } catch (err) {
+      console.error('POST /session failed:', err.message);
+      res.status(500).json({ error: 'Could not start a session right now. Please try again shortly.' });
+    }
+  });
+
+  app.post('/session/:sessionId/message', protect, async (req, res) => {
+    const { message, research_params: researchParamsInput } = req.body || {};
+    if (typeof message !== 'string' || !message.trim()) {
+      res.status(400).json({ error: 'A non-empty "message" string is required.' });
+      return;
+    }
+    const researchParamsCheck = validateResearchParams(researchParamsInput);
+    if (!researchParamsCheck.ok) {
+      res.status(400).json({ error: 'If provided, "research_params" must be a plain object.' });
+      return;
+    }
+    const session = commandCenterSessionStore.getSessionById(req.params.sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'No session found for this id.' });
+      return;
+    }
+
+    try {
+      const outcome = await commandCenterSession.runSessionTurn(session, message.trim(), {
+        researchParams: researchParamsCheck.value,
+        // Reuses this file's own step summariser rather than the session module growing a
+        // second one.
+        summarizeStep: summarizeExecutionState,
+        // Each turn's run is persisted through the EXISTING run store, under its own id.
+        saveRun: (runResult, objective) => {
+          const runId = `cc-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          try {
+            runHistoryStore.saveRunRecord({
+              run_id: runId,
+              kind: 'orchestrate',
+              objective,
+              status: deriveOrchestrateHistoryStatus(runResult),
+              summary: buildOrchestrateHistorySummary(runResult),
+              // The session this run belongs to - additive, so a run record without one
+              // behaves exactly as before.
+              session_id: session.session_id,
+              channel: session.channel || null,
+              created_at: new Date().toISOString(),
+              result: runResult,
+            });
+          } catch (saveErr) {
+            console.error('Could not save run history for a Command Center turn:', saveErr.message);
+          }
+          return runId;
+        },
+      });
+      res.json({
+        session: outcome.session,
+        run_id: outcome.run_id || null,
+        clarification: outcome.clarification || null,
+        error: outcome.error || null,
+      });
+    } catch (err) {
+      console.error('POST /session/:sessionId/message failed:', err.message);
+      res.status(502).json({ error: 'The Chief could not complete this turn right now. Please try again shortly.' });
+    }
+  });
+
+  app.get('/sessions', protect, (req, res) => {
+    res.json({ sessions: commandCenterSessionStore.listSessions({ limit: 25 }) });
+  });
+
+  app.get('/session/:sessionId', protect, (req, res) => {
+    const session = commandCenterSessionStore.getSessionById(req.params.sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'No session found for this id.' });
+      return;
+    }
+    res.json(session);
   });
 
   // Read-only views onto agent/core/runHistoryStore.js's saved runs - what makes

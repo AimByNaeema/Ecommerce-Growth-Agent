@@ -7,7 +7,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "start": "node server.js",
+    "start": "node --env-file=.env server.js",
     "validate:config": "node tools/configValidator.js",
     "config:sample": "node tools/configValidator.js configuration/business.sample.yaml",
     "agent:contract": "node agent/core/agentContract.js",
@@ -150,6 +150,14 @@
     "compliance:etsy-listing": "node compliance/etsyComplianceInput.js",
     "tools:etsy-shop-data": "node tools/etsyShopDataTool.js",
     "tools:etsy-listing-data": "node tools/etsyListingDataTool.js",
+    "agent:customer-market-scope": "node agent/core/customerMarketScopeEngine.js",
+    "agent:opportunity-candidates": "node agent/core/opportunityCandidateEngine.js",
+    "agent:customer-opportunity-model": "node agent/core/customerOpportunityResearchModel.js",
+    "workflows:catalogue-expansion": "node workflows/customerMarketOpportunityWorkflow.js",
+    "tools:catalogue-expansion": "node tools/customerMarketOpportunityTool.js",
+    "agent:command-center-session-model": "node agent/core/commandCenterSessionModel.js",
+    "agent:command-center-session-store": "node agent/core/commandCenterSessionStore.js",
+    "agent:command-center-session": "node agent/core/commandCenterSession.js",
     "integrations:shopify-blog-publishing": "node integrations/shopifyBlogPublishing.js",
     "test": "node verification/testing/runAllTests.js"
   },

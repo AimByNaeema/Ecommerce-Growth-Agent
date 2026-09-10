@@ -732,6 +732,163 @@
     plan.forEach((step, index) => chiefResultArea.appendChild(renderPlanStep(step, index, runId)));
   }
 
+  /* ---------- Command Center session ----------
+     Turns this page from a one-shot question into a conversation the user can continue.
+     The Chief itself is unchanged: a turn posts to /session/:id/message, which resolves
+     any reference to an earlier result and then calls the SAME orchestrator /orchestrate
+     already uses. This file adds no routing of its own.
+
+     A session is created on the first goal. Everything a turn produces - the plan, the
+     numbered results, what it is waiting on - comes back on the session object and is
+     rendered from it, so a refresh or a resume shows exactly the same state. */
+  let currentSession = null;
+
+  function renderSessionState() {
+    const bar = document.getElementById('sessionBar');
+    const goalCard = document.getElementById('sessionGoalCard');
+    const statusTag = document.getElementById('sessionStatusTag');
+    const conversation = document.getElementById('sessionConversation');
+    const nextActions = document.getElementById('sessionNextActions');
+
+    if (!currentSession) {
+      goalCard.hidden = true;
+      conversation.hidden = true;
+      nextActions.hidden = true;
+      statusTag.hidden = true;
+      return;
+    }
+
+    goalCard.hidden = false;
+    document.getElementById('sessionGoal').textContent = currentSession.original_goal || '';
+    const results = (currentSession.specialist_results || []).length;
+    document.getElementById('sessionMeta').textContent =
+      (currentSession.channel ? 'Channel: ' + currentSession.channel + ' · ' : '') +
+      (currentSession.run_refs || []).length + ' run(s) · ' +
+      results + ' numbered result(s)' +
+      (results > 0 ? ' — refer to one by number, e.g. "deep research #1"' : '');
+
+    statusTag.hidden = false;
+    statusTag.textContent = String(currentSession.status || '').replace(/_/g, ' ');
+
+    // The conversation, rendered from the stored messages so a resumed session looks
+    // identical to a live one.
+    conversation.hidden = false;
+    conversation.innerHTML = '';
+    (currentSession.messages || []).forEach((message) => {
+      const row = document.createElement('div');
+      row.className = 'session-message ' + (message.role === 'user' ? 'from-user' : 'from-chief');
+      const who = document.createElement('div');
+      who.className = 'session-message-role';
+      who.textContent = message.role === 'user' ? 'You' : 'Chief';
+      const text = document.createElement('div');
+      text.className = 'session-message-text';
+      text.textContent = message.text;
+      row.appendChild(who);
+      row.appendChild(text);
+      conversation.appendChild(row);
+    });
+
+    // Numbered results - what "#3" refers to. Shown so the reference is discoverable
+    // rather than something the user has to remember.
+    if (results > 0) {
+      const list = document.createElement('div');
+      list.className = 'panel-card';
+      const label = document.createElement('div');
+      label.className = 'panel-note';
+      label.textContent = 'Numbered results in this session:';
+      list.appendChild(label);
+      currentSession.specialist_results.forEach((result) => {
+        const row = document.createElement('div');
+        row.className = 'session-result-row';
+        const name = document.createElement('span');
+        name.className = 'session-result-name';
+        name.textContent = '#' + result.ref + '  ' + result.label;
+        row.appendChild(name);
+        if (result.channel) {
+          const tag = document.createElement('span');
+          tag.className = 'section-channel-tag';
+          tag.textContent = result.channel;
+          row.appendChild(tag);
+        }
+        list.appendChild(row);
+      });
+      conversation.appendChild(list);
+    }
+
+    // Pending items and next actions, each stating its own basis.
+    const pending = currentSession.pending_items || [];
+    const actions = currentSession.next_actions || [];
+    if (pending.length > 0 || actions.length > 0) {
+      nextActions.hidden = false;
+      nextActions.innerHTML = '';
+      const card = document.createElement('div');
+      card.className = 'panel-card';
+      pending.forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'panel-note';
+        row.textContent = 'Waiting on you (' + item.kind + '): ' + item.detail;
+        card.appendChild(row);
+      });
+      actions.forEach((action) => {
+        const row = document.createElement('div');
+        row.className = 'panel-note';
+        row.textContent = action.title + ' — ' + action.basis;
+        card.appendChild(row);
+      });
+      nextActions.appendChild(card);
+    } else {
+      nextActions.hidden = true;
+    }
+  }
+
+  async function loadSessionList() {
+    try {
+      const res = await apiFetch('/sessions');
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const sessions = (data.sessions || []).filter((s) => s.session_id);
+      const select = document.getElementById('sessionSelect');
+      if (sessions.length === 0) {
+        select.hidden = true;
+        return;
+      }
+      select.hidden = false;
+      select.innerHTML = '<option value="">Resume a session…</option>';
+      sessions.forEach((s) => {
+        const option = document.createElement('option');
+        option.value = s.session_id;
+        option.textContent = (s.original_goal || s.session_id).slice(0, 60) + '  (' + s.result_count + ' result(s))';
+        select.appendChild(option);
+      });
+    } catch (err) {
+      // A failed listing must never block starting a new session.
+    }
+  }
+
+  document.getElementById('sessionSelect').addEventListener('change', async (event) => {
+    const id = event.target.value;
+    if (!id) return;
+    try {
+      const res = await apiFetch('/session/' + encodeURIComponent(id));
+      if (!res.ok) return;
+      currentSession = await res.json();
+      renderSessionState();
+      chiefResultArea.innerHTML = '';
+      chiefRunHint.textContent = 'Resumed. Continue where you left off.';
+    } catch (err) {
+      chiefRunHint.textContent = 'Could not reach the server.';
+    }
+  });
+
+  document.getElementById('newSessionBtn').addEventListener('click', () => {
+    currentSession = null;
+    renderSessionState();
+    chiefResultArea.innerHTML = '';
+    chiefObjective.value = '';
+    chiefRunHint.textContent = 'Started a new session. Type your goal.';
+    document.getElementById('sessionSelect').value = '';
+  });
+
   chiefRunBtn.addEventListener('click', async () => {
     const goal = chiefObjective.value.trim();
     if (!goal) {
@@ -745,10 +902,26 @@
     chiefResultArea.innerHTML = '<p class="empty-result">The Chief is deciding how to route this…</p>';
 
     try {
-      const res = await apiFetch('/orchestrate', {
+      // First goal in a session creates it; every later goal continues the same one, which
+      // is what lets a follow-up say "deep research #3".
+      if (!currentSession) {
+        const created = await apiFetch('/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ goal: goal }),
+        });
+        if (!created.ok) {
+          const err = await created.json().catch(() => ({}));
+          chiefResultArea.innerHTML = '<p class="empty-result">' + escapeHtml(err.error || 'Could not start a session.') + '</p>';
+          return;
+        }
+        currentSession = await created.json();
+      }
+
+      const res = await apiFetch('/session/' + encodeURIComponent(currentSession.session_id) + '/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ objective: goal }),
+        body: JSON.stringify({ message: goal }),
       });
       const data = await res.json().catch(() => ({}));
 
@@ -760,16 +933,35 @@
         return;
       }
 
+      currentSession = data.session || currentSession;
+      renderSessionState();
+      chiefObjective.value = '';
       currentRunId = data.run_id || null;
-      renderChiefPlan(data, currentRunId);
+
+      // The full plan detail still renders exactly as it did before - the session adds
+      // the conversation around it, it does not replace it.
+      if (data.run_id) {
+        const runRes = await apiFetch('/history/' + encodeURIComponent(data.run_id));
+        if (runRes.ok) {
+          const record = await runRes.json().catch(() => ({}));
+          if (record && record.result) renderChiefPlan(record.result, data.run_id);
+          else chiefResultArea.innerHTML = '';
+        }
+      } else {
+        chiefResultArea.innerHTML = '';
+      }
+
+      loadSessionList();
       noteActivity('Asked the Chief just now');
     } catch (err) {
       chiefResultArea.innerHTML = '<p class="empty-result">Could not reach the server. Check that it is running.</p>';
     } finally {
       chiefRunBtn.disabled = false;
-      chiefRunBtn.textContent = 'Ask the Chief';
+      chiefRunBtn.textContent = currentSession ? 'Continue this session' : 'Ask the Chief';
     }
   });
+
+  loadSessionList();
 
   /* ---------- Approval Center page ---------- */
   let approvalFilter = 'all';

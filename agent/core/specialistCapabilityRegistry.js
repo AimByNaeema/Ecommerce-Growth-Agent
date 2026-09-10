@@ -141,6 +141,7 @@ const PRODUCT_CAPABILITY_IDS = [
   'product_validation',
   'product_opportunity_analysis',
   'market_product_opportunity_analysis',
+  'catalogue_expansion_opportunities',
   'product_opportunity_scoring',
   'product_recommendation',
 ];
@@ -550,6 +551,33 @@ const PRODUCT_TASKS = [
     ],
     model: 'agent/core/marketConnectedOpportunityModel.js',
     fields: fieldIds(MARKET_CONNECTED_OPPORTUNITY_FIELDS),
+  }),
+  buildTask({
+    id: 'catalogue_expansion_opportunities',
+    title: 'Catalogue expansion opportunities',
+    description:
+      "Answers \"what should this store sell next\" by ranking adjacent opportunities for one specific seller, starting from its own catalogue. Staged and read-only; ends at a ranked shortlist. Retrieves that catalogue itself, so it needs no caller-supplied input.",
+    toolIds: ['catalogue_expansion_opportunities'],
+    required: [],
+    optional: ['limit', 'excludedCategories', 'discoveryBatches', 'shortlistSize'],
+    fields: [
+      'status',
+      'customer_context',
+      'market_scope',
+      'candidate_count',
+      'top_opportunities',
+      'excluded_opportunities',
+      'research_summary',
+      'limitations',
+    ],
+    // DELIBERATELY null, exactly like the competitor_research task above. Declaring a
+    // live_data_tool_id here would enrol this tool in the generic CROSS-CAPABILITY
+    // LIVE-DATA FALLBACK in agent/core/orchestratorExecutionContract.js, which makes a
+    // capability's live source a fallback donor for every OTHER capability of the same
+    // specialist that has none - so market_research, customer_research and trend_research
+    // would all start dispatching this expensive multi-call research instead of their own
+    // tool. That is not a hypothetical: it is what happened, and what this null prevents.
+    liveDataToolId: null,
   }),
   buildTask({
     id: 'product_opportunity_scoring',

@@ -206,7 +206,7 @@ test('every Research capability is wired to a real tool - the three former gaps 
   }
 });
 
-test('every one of Product\'s 6 supported_tasks is now wrapped by a real tool - the 4 that had tool_ids: [] are wired to product_research, and the 2 pre-existing exceptions are unchanged', () => {
+test('every one of Product\'s 7 supported_tasks is now wrapped by a real tool - the 4 that had tool_ids: [] are wired to product_research, and the 3 exceptions each name their own', () => {
   const productEntry = getSpecialistCapabilityById('product');
   for (const task of productEntry.supported_tasks) {
     if (task.id === 'market_product_opportunity_analysis') {
@@ -215,6 +215,13 @@ test('every one of Product\'s 6 supported_tasks is now wrapped by a real tool - 
     } else if (task.id === 'product_discovery') {
       assert.deepStrictEqual(task.tool_ids, ['product_data_retrieval']);
       assert.strictEqual(task.live_data_tool_id, 'product_data_retrieval');
+    } else if (task.id === 'catalogue_expansion_opportunities') {
+      // Its own dedicated tool, and live_data_tool_id deliberately null: declaring one
+      // would enrol that tool in the generic CROSS-CAPABILITY LIVE-DATA FALLBACK and make
+      // this expensive multi-call research the fallback donor for every other Product
+      // capability that has no live source (see the tool's own registry entry).
+      assert.deepStrictEqual(task.tool_ids, ['catalogue_expansion_opportunities']);
+      assert.strictEqual(task.live_data_tool_id, null);
     } else {
       // product_validation, product_opportunity_analysis, product_opportunity_scoring,
       // product_recommendation - all four now dispatched by tools/productResearchTool.js.

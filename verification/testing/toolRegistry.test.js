@@ -23,6 +23,7 @@ const EXPECTED_ORDER = [
   'market_research',
   'customer_research',
   'global_market_opportunity_analysis',
+  'catalogue_expansion_opportunities',
   'competitor_research',
   'research_analysis',
   'keyword_research',
@@ -70,6 +71,7 @@ const IMPLEMENTED_IDS = [
   'market_research',
   'customer_research',
   'global_market_opportunity_analysis',
+  'catalogue_expansion_opportunities',
   'competitor_research',
   'research_analysis',
   'keyword_research',
@@ -124,7 +126,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 38 required tools, in the requested order', () => {
+test('the registry has exactly the 39 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER

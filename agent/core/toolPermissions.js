@@ -92,6 +92,10 @@ const TOOL_CLASSIFICATIONS = {
   // reads above. They sit in the `products` category and carry operation 'read', so the
   // existing Product specialist permission (['read', 'execute']) already covers them and
   // SPECIALIST_ROLE_PERMISSIONS needs no change.
+  // Read-only staged research over the customer's own market. It reaches the public web
+  // (Anthropic's hosted web_search) and the business's own catalogue, and ends at ranked
+  // opportunities - it has no path that creates, prices or publishes a product anywhere.
+  catalogue_expansion_opportunities: 'analysis_only',
   etsy_shop_data_retrieval: 'analysis_only',
   etsy_listing_data_retrieval: 'analysis_only',
   market_product_opportunity_analysis: 'analysis_only',

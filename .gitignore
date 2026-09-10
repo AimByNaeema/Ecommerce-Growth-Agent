@@ -21,6 +21,13 @@ node_modules/
 # own README.md is kept (it's documentation, not data).
 memory/state/runs/
 
+# Persisted Command Center sessions (agent/core/commandCenterSessionStore.js) - one JSON
+# file per session, holding a real conversation about this business's real catalogue and
+# results. Same category of data as the run records above, ignored for the same reason.
+# The store refuses to write a credential into one, but the business content itself is
+# still never committed.
+memory/state/sessions/
+
 # Persisted, business-isolated Memory layer records (agent/core/memoryStore.js) - one
 # JSON file per verified/approved fact under memory/state/business/<businessId>/records/.
 # Real business memory, never a template - never commit.

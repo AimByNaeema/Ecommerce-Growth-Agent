@@ -173,6 +173,15 @@ const TOOL_REGISTRY = [
     status: 'implemented',
   },
   {
+    id: 'catalogue_expansion_opportunities',
+    title: 'Catalogue expansion opportunities',
+    description:
+      "Answers \"what should this store sell next\": ranks the strongest adjacent opportunities for one specific seller, using its own catalogue as the starting point. See workflows/customerMarketOpportunityWorkflow.js. Staged, read-only, evidence-verified; ends at a ranked shortlist and never creates, prices or publishes anything.",
+    category: 'products',
+    operation: 'read',
+    status: 'implemented',
+  },
+  {
     id: 'competitor_research',
     title: 'Competitor research',
     description:

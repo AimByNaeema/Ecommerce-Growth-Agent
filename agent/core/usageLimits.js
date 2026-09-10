@@ -37,6 +37,9 @@ const MODEL_CALL_TOOL_IDS = new Set([
   // model-call ceiling must be able to stop it. Counting it here can only ever be more
   // conservative than not counting it.
   'compliance_check',
+  // Batched web_search calls, each spending real Claude tokens - counted so its cost
+  // reaches the same ledger every other model call does.
+  'catalogue_expansion_opportunities',
 ]);
 
 // The tool ids that ultimately reach integrations/adapters/shopifyClient.js
@@ -59,6 +62,9 @@ const EXTERNAL_API_TOOL_IDS = new Set([
   // allowance, on top of the read client's caching, deduplication and 429 backoff.
   'etsy_shop_data_retrieval',
   'etsy_listing_data_retrieval',
+  // Staged customer market research: several batched web_search calls per run, each a
+  // real external request against a real token budget.
+  'catalogue_expansion_opportunities',
   'ai_reasoning_completion',
   'live_competitor_research',
   'discover_market_questions',
@@ -78,6 +84,7 @@ const RESEARCH_TOOL_IDS = new Set([
   'live_competitor_research',
   'customer_research',
   'keyword_research',
+  'catalogue_expansion_opportunities',
 ]);
 
 function getMaxToolCallsPerRun() {

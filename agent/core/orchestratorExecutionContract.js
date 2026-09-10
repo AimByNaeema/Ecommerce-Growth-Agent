@@ -121,6 +121,7 @@ const analyticsDataTool = require('../../tools/analyticsDataTool');
 const productDataRetrievalTool = require('../../tools/productDataRetrievalTool');
 const productResearchTool = require('../../tools/productResearchTool');
 const collectionDataRetrievalTool = require('../../tools/collectionDataRetrievalTool');
+const customerMarketOpportunityTool = require('../../tools/customerMarketOpportunityTool');
 const etsyShopDataTool = require('../../tools/etsyShopDataTool');
 const etsyListingDataTool = require('../../tools/etsyListingDataTool');
 const seoQualityCheckTool = require('../../tools/seoQualityCheckTool');
@@ -261,6 +262,16 @@ const TOOL_EXECUTORS = {
     collectionDataRetrievalTool.retrieveCollectionData({
       ...(executionRequest.research_params || {}),
       businessId: executionRequest.business_id,
+    }),
+  // Customer-related global market opportunity research. Takes runTokenTracker for the
+  // same reason live_competitor_research above does: it makes real Claude + web_search
+  // calls, and threading this run's running total in means its batched calls share the ONE
+  // per-run token budget instead of opening a second one.
+  catalogue_expansion_opportunities: (executionRequest, runTokenTracker) =>
+    customerMarketOpportunityTool.runCustomerMarketOpportunityTool({
+      ...(executionRequest.research_params || {}),
+      businessId: executionRequest.business_id,
+      tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
     }),
   // The two Etsy reads. Same businessId spread as the Shopify pulls above because they
   // too reach a real external system - and, like them, they only ever GET: the Etsy read
@@ -1190,7 +1201,93 @@ function attemptClauseRecovery(routedClauses) {
 // clause stops the whole request and reports a clarification requirement instead of
 // guessing at the rest. Matched clauses are deduped by target and ordered to match
 // ROUTING_TARGETS's fixed order, so the same objective always produces the same plan.
+// CATALOGUE-EXPANSION INTENT GATE
+//
+// WHY IT EXISTS. Specialist routing below is word-overlap over each specialist's own
+// description, which works well for vocabulary-heavy requests ("seo", "advertising",
+// "revenue") and badly for a plainly-worded business goal. Measured, before this gate:
+//
+//   "What should this store sell next?"                     -> analytics_optimization 1, configuration 1
+//   "Analyze our existing catalogue and identify expansion
+//    opportunities."                                        -> analytics_optimization 0.5
+//   "Scan the market for products we could add to our
+//    catalogue."                                            -> research 2, product 1
+//
+// Every one of those is a request to find what this store should SELL NEXT, which the
+// Product specialist's catalogue_expansion_opportunities capability exists to answer.
+// No amount of re-weighting fixes it: the words that carry the intent ("sell next",
+// "add to our catalogue", "related to what we already sell") appear in no specialist
+// description, so there is nothing for overlap scoring to find.
+//
+// WHY IT IS SHAPED LIKE THIS, AND NOT A KEYWORD LIST. A bag of words like
+// product/market/opportunity/new would hijack most of Research and Analytics. Each
+// pattern below is a PHRASE SHAPE requiring a combination - an expansion action AND the
+// store's own catalogue as its object - so "research the market" and "analyze our
+// existing catalogue" are untouched.
+//
+// UNAMBIGUOUS vs SUPPORTING. The first list can mean nothing else, so it fires on its
+// own. The second is real but weaker evidence, so it is vetoed by any competitor, SEO,
+// listing or advertising vocabulary in the same objective - which is what keeps
+// "compare similar products from our competitors" with Research and "which related
+// products do competitors rank for" out of Product. Found by adversarial testing: the
+// related-products pattern hijacked both before the veto was added.
+//
+// DETERMINISTIC AND FREE. Pure regex over the objective text - no model call, no
+// network, no new tool, and it changes nothing about permissions, budgets, audit or
+// compliance. It only decides which EXISTING specialist a clause belongs to.
+const CATALOGUE_EXPANSION_UNAMBIGUOUS_PATTERNS = [
+  // "what should this store / we sell next"
+  /\bwhat\s+(?:products?\s+)?(?:should|could)\s+(?:we|i|this\s+store|our\s+store|the\s+store|you)\s+(?:sell|add|offer|stock|launch)\b/i,
+  /\b(?:catalogue|catalog)\s+expansion\b/i,
+  /\bexpand(?:ing)?\b[^.?!]{0,30}\b(?:catalogue|catalog|range|product\s+line|assortment|offering)\b/i,
+  /\bexpansion\s+opportunit(?:y|ies)\b/i,
+  /\b(?:based\s+on|from)\s+what\s+we\s+(?:already\s+)?sell\b/i,
+];
+
+const CATALOGUE_EXPANSION_SUPPORTING_PATTERNS = [
+  /\bproducts?\b[^.?!]{0,40}\b(?:for\s+(?:us|me|this\s+store)\s+)?to\s+(?:sell|add|offer|stock|launch)\b/i,
+  /\bproducts?\b[^.?!]{0,40}\b(?:we\s+(?:could|should|can|might)\s+)?add\b/i,
+  /\badd\b[^.?!]{0,40}\b(?:to\s+)?(?:our|the|my|this)\s+(?:catalogue|catalog|store|range|product\s+line|line\s?up|assortment)\b/i,
+  /\b(?:related|similar|adjacent|complementary)\s+products?\b/i,
+  /\bproducts?\s+related\s+to\b/i,
+  /\bnew\s+products?\s+(?:opportunit(?:y|ies)|ideas?)\b/i,
+  /\bproduct\s+(?:opportunit(?:y|ies)|ideas?)\b[^.?!]{0,60}\b(?:already\s+sell|existing|our\s+catalogue|our\s+catalog|we\s+sell|this\s+store)\b/i,
+];
+
+// Vocabulary that means the objective is about somebody else's products, or about a
+// different job on this store's own products. Suppresses the SUPPORTING patterns only.
+const CATALOGUE_EXPANSION_VETO_PATTERN =
+  /\bcompetitors?\b|\brivals?\b|\bseo\b|\brank(?:s|ing|ed)?\b|\bkeywords?\b|\blistings?\b|\bads?\b|\badvertis\w*\b|\bcampaigns?\b/i;
+
+function hasCatalogueExpansionIntent(text) {
+  if (typeof text !== 'string' || text.trim() === '') return false;
+  if (CATALOGUE_EXPANSION_UNAMBIGUOUS_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (CATALOGUE_EXPANSION_VETO_PATTERN.test(text)) return false;
+  return CATALOGUE_EXPANSION_SUPPORTING_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 function planRouting(objective) {
+  // CATALOGUE-EXPANSION INTENT, checked on the WHOLE objective before clause splitting.
+  //
+  // Before splitting on purpose: "Analyze our existing catalogue and identify expansion
+  // opportunities." is ONE goal, and CLAUSE_SPLIT_REGEX would tear it into an Analytics
+  // clause and an orphaned fragment - the same class of problem protectFileFormatLists()
+  // already guards against, handled the same way, at the same stage.
+  //
+  // Only ever routes to a specialist that already exists, and only to the one whose
+  // declared remit this is. Everything downstream - capability match, tool selection,
+  // permissions, budgets, audit, compliance - runs exactly as it does for any other
+  // routed clause. See hasCatalogueExpansionIntent above for why it cannot hijack
+  // Research, Analytics, SEO, Listing, Marketing or Advertising.
+  if (hasCatalogueExpansionIntent(objective)) {
+    const productTarget = ROUTING_TARGETS.find(
+      (target) => target.type === 'specialist' && target.id === 'product'
+    );
+    if (productTarget) {
+      return { status: 'planned', targets: [productTarget], segments: [objective.trim()] };
+    }
+  }
+
   const clauses = splitIntoClauses(objective);
 
   if (clauses.length === 0) {
@@ -1547,7 +1644,20 @@ async function buildPlanStep(
   // need re-verifying against every future objective; excluding it from scoring
   // entirely is robust by construction. It still gets picked, but only through the
   // narrow, capability-gated swap below - never by winning this word-overlap contest.
-  const scorableToolIds = candidateToolIds.filter((toolId) => toolId !== 'live_competitor_research');
+  //
+  // catalogue_expansion_opportunities is excluded for the IDENTICAL reason, verified the
+  // same way. Its subject matter is "which products should this store add", so its own
+  // wording unavoidably repeats market/opportunity/research/product - the exact vocabulary
+  // market_research, global_market_research and global_market_opportunity_analysis already
+  // compete on - and it empirically outscored ALL of them on real objective wording purely
+  // from that repetition (it changed this file's pinned "market competitor research" ->
+  // 'market_research' and "Research the best market opportunity ..." ->
+  // 'global_market_opportunity_analysis' outcomes before this exclusion was added, and
+  // renaming it to avoid the collision did not fix that). It is reached only through the
+  // narrow, capability-gated swap below, or through forcedSelection - never by winning
+  // this contest.
+  const NON_SCORABLE_TOOL_IDS = new Set(['live_competitor_research', 'catalogue_expansion_opportunities']);
+  const scorableToolIds = candidateToolIds.filter((toolId) => !NON_SCORABLE_TOOL_IDS.has(toolId));
 
   if (!toolMatch) {
     let bestScore = 0;
@@ -1709,6 +1819,45 @@ async function buildPlanStep(
     !(forcedSelection && forcedSelection.toolId);
   if (isCompetitorLiveDispatch && toolMatch.id !== 'live_competitor_research') {
     toolMatch = getToolById('live_competitor_research') || toolMatch;
+  }
+
+  // CATALOGUE EXPANSION: reached by CAPABILITY wording, never by tool wording.
+  //
+  // Its tool is excluded from the word-overlap contest above (see NON_SCORABLE_TOOL_IDS)
+  // because the tool's own subject matter unavoidably repeats market/opportunity/research
+  // and hijacks every sibling. But it also shares its tool with no other capability, so the
+  // ordinary "match a tool, then find its capability" path can never reach it either -
+  // leaving it dispatchable only by forcedSelection, which free-text routing never supplies.
+  //
+  // So it is matched one level up, where the wording IS distinctive: the capability's own
+  // description ("what should this store sell next", catalogue, expansion, adjacent,
+  // shortlist) is scored against every OTHER capability this specialist declares, and it
+  // wins only by beating all of them outright. Verified against the pinned objectives this
+  // file's tests protect: "market competitor research" and "Research the best market
+  // opportunity for my ecommerce products." do not rank it at all, while "what should this
+  // store sell next" does. A tie is not enough - a strict win is required, so an ambiguous
+  // clause keeps its existing routing rather than being pulled into expensive research.
+  const isForcedElsewhere = Boolean(forcedSelection && forcedSelection.toolId);
+  if (!isForcedElsewhere && capabilityEntry && candidateToolIds.includes('catalogue_expansion_opportunities')) {
+    let expansionScore = -1;
+    let bestOtherScore = -1;
+    for (const task of capabilityEntry.supported_tasks) {
+      const score = scoreWordOverlap(`${task.id} ${task.title} ${task.description}`, objectiveWords);
+      if (task.id === 'catalogue_expansion_opportunities') expansionScore = score;
+      else if (score > bestOtherScore) bestOtherScore = score;
+    }
+    // Fires on a strict score win OR when the objective's own wording carries clear
+    // catalogue-expansion intent (hasCatalogueExpansionIntent - the SAME deterministic
+    // gate that chose this specialist). One definition of the intent, consulted at both
+    // levels: without this, "Find products related to my existing products." reached the
+    // Product specialist and then picked product_data_retrieval, answering "what do we
+    // already sell" instead of "what should we sell next".
+    if ((expansionScore > 0 && expansionScore > bestOtherScore) || hasCatalogueExpansionIntent(currentTask)) {
+      toolMatch = getToolById('catalogue_expansion_opportunities') || toolMatch;
+      matchedCapability =
+        capabilityEntry.supported_tasks.find((task) => task.id === 'catalogue_expansion_opportunities') || matchedCapability;
+      ambiguousCapabilityTasks = null;
+    }
   }
 
   // STRUCTURED CROSS-AGENT CONTEXT PASSING (see agent/core/crossAgentContext.js): now
@@ -2417,6 +2566,10 @@ module.exports = {
   splitIntoClauses,
   routeClause,
   planRouting,
+  // Exported so verification/testing/catalogueExpansionRouting.test.js can assert the
+  // intent gate directly, separately from what word-overlap scoring then does with a
+  // clause the gate declined.
+  hasCatalogueExpansionIntent,
   attemptAiAssistedSegmentation,
   extractJsonArray,
   buildPlanStep,

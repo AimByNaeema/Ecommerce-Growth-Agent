@@ -609,10 +609,16 @@ const ALL_NEW_ENDPOINTS = [
     // Checked against CODE only - server.js's comments legitimately discuss the shared
     // machinery they defer to (TOOL_EXECUTORS, buildPlanStep, ...), and matching prose
     // would make this assert the wrong thing.
+    //
+    // The trailing \r is stripped FIRST. `.` does not match a carriage return in
+    // JavaScript, so on a CRLF checkout the old `//.*$` never reached end-of-string, no
+    // comment was stripped at all, and this guard reported a comment as if it were code -
+    // a false positive that says "server.js reimplements TOOL_EXECUTORS" about a line that
+    // only mentions it. Same intent as before, now correct on both line endings.
     const code = source
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .split('\n')
-      .map((line) => line.replace(/(^|\s)\/\/.*$/, ''))
+      .map((line) => line.replace(/\r$/, '').replace(/(^|\s)\/\/.*$/, ''))
       .join('\n');
 
     // A second orchestration layer would have to declare its own stage list, its own
