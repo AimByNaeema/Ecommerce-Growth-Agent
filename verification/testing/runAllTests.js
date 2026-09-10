@@ -220,6 +220,8 @@ const TEST_FILES = [
   'catalogueExpansionRouting.test.js',
   'marketOpportunityDashboard.test.js',
   'opportunityPreparationWorkflow.test.js',
+  'geminiWebGrounding.test.js',
+  'tavilySearchProvider.test.js',
 ];
 
 function runAll() {

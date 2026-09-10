@@ -77,7 +77,54 @@ function extractText(candidates) {
     .join('\n');
 }
 
-async function sendMessage({ messages, system, model, maxTokens, businessId = null } = {}) {
+// Recognizes the Claude-shaped hosted web-search tool the research callers already pass
+// (see workflows/customerMarketOpportunityWorkflow.js's WEB_SEARCH_TOOL and
+// tools/webCompetitorResearchTool.js). Matched on the tool NAME rather than Anthropic's
+// dated `type` string, so a future `web_search_20260101` still maps correctly. Any other
+// tool definition is NOT translated - Gemini function-calling is a separate, unscoped
+// capability, and silently mapping an arbitrary tool onto search would be worse than
+// ignoring it.
+function requestsWebSearch(tools) {
+  if (!Array.isArray(tools)) return false;
+  return tools.some(
+    (tool) => tool && (tool.name === 'web_search' || (typeof tool.type === 'string' && tool.type.startsWith('web_search')))
+  );
+}
+
+// Every REAL URL Gemini's Google Search grounding actually retrieved for one call - the
+// exact counterpart of claudeClient.js's extractWebSearchResultUrls, and the anchor the
+// research pipeline verifies candidate sources against.
+//
+// READS GROUNDING METADATA ONLY. A URL Gemini merely wrote into its prose ("according to
+// example.com...") is NOT here and must never be treated as verified: only chunks Google
+// Search itself returned appear in groundingChunks. That distinction is the whole point
+// of this function - see the evidence contract in
+// workflows/customerMarketOpportunityWorkflow.js.
+//
+// Takes the raw `candidates` array, mirroring extractText above.
+function extractWebSearchResultUrls(candidates) {
+  if (!Array.isArray(candidates)) return [];
+  const urls = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const metadata = candidate && candidate.groundingMetadata;
+    const chunks = metadata && Array.isArray(metadata.groundingChunks) ? metadata.groundingChunks : [];
+    for (const chunk of chunks) {
+      const uri = chunk && chunk.web && typeof chunk.web.uri === 'string' ? chunk.web.uri : null;
+      if (!uri || seen.has(uri)) continue;
+      seen.add(uri);
+      urls.push(uri);
+    }
+  }
+  return urls;
+}
+
+// Params mirror claudeClient.js's sendMessage so the two clients stay interchangeable
+// behind agent/core/aiProviderSelector.js:
+//   tools - optional array of Claude-shaped tool definitions. Only the hosted web-search
+//           tool is translated (to Gemini's own `google_search` grounding tool); it is
+//           never sent on a call that did not ask for search.
+async function sendMessage({ messages, system, model, maxTokens, businessId = null, tools } = {}) {
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new Error('sendMessage requires a non-empty `messages` array.');
   }
@@ -106,6 +153,10 @@ async function sendMessage({ messages, system, model, maxTokens, businessId = nu
 
   const body = { contents, generationConfig: { maxOutputTokens: resolvedMaxTokens } };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
+  // Google Search grounding, on the SAME generateContent endpoint this client already
+  // uses - no API migration. Sent only when the caller actually asked for web search, so
+  // ordinary reasoning calls are byte-identical to before this capability existed.
+  if (requestsWebSearch(tools)) body.tools = [{ google_search: {} }];
 
   const url = `${API_BASE_URL}/${resolvedModel}:generateContent`;
 
@@ -160,6 +211,8 @@ module.exports = {
   loadEnvOnce,
   resolveCredentials,
   extractText,
+  extractWebSearchResultUrls,
+  requestsWebSearch,
   DEFAULT_MODEL,
   DEFAULT_MAX_TOKENS,
 };

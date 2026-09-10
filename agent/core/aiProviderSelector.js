@@ -6,10 +6,14 @@
 // to that one, unchanged. Both clients share the same shape (sendMessage, isConfigured)
 // so no adapter/translation logic is needed here - this stays a pure pass-through.
 //
-// Deliberately NOT wired into agent/core/agentContract.js, the orchestrator, or any
-// tool - it stays a standalone, directly-callable module for now, same boundary
-// claudeClient.js and geminiClient.js already have. That wiring is separate,
-// explicitly-scoped work per CLAUDE.md rule 1/section 6.
+// Wired into the model-calling tools that go through it (tools/aiReasoningCompletion.js,
+// tools/complianceCheckTool.js, tools/seoContentGenerationTool.js) and, since Gemini
+// gained web-search grounding, workflows/customerMarketOpportunityWorkflow.js. It still
+// decides nothing itself: it picks a client and delegates, exactly as before.
+//
+// tools/marketQuestionDiscoveryTool.js and tools/webCompetitorResearchTool.js remain on
+// claudeClient.js directly. Moving them is a separate, explicitly-scoped decision per
+// CLAUDE.md rule 1/section 6 - not something to do in passing.
 
 const claudeClient = require('./claudeClient');
 const geminiClient = require('./geminiClient');
@@ -58,10 +62,32 @@ function sendMessage(...args) {
   return resolveClient().sendMessage(...args);
 }
 
+// Every REAL URL the active provider's own web-search tool actually retrieved for one
+// call. This is the one place the two clients' response shapes genuinely differ, so the
+// difference is absorbed here rather than at every research call site:
+//
+//   claude - Anthropic returns web_search_tool_result blocks on `raw.content`
+//   gemini - Google returns groundingChunks on `raw.candidates[].groundingMetadata`
+//
+// Takes the WHOLE raw response so callers stay provider-agnostic, and returns [] for a
+// response that carries no search results at all - which is a real answer ("this call
+// searched nothing"), never an error to paper over.
+//
+// A URL the model merely WROTE in its prose is deliberately absent from this list in both
+// providers. That is the evidence contract the research pipeline depends on: a source is
+// verified because search returned it, never because the model mentioned it.
+function extractWebSearchResultUrls(raw) {
+  if (!raw || typeof raw !== 'object') return [];
+  return getActiveProvider() === 'gemini'
+    ? geminiClient.extractWebSearchResultUrls(raw.candidates)
+    : claudeClient.extractWebSearchResultUrls(raw.content);
+}
+
 module.exports = {
   sendMessage,
   isConfigured,
   getActiveProvider,
+  extractWebSearchResultUrls,
   DEFAULT_PROVIDER,
 };
 

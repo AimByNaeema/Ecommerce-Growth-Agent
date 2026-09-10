@@ -52,11 +52,18 @@ function getMaxTokensPerRun() {
 // per-run budget never accumulated and checkTokenBudget below could never trip - the
 // token controls were silently inert under Gemini. Never guesses: unknown/missing/
 // malformed usage still counts as 0 rather than a fabricated number.
+// THINKING TOKENS COUNT AS OUTPUT. Gemini's reasoning models report `thoughtsTokenCount`
+// SEPARATELY from candidatesTokenCount, and it is billed and counted toward the response
+// like any other generated token - a measured probe of gemini-3.6-flash spent 93 of 116
+// tokens there. Ignoring it would let a run silently consume several times its per-run
+// budget, so it is added to output rather than dropped. Anthropic reports no equivalent
+// field, so Claude's totals are unchanged.
 function normalizeUsage(usage) {
   if (!usage || typeof usage !== 'object') return { input: 0, output: 0 };
+  const output = Number(usage.output_tokens) || Number(usage.candidatesTokenCount) || 0;
   return {
     input: Number(usage.input_tokens) || Number(usage.promptTokenCount) || 0,
-    output: Number(usage.output_tokens) || Number(usage.candidatesTokenCount) || 0,
+    output: output + (Number(usage.thoughtsTokenCount) || 0),
   };
 }
 

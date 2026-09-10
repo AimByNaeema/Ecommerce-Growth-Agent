@@ -12,9 +12,10 @@
 //
 // NOTHING HERE IS A SECOND RESEARCH OR PRODUCT AGENT. Every stage delegates:
 //   agent/core/customerMarketScopeEngine.js   customer context + market scope (pure)
-//   agent/core/claudeClient.js + web_search   the ONLY public-web capability this project
-//                                             has, reached exactly as
-//                                             tools/webCompetitorResearchTool.js does
+//   agent/core/aiProviderSelector.js          the ONLY public-web capability this project
+//                                             has, reached through the active provider:
+//                                             Claude's hosted web_search, or Gemini's
+//                                             Google Search grounding
 //   agent/core/opportunityCandidateEngine.js  de-duplication, customer fit, ranking (pure)
 //   compliance/complianceEngine.js            the existing PASS/REVIEW/BLOCK boundary
 //   compliance/etsyIpRiskDetector.js          the existing protected-mark pass
@@ -22,10 +23,12 @@
 //
 // PROVENANCE IS VERIFIED, NOT TRUSTED. A model can describe research it did not do and
 // cite a URL that search never returned. So every candidate and every signal survives only
-// when at least one of its claimed source URLs is in the set of URLs Anthropic's web_search
-// tool ITSELF returned (claudeClient.extractWebSearchResultUrls) - the same mechanical
-// check tools/webCompetitorResearchTool.js already applies. Unverifiable entries are
-// dropped, never downgraded and kept.
+// when at least one of its claimed source URLs is in the set of URLs THE SEARCH TOOL ITSELF
+// returned (aiProviderSelector.extractWebSearchResultUrls, which reads Anthropic's
+// web_search_tool_result blocks or Gemini's groundingChunks depending on the active
+// provider) - the same mechanical check tools/webCompetitorResearchTool.js already applies.
+// A URL the model merely wrote in prose is never verified by either provider. Unverifiable
+// entries are dropped, never downgraded and kept.
 //
 // WHAT THIS RUN CANNOT KNOW, AND SAYS SO. There is no search-volume provider, no trend API
 // and no marketplace-insights feed in this project. Demand, competition and trend therefore
@@ -36,8 +39,10 @@
 // IT ENDS AT OPPORTUNITIES. Nothing here creates, prices, lists or publishes a product on
 // any channel. Acting on a ranked opportunity is a separate, human-approved decision.
 
-const claudeClient = require('../agent/core/claudeClient');
-const { checkTokenBudget } = require('../agent/core/tokenControls');
+const aiProviderSelector = require('../agent/core/aiProviderSelector');
+const webSearchProvider = require('../agent/core/webSearchProvider');
+const { createToolResultCache } = require('../agent/core/toolResultCache');
+const { checkTokenBudget, normalizeUsage } = require('../agent/core/tokenControls');
 const { buildCustomerMarketScope } = require('../agent/core/customerMarketScopeEngine');
 const {
   dedupeCandidates,
@@ -149,50 +154,169 @@ function recordUsage(totals, usage) {
   if (!totals.model && usage.model) totals.model = usage.model;
 }
 
-function totalTokensFromUsage(usage) {
-  if (!usage) return 0;
-  return (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0);
+// Search accounting, kept separate from TOKEN accounting because they are separate costs:
+// a search request is billed by the search provider, tokens by the AI provider. Counts
+// only what actually happened - a cache hit is recorded as a hit, never as a request.
+function recordSearch(stats, outcome) {
+  if (!stats || !outcome) return;
+  if (!outcome.searchOutcome) return; // model-native mode performs no separate search
+  const search = outcome.searchOutcome;
+  stats.provider = search.provider || stats.provider;
+  if (search.cached) {
+    stats.cacheHits += 1;
+    return;
+  }
+  stats.cacheMisses += 1;
+  stats.requests += 1;
+  if (search.status && search.status !== 'SEARCH_OK') stats.statuses.push(search.status);
+  // Usage/credit figures ONLY when the provider actually reported them.
+  if (search.usage) stats.usage.push(search.usage);
+  stats.resultsReturned += Array.isArray(search.results) ? search.results.length : 0;
 }
 
-// One batched web_search call. Returns the parsed payload plus the set of URLs search
-// itself returned, so the caller can verify every entry against real results.
-async function runSearchCall({ system, prompt, businessId, tokensUsedThisRun }) {
+// Provider-aware on purpose: agent/core/tokenControls.js's normalizeUsage already reads
+// BOTH Anthropic's input_tokens/output_tokens and Gemini's promptTokenCount/
+// candidatesTokenCount. A local Claude-only copy used to live here, which silently
+// reported 0 tokens for every Gemini call and left the per-run budget never decrementing.
+function totalTokensFromUsage(usage) {
+  const { input, output } = normalizeUsage(usage);
+  return input + output;
+}
+
+// Anthropic reports 'max_tokens'; Gemini reports 'MAX_TOKENS'. Compared case-insensitively
+// so the same cut-off guidance fires for both rather than only for Claude.
+function isMaxTokensStopReason(stopReason) {
+  return typeof stopReason === 'string' && stopReason.toLowerCase() === 'max_tokens';
+}
+
+// In EXTERNAL search mode the model is handed results and is given NO tools. The system
+// prompts above still open with "Use the web_search tool to ..." because that is correct for
+// model-native mode - but leaving it in place for an external run tells the model to call a
+// tool that does not exist.
+//
+// PROVEN, NOT GUESSED: against the live API, the validation call with that instruction and no
+// tools terminated with finishReason MALFORMED_FUNCTION_CALL and an EMPTY text part, which
+// the pipeline could only report as "did not return a parsable JSON result". Replacing this
+// one directive - nothing else - returned valid JSON with all 7 entries.
+//
+// Applied here, where the mode is already known, so the prompt constants stay correct for the
+// model-native providers and both stages are fixed by one change. The provenance rules in
+// those prompts are deliberately untouched: the model must still cite exact source URLs, and
+// verification against the search tool's own URL set is unchanged.
+function adaptSystemPromptForExternalSearch(system) {
+  if (typeof system !== 'string') return system;
+  return system.replace(
+    /^Use the web_search tool to .*$/gm,
+    'Use ONLY the SEARCH RESULTS supplied in the user message as your evidence. You have no tools available; do not attempt to call one.'
+  );
+}
+
+// Real search results, rendered for the synthesis call. Only what the search provider
+// actually returned appears here - url, title and snippet - so the model reasons over real
+// pages instead of its own recollection. The instruction is belt-and-braces: verification
+// downstream is mechanical either way, and a URL outside this list is dropped.
+function formatSearchResults(searchOutcome) {
+  const lines = ['SEARCH RESULTS (these are the ONLY sources you may cite - copy a source_url EXACTLY from this list):'];
+  searchOutcome.results.forEach((result, index) => {
+    lines.push('');
+    lines.push(`[${index + 1}] ${result.title || '(no title reported)'}`);
+    lines.push(`source_url: ${result.url}`);
+    if (result.content) lines.push(`excerpt: ${result.content}`);
+  });
+  return lines.join('\n');
+}
+
+// One batched web-search call. Returns the parsed payload plus the set of URLs SEARCH
+// ITSELF returned, so the caller can verify every entry against real results.
+//
+// TWO MODES, selected by agent/core/webSearchProvider.js (SEARCH_PROVIDER):
+//
+//   external     - a real search runs FIRST (e.g. Tavily), and its results are handed to
+//                  the AI provider as context. The verified URL set is the search
+//                  provider's own result list; the model contributes analysis, never
+//                  sources.
+//   model_native - the AI provider searches during its own turn (Anthropic web_search,
+//                  Gemini Google Search grounding). The verified URL set is read back out
+//                  of the response's search metadata.
+//
+// Either way `verifiedUrls` holds only URLs a SEARCH TOOL returned. A URL the model wrote
+// in prose never enters it, which is what makes the downstream evidence check meaningful.
+async function runSearchCall({ system, prompt, query, businessId, tokensUsedThisRun, searchCache = null }) {
   const budget = checkTokenBudget({ requestedMaxTokens: MAX_TOKENS, tokensUsedThisRun });
   if (!budget.allowed) return { ok: false, reason: budget.reason, usage: null };
 
+  const mode = webSearchProvider.getSearchProviderMode();
+  let verifiedUrls = null;
+  let searchOutcome = null;
+  let effectivePrompt = prompt;
+
+  if (mode === 'external') {
+    searchOutcome = await webSearchProvider.search({ query: query || prompt, cache: searchCache });
+    if (!searchOutcome.ok) {
+      // The provider's own classified status travels with the failure, so the caller can
+      // tell "allowance exhausted" from "found nothing" instead of flattening both.
+      return { ok: false, reason: searchOutcome.detail, searchStatus: searchOutcome.status, searchOutcome, usage: null, verifiedUrls: new Set() };
+    }
+    verifiedUrls = new Set(webSearchProvider.verifiedUrlsFromSearch(searchOutcome));
+    if (verifiedUrls.size === 0) {
+      return { ok: false, reason: 'The web search ran and returned no results for this query.', searchStatus: searchOutcome.status, searchOutcome, usage: null, verifiedUrls };
+    }
+    effectivePrompt = `${prompt}\n\n${formatSearchResults(searchOutcome)}`;
+  }
+
   let response;
   try {
-    response = await claudeClient.sendMessage({
-      messages: [{ role: 'user', content: prompt }],
-      system,
-      tools: [WEB_SEARCH_TOOL],
+    response = await aiProviderSelector.sendMessage({
+      messages: [{ role: 'user', content: effectivePrompt }],
+      system: mode === 'external' ? adaptSystemPromptForExternalSearch(system) : system,
+      // The hosted search tool is offered ONLY in model-native mode. In external mode the
+      // search already happened, and asking the model to search again would spend a second
+      // allowance for sources that could not be verified against the first.
+      ...(mode === 'model_native' ? { tools: [WEB_SEARCH_TOOL] } : {}),
       maxTokens: budget.capped_max_tokens,
       businessId,
     });
   } catch (err) {
-    return { ok: false, reason: err.message, usage: null };
+    return { ok: false, reason: err.message, searchStatus: null, searchOutcome, usage: null };
   }
 
   const usage = {
     model: response.model,
     stopReason: response.stopReason,
     tokensUsed: totalTokensFromUsage(response.usage),
-    inputTokens: Number(response.usage && response.usage.input_tokens) || 0,
-    outputTokens: Number(response.usage && response.usage.output_tokens) || 0,
+    inputTokens: normalizeUsage(response.usage).input,
+    outputTokens: normalizeUsage(response.usage).output,
   };
-  const verifiedUrls = new Set(claudeClient.extractWebSearchResultUrls(response.raw && response.raw.content));
-  if (verifiedUrls.size === 0) {
-    return { ok: false, reason: 'The web search returned no real results for this query.', usage, verifiedUrls };
+  if (mode === 'model_native') {
+    verifiedUrls = new Set(aiProviderSelector.extractWebSearchResultUrls(response.raw));
+    if (verifiedUrls.size === 0) {
+      return { ok: false, reason: 'The web search returned no real results for this query.', usage, verifiedUrls };
+    }
   }
-  const parsed = tryParseJson(extractFinalTextBlock(response.raw && response.raw.content));
+  // Claude emits interim text blocks around the final JSON, so its LAST text block is the
+  // answer; Gemini returns one text, already on response.text.
+  const answerText = extractFinalTextBlock(response.raw && response.raw.content) || response.text;
+  const parsed = tryParseJson(answerText);
   if (!parsed) {
+    // "No text at all" and "text that was not JSON" are different failures with different
+    // fixes, and collapsing them cost a full investigation once: a provider that terminated
+    // abnormally (Gemini's MALFORMED_FUNCTION_CALL, with an empty part) was reported as if
+    // the model had simply answered badly. The provider's own stop reason is named here so
+    // the next occurrence is diagnosable from the run record. Only the stop reason is
+    // reported - never the model's raw output, which is not persisted anywhere.
     const reason =
-      response.stopReason === 'max_tokens'
-        ? "The research assistant's answer was cut off before it finished (Claude's per-call output-token limit was reached). Raise MAX_TOKENS_PER_CALL in .env (e.g. to 8192) and try again."
-        : 'The research assistant did not return a parsable JSON result.';
-    return { ok: false, reason, usage, verifiedUrls };
+      isMaxTokensStopReason(response.stopReason)
+        ? "The research assistant's answer was cut off before it finished (the per-call output-token limit was reached). Raise MAX_TOKENS_PER_CALL in .env (e.g. to 8192) and try again."
+        : !nonEmptyString(answerText)
+          ? `The research assistant returned no text at all (provider stop reason: ${response.stopReason || 'not reported'}).`
+          : 'The research assistant did not return a parsable JSON result.';
+    // `searchOutcome` travels with this failure too. In external mode the search has ALREADY
+    // executed and been billed by the time the model answers, so omitting it here made
+    // recordSearch skip a request that really happened - a real run showed 3 Tavily searches
+    // recorded as 2. An unusable model answer does not un-bill the search that preceded it.
+    return { ok: false, reason, usage, verifiedUrls, searchOutcome, searchStatus: searchOutcome ? searchOutcome.status : null };
   }
-  return { ok: true, parsed, verifiedUrls, usage };
+  return { ok: true, parsed, verifiedUrls, usage, searchOutcome, searchStatus: searchOutcome ? searchOutcome.status : null };
 }
 
 // --- Stage 2: broad discovery -------------------------------------------------------
@@ -201,6 +325,8 @@ async function runSearchCall({ system, prompt, businessId, tokensUsedThisRun }) 
 function buildDiscoveryPrompts(marketScope, batches) {
   const related = asArray(marketScope.related_markets);
   const intents = asArray(marketScope.buyer_intents);
+  // Each entry pairs the model PROMPT with a concise SEARCH QUERY. An external provider
+  // is given the query; a model-native provider composes its own from the prompt.
   const prompts = [
     [
       `Business's primary market: ${marketScope.primary_market}.`,
@@ -229,25 +355,34 @@ function buildDiscoveryPrompts(marketScope, batches) {
   return prompts.slice(0, batches);
 }
 
-async function discoverCandidates({ marketScope, batches, businessId, tokenTracker, stages, usageTotals }) {
+async function discoverCandidates({ marketScope, batches, businessId, tokenTracker, stages, usageTotals, searchCache, searchStats }) {
   const candidates = [];
   const sourcesUsed = new Set();
   let calls = 0;
 
-  for (const prompt of buildDiscoveryPrompts(marketScope, batches)) {
+  const related = asArray(marketScope.related_markets);
+  const discoveryQueries = [
+    `products related to ${marketScope.primary_market} that online stores sell`,
+    `trending and seasonal products in ${marketScope.primary_market}${related.length > 0 ? ` and ${related[0]}` : ''}`,
+  ];
+  const prompts = buildDiscoveryPrompts(marketScope, batches);
+  for (let i = 0; i < prompts.length; i += 1) {
     const outcome = await runSearchCall({
       system: DISCOVERY_SYSTEM_PROMPT,
-      prompt,
+      prompt: prompts[i],
+      query: discoveryQueries[i] || discoveryQueries[0],
       businessId,
       tokensUsedThisRun: tokenTracker.tokensUsedThisRun,
+      searchCache,
     });
     calls += 1;
+    recordSearch(searchStats, outcome);
     if (outcome.usage) {
       tokenTracker.tokensUsedThisRun += outcome.usage.tokensUsed || 0;
       recordUsage(usageTotals, outcome.usage);
     }
     if (!outcome.ok) {
-      stages.push({ stage: 'discovery', status: 'failed', detail: outcome.reason });
+      stages.push({ stage: 'discovery', status: 'failed', detail: outcome.reason, search_status: outcome.searchStatus || null });
       continue;
     }
 
@@ -289,7 +424,7 @@ async function discoverCandidates({ marketScope, batches, businessId, tokenTrack
 }
 
 // --- Stage 4: deep validation of the shortlist only ---------------------------------
-async function validateShortlist({ shortlist, businessId, tokenTracker, stages, usageTotals }) {
+async function validateShortlist({ shortlist, businessId, tokenTracker, stages, usageTotals, searchCache, searchStats }) {
   if (shortlist.length === 0) return { validated: new Map(), sourcesUsed: new Set(), calls: 0 };
 
   const prompt = [
@@ -303,9 +438,12 @@ async function validateShortlist({ shortlist, businessId, tokenTracker, stages, 
   const outcome = await runSearchCall({
     system: VALIDATION_SYSTEM_PROMPT,
     prompt,
+    query: `${shortlist.slice(0, 5).map((c) => c.product).join(', ')} demand competition price`,
     businessId,
     tokensUsedThisRun: tokenTracker.tokensUsedThisRun,
+    searchCache,
   });
+  recordSearch(searchStats, outcome);
   if (outcome.usage) {
     tokenTracker.tokensUsedThisRun += outcome.usage.tokensUsed || 0;
     recordUsage(usageTotals, outcome.usage);
@@ -428,6 +566,20 @@ async function runCustomerMarketOpportunityResearch({
   // agent/core/orchestratorExecutionContract.js's usage ledger records this tool's actual
   // cost rather than counting it as one flat tool call.
   const usageTotals = { model: null, inputTokens: 0, outputTokens: 0, tokensUsed: 0 };
+  // The project's EXISTING per-run memoizer (agent/core/toolResultCache.js), reused rather
+  // than a second cache: an identical query inside one run is served from it instead of
+  // spending a second search credit.
+  const searchCache = createToolResultCache();
+  const searchStats = {
+    provider: null,
+    mode: null,
+    requests: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    resultsReturned: 0,
+    statuses: [],
+    usage: [],
+  };
   const limitations = [];
 
   // Stage 1 - customer context and market scope, from the business's own real data.
@@ -447,12 +599,33 @@ async function runCustomerMarketOpportunityResearch({
     return result;
   }
 
-  if (!claudeClient.isConfigured({ businessId })) {
+  searchStats.provider = webSearchProvider.getActiveSearchProvider();
+  searchStats.mode = webSearchProvider.getSearchProviderMode();
+
+  if (!aiProviderSelector.isConfigured({ businessId })) {
     result.status = 'needs_information';
     result.limitations = [
-      'ANTHROPIC_API_KEY is not configured, so the live web research this capability depends on could not run. The customer context and market scope above were still derived from real business data.',
+      `The active AI provider (${aiProviderSelector.getActiveProvider()}) is not configured, so the live web research this capability depends on could not run. Set its API key in .env. The customer context and market scope above were still derived from real business data.`,
     ];
-    result.research_summary = { stages, sources_used: [], verified_source_count: 0, model_calls: 0, usage: { ...usageTotals }, generated_at: new Date().toISOString() };
+    result.research_summary = { stages, sources_used: [], verified_source_count: 0, model_calls: 0, usage: { ...usageTotals }, search: { ...searchStats }, generated_at: new Date().toISOString() };
+    return result;
+  }
+
+  // The SEARCH provider is a separate dependency from the AI provider, and is reported as
+  // one: 'we cannot search' is a different problem from 'we cannot reason', with a
+  // different fix. Reported BEFORE any call is attempted, so no allowance is spent proving
+  // something the configuration already tells us.
+  if (!webSearchProvider.isSearchConfigured()) {
+    const status = 'SEARCH_PROVIDER_NOT_CONFIGURED';
+    stages.push({ stage: 'discovery', status: 'failed', detail: `Search provider '${searchStats.provider}' is not configured.`, search_status: status });
+    searchStats.statuses.push(status);
+    result.status = 'needs_information';
+    result.search_status = status;
+    result.search_status_message = webSearchProvider.userFacingStatusMessage(status);
+    result.limitations = [
+      `${webSearchProvider.userFacingStatusMessage(status)} The configured search provider is '${searchStats.provider}' and its API key is not set, so no live web search was attempted. The customer context and market scope above were still derived from real business data.`,
+    ];
+    result.research_summary = { stages, sources_used: [], verified_source_count: 0, model_calls: 0, usage: { ...usageTotals }, search: { ...searchStats }, generated_at: new Date().toISOString() };
     return result;
   }
 
@@ -464,6 +637,8 @@ async function runCustomerMarketOpportunityResearch({
     tokenTracker,
     stages,
     usageTotals,
+    searchCache,
+    searchStats,
   });
   const sourcesUsed = new Set(discovery.sourcesUsed);
   let modelCalls = discovery.calls;
@@ -507,7 +682,7 @@ async function runCustomerMarketOpportunityResearch({
   });
 
   // Stage 4 - deep validation, shortlist only.
-  const validation = await validateShortlist({ shortlist, businessId, tokenTracker, stages, usageTotals });
+  const validation = await validateShortlist({ shortlist, businessId, tokenTracker, stages, usageTotals, searchCache, searchStats });
   modelCalls += validation.calls;
   validation.sourcesUsed.forEach((url) => sourcesUsed.add(url));
 
@@ -621,6 +796,21 @@ async function runCustomerMarketOpportunityResearch({
     limitations.push('No target geography is declared in configuration/business.yaml, so this research is not geographically scoped and was not assumed to be global.');
   }
 
+  // An OPERATIONAL search failure (allowance gone, rate limited, provider down) is a
+  // different fact from 'we searched and found nothing', and is reported as such so a
+  // caller can keep prior research and tell the user why this run is not fresh.
+  const operationalStatus = searchStats.statuses.find((status) => webSearchProvider.isOperationalFailure(status)) || null;
+  if (operationalStatus) {
+    result.search_status = operationalStatus;
+    result.search_status_message = webSearchProvider.userFacingStatusMessage(operationalStatus);
+    limitations.push(
+      `${webSearchProvider.userFacingStatusMessage(operationalStatus)} (search provider: ${searchStats.provider}, status: ${operationalStatus}).`
+    );
+  } else if (searchStats.mode) {
+    result.search_status = 'SEARCH_OK';
+    result.search_status_message = webSearchProvider.userFacingStatusMessage('SEARCH_OK');
+  }
+
   result.limitations = limitations;
   result.research_summary = {
     stages,
@@ -629,9 +819,13 @@ async function runCustomerMarketOpportunityResearch({
     model_calls: modelCalls,
     tokens_used_this_run: tokenTracker.tokensUsedThisRun,
     usage: { ...usageTotals },
+    // Search cost, tracked separately from token cost - different provider, different bill.
+    search: { ...searchStats },
     generated_at: new Date().toISOString(),
   };
-  result.status = result.top_opportunities.length > 0 ? 'complete' : 'partial';
+  // 'complete' only when real opportunities came back. A run whose SEARCH failed
+  // operationally is never 'complete', even if the pipeline itself ran cleanly.
+  result.status = result.top_opportunities.length > 0 && !operationalStatus ? 'complete' : 'partial';
   return result;
 }
 
@@ -643,6 +837,9 @@ module.exports = {
   DISCOVERY_SYSTEM_PROMPT,
   VALIDATION_SYSTEM_PROMPT,
   buildDiscoveryPrompts,
+  formatSearchResults,
+  adaptSystemPromptForExternalSearch,
+  recordSearch,
   normalizeSignal,
   assessCandidateCompliance,
   runCustomerMarketOpportunityResearch,

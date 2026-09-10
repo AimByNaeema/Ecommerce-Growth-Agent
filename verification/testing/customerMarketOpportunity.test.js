@@ -4,14 +4,14 @@
 // engine, the result contract, and the staged workflow end to end.
 //
 // NO LIVE RESEARCH HAPPENS HERE. Every web_search call is intercepted at
-// agent/core/claudeClient.js's sendMessage boundary and answered from a fixture, so this
+// agent/core/aiProviderSelector.js's sendMessage boundary and answered from a fixture, so this
 // suite spends no Claude tokens, makes no network request, and its result does not depend
 // on what the public web says today. The fixtures deliberately include the failure modes
 // that matter: an unverifiable source URL, a fabricated number, a protected mark, and a
 // seasonal product described as growing.
 
 const assert = require('node:assert');
-const claudeClient = require('../../agent/core/claudeClient');
+const aiProviderSelector = require('../../agent/core/aiProviderSelector');
 const scopeEngine = require('../../agent/core/customerMarketScopeEngine');
 const candidateEngine = require('../../agent/core/opportunityCandidateEngine');
 const resultModel = require('../../agent/core/customerOpportunityResearchModel');
@@ -48,18 +48,41 @@ async function testAsync(name, fn) {
   }
 }
 
-// Replaces claudeClient.sendMessage for the duration of `fn`, restoring unconditionally -
-// the same module-boundary convention every other suite in this project uses.
+// Replaces the PROVIDER SELECTOR's sendMessage for the duration of `fn`, restoring
+// unconditionally - the same module-boundary convention every other suite in this project
+// uses. The selector is the boundary the workflow actually calls (it supports Claude's
+// hosted web_search and Gemini's Google Search grounding), so mocking it is what keeps
+// these fixtures exercising the real code path.
+//
+// AI_PROVIDER is pinned to 'claude' for the duration because the fixtures below are
+// Anthropic-shaped (raw.content web_search_tool_result blocks). That makes the real
+// extractWebSearchResultUrls read them correctly, so URL VERIFICATION IS STILL REALLY
+// EXERCISED here rather than stubbed out. Gemini's own grounding shape is covered by
+// verification/testing/geminiWebGrounding.test.js.
 function withMockedSendMessage(impl, fn) {
-  const saved = claudeClient.sendMessage;
-  const savedConfigured = claudeClient.isConfigured;
-  claudeClient.sendMessage = impl;
-  claudeClient.isConfigured = () => true;
+  const saved = aiProviderSelector.sendMessage;
+  const savedConfigured = aiProviderSelector.isConfigured;
+  const savedProvider = process.env.AI_PROVIDER;
+  const savedSearchProvider = process.env.SEARCH_PROVIDER;
+  aiProviderSelector.sendMessage = impl;
+  aiProviderSelector.isConfigured = () => true;
+  process.env.AI_PROVIDER = 'claude';
+  // SEARCH_PROVIDER is pinned for the same reason AI_PROVIDER is: these fixtures are
+  // Anthropic-shaped, so the run must take the model-native path that reads them. Without
+  // this the suite inherits whatever the operator's .env happens to say - a machine with
+  // SEARCH_PROVIDER=tavily would push these fixtures down the external-retrieval path and
+  // fail for a reason that has nothing to do with the code under test. Gemini/Tavily paths
+  // are covered by geminiWebGrounding.test.js and tavilySearchProvider.test.js.
+  process.env.SEARCH_PROVIDER = 'claude_web_search';
   return Promise.resolve()
     .then(fn)
     .finally(() => {
-      claudeClient.sendMessage = saved;
-      claudeClient.isConfigured = savedConfigured;
+      aiProviderSelector.sendMessage = saved;
+      aiProviderSelector.isConfigured = savedConfigured;
+      if (savedProvider === undefined) delete process.env.AI_PROVIDER;
+      else process.env.AI_PROVIDER = savedProvider;
+      if (savedSearchProvider === undefined) delete process.env.SEARCH_PROVIDER;
+      else process.env.SEARCH_PROVIDER = savedSearchProvider;
     });
 }
 
