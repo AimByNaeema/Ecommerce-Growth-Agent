@@ -30,6 +30,7 @@ const etsyReadClient = require('../../integrations/adapters/etsyReadClient');
 const analyticsDataTool = require('../../tools/analyticsDataTool');
 const etsyShopDataTool = require('../../tools/etsyShopDataTool');
 const etsyListingDataTool = require('../../tools/etsyListingDataTool');
+const aiProviderSelector = require('../../agent/core/aiProviderSelector');
 
 // THIS SUITE MUST NEVER TOUCH THE REAL ETSY API. GET /store/metrics reads Etsy whenever
 // canRead() is true - and on the owner's own machine Etsy IS configured, so without this
@@ -198,6 +199,63 @@ async function main() {
             )
         )
     );
+  });
+
+  await testAsync('GET /overview reports the AI provider from configuration only, never a key or raw value', async () => {
+    await withMocked(aiProviderSelector, 'getActiveProvider', () => 'gemini', () =>
+      withMocked(aiProviderSelector, 'isConfigured', () => true, () =>
+        withServer(async (port) => {
+          const res = await authedGet(port, '/overview');
+          assert.strictEqual(res.status, 200);
+          assert.deepStrictEqual(JSON.parse(res.raw).ai_provider, { provider: 'gemini', configured: true, detail: null });
+        })
+      )
+    );
+
+    await withMocked(aiProviderSelector, 'getActiveProvider', () => 'claude', () =>
+      withMocked(aiProviderSelector, 'isConfigured', () => false, () =>
+        withServer(async (port) => {
+          const payload = JSON.parse((await authedGet(port, '/overview')).raw);
+          assert.strictEqual(payload.ai_provider.provider, 'claude');
+          assert.strictEqual(payload.ai_provider.configured, false, 'a missing key must never read as configured');
+        })
+      )
+    );
+
+    await withMocked(
+      aiProviderSelector,
+      'getActiveProvider',
+      () => {
+        throw new Error("Unrecognized AI_PROVIDER value 'raw-provider-value'");
+      },
+      () =>
+        withServer(async (port) => {
+          const res = await authedGet(port, '/overview');
+          assert.strictEqual(res.status, 200, 'a bad AI_PROVIDER must not take the whole overview down');
+          const payload = JSON.parse(res.raw);
+          assert.strictEqual(payload.ai_provider.provider, null);
+          assert.strictEqual(payload.ai_provider.configured, false);
+          assert.ok(!res.raw.includes('raw-provider-value'), 'the raw AI_PROVIDER value must not be echoed');
+        })
+    );
+
+    // Whatever keys this machine really holds, none of them may appear in the payload.
+    const realKeys = [process.env.GEMINI_API_KEY, process.env.ANTHROPIC_API_KEY].filter(
+      (value) => typeof value === 'string' && value.trim().length >= 8
+    );
+    await withServer(async (port) => {
+      const raw = (await authedGet(port, '/overview')).raw;
+      for (const key of realKeys) assert.ok(!raw.includes(key), 'a provider API key must never appear in /overview');
+    });
+
+    // The status module is how server.js reports the provider WITHOUT reaching a model
+    // (askOrchestrationRouting.test.js forbids server.js from requiring a model client or the
+    // selector). So it must stay status-only: no sendMessage exported, and none called.
+    const statusModule = require('../../agent/core/aiProviderStatus');
+    assert.deepStrictEqual(Object.keys(statusModule), ['getAiProviderStatus']);
+    const statusSource = fs.readFileSync(path.join(__dirname, '../../agent/core/aiProviderStatus.js'), 'utf8')
+      .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '')).join('\n');
+    assert.ok(!/sendMessage|fetch\(/.test(statusSource), 'aiProviderStatus.js must never send a model call');
   });
 
   await testAsync('GET /overview reports Shopify connected and Etsy not connected from real adapter checks', async () => {

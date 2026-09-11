@@ -14,6 +14,10 @@ const { getSpecialistById } = require('./agent/core/specialistRegistry');
 // unchanged below for the Chief Orchestrator's own free-text routing + approval flow
 // (see /orchestrate and /orchestrate/approve).
 const orchestratorExecutionContract = require('./agent/core/orchestratorExecutionContract');
+// Read by GET /overview only, to REPORT which provider is selected and whether its key is
+// set. A status-only module: it cannot send a model call, so server.js still never reaches a
+// model itself - every model call goes through the shared tool stack.
+const aiProviderStatus = require('./agent/core/aiProviderStatus');
 // The two already-built, already-tested orchestrators this file exposes over HTTP (see
 // /growth-workflow and /optimization-cycle below). Required as whole module objects for
 // the same reason orchestratorExecutionContract is above - a test monkey-patches these
@@ -1262,6 +1266,14 @@ function buildAiUsage(records) {
 // Store-health lines, each stating a fact this server can already verify. No line is
 // emitted on a hunch, and a healthy system honestly reports "ok" rather than inventing a
 // warning to look vigilant.
+// Which AI provider AI_PROVIDER selects, and whether THAT provider's key is present. Zero
+// network, like every other check GET /overview makes - see agent/core/aiProviderStatus.js.
+// "configured" means a key is set, not that a model call has succeeded, so the dashboard says
+// "configured", never "connected". No key, and no raw AI_PROVIDER value, is ever returned.
+function buildAiProviderStatus() {
+  return aiProviderStatus.getAiProviderStatus();
+}
+
 function buildHealthChecks({ channels, summaries, historyReadable, approvals }) {
   const checks = [];
 
@@ -2364,6 +2376,7 @@ function createApp() {
       ai_usage: aiUsage,
       health: buildHealthChecks({ channels, summaries, historyReadable, approvals }),
       history_readable: historyReadable,
+      ai_provider: buildAiProviderStatus(),
     });
   });
 

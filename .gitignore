@@ -55,3 +55,6 @@ dist/
 build/
 coverage/
 .claude/
+
+.vercel
+.env*

@@ -255,6 +255,12 @@
   }
   .status-pill[data-state="error"] { background: var(--danger-soft); color: var(--danger); }
   .status-pill[data-state="error"] .status-dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+  /* Not yet known (the server has not answered), and configured-but-degraded. Neither may
+     borrow the green "idle" look, which would read as a working connection. */
+  .status-pill[data-state="neutral"] { background: var(--surface-raised); color: var(--ink-soft); box-shadow: inset 0 0 0 1px var(--border); }
+  .status-pill[data-state="neutral"] .status-dot { background: var(--ink-faint); box-shadow: 0 0 0 3px var(--surface-raised); }
+  .status-pill[data-state="warn"] { background: var(--warn-soft); color: var(--warn); }
+  .status-pill[data-state="warn"] .status-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 
   .page { display: none; flex-direction: column; padding: 26px 32px 40px; max-width: 900px; }
   .page.active { display: flex; }
@@ -1242,6 +1248,12 @@
       min-height: 34px; display: inline-flex; align-items: center; font-size: 12px;
     }
     .section-row-right { gap: 8px; }
+
+    /* The header's status pill states the AI provider in words, which can be longer than a
+       phone header has beside the page title - so the header wraps and the pill may too,
+       rather than pushing the page sideways. */
+    .main-header { flex-wrap: wrap; row-gap: 10px; }
+    .status-pill { white-space: normal; max-width: 100%; }
   }
 
   /* ============ Market opportunities ============
@@ -1363,63 +1375,241 @@
   }
 
   /* ============ How AVENLY AI works: the workflow map ============
-     Reuses panel-card, status-chip, section-label and the existing palette rather than
-     introducing a second visual language.
+     A PROCESS DIAGRAM, not a card grid. One main line runs top to bottom - input,
+     orchestration, the specialist stage, listing, the two gates, the platform boundary - and
+     every step is joined to the next by a DRAWN connector (a CSS line and arrowhead, never a
+     text glyph). The specialist stage is a group the Chief dispatches into (the branch) and
+     whose work converges (the merge) before the line continues; inside it the specialists
+     hand work on in the order the definitions give. The growth loop is drawn as a loop, with
+     a return path back to Marketing.
 
-     MOBILE FIRST, AND VERTICAL BY DEFAULT. A flow diagram squeezed sideways on a phone is
-     unreadable, so the default is a full-width vertical stack with downward connectors. At
-     900px and above it becomes a wrapping horizontal flow, which is what reads best when
-     there is room for it. */
+     Reuses panel-card, status-chip and the existing palette - no second visual language.
+
+     VERTICAL BY DEFAULT. Only the specialist stage spreads sideways, and only when the map
+     has room for three readable cards. Layout follows the width the map ACTUALLY has (a
+     container query on .workflow-map), not the viewport: below 860px the sidebar moves above
+     the page, so the viewport alone says little about the room left for the diagram. */
   .workflow-graph {
     display: flex; flex-direction: column; align-items: stretch;
-    gap: 0; margin-bottom: 18px;
+    gap: 0; margin: 0;
   }
 
+  /* The same 1180px the Overview uses - at 900px the diagram was squeezed into a strip with a
+     third of a desktop screen left empty beside it. */
+  #pageWorkflow { max-width: 1180px; }
+
+  .workflow-map {
+    container: workflow / inline-size;
+    --flow-link: 34px;       /* connector length on the main line */
+    --flow-handoff: 30px;    /* gap between specialists; holds their handoff arrow */
+    --flow-line: var(--ink-faint);
+    padding: 30px 28px 30px;
+  }
+
+  /* ---- Main-line steps ---- */
+  .flow-step { width: min(100%, 380px); margin: 0 auto; }
+  /* Clear of the arrowhead above it and of the boundary node's outline below it. */
+  .flow-stage-label {
+    padding-top: 6px; margin-bottom: 11px; text-align: center;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  /* ---- Connectors: a line and an arrowhead ---- */
+  .flow-link { position: relative; height: var(--flow-link); flex: none; }
+  .flow-link::before {
+    content: ''; position: absolute; left: 50%; top: 0; bottom: 5px;
+    width: 1px; margin-left: -0.5px; background: var(--flow-line);
+  }
+  .flow-link::after {
+    content: ''; position: absolute; left: 50%; bottom: 0; margin-left: -4.5px;
+    border-style: solid; border-width: 6px 4.5px 0;
+    border-color: var(--flow-line) transparent transparent;
+  }
+  /* Into the specialist stage the line ends on the group's junction, not on an arrowhead. */
+  .flow-link[data-into="group"]::before { bottom: 0; }
+  .flow-link[data-into="group"]::after { display: none; }
+  .flow-link-label {
+    position: absolute; left: calc(50% + 14px); top: 50%; transform: translateY(-50%);
+    font-size: 10px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--warn); white-space: nowrap;
+  }
+  /* The line into Platform action crosses a drawn boundary. Decorative only: the node's own
+     status chip - from the real run - is what says whether anything crossed it. */
+  .flow-link-boundary {
+    position: absolute; top: 50%; left: 50%; width: min(100%, 520px); transform: translateX(-50%);
+    border-top: 1px dashed var(--danger); opacity: 0.5;
+  }
+
+  /* ---- The specialist stage: branch, handoffs, merge ---- */
+  .flow-group {
+    position: relative; width: min(100%, 820px); margin: 0 auto;
+    padding: 0 18px; border: 1px solid var(--border); border-radius: 14px;
+    background: var(--ground);
+  }
+  /* Junction points where the main line enters and leaves the stage. */
+  .flow-group::before,
+  .flow-group::after {
+    content: ''; position: absolute; left: 50%; z-index: 1;
+    width: 7px; height: 7px; margin-left: -3.5px; border-radius: 50%; background: var(--flow-line);
+  }
+  .flow-group::before { top: -4px; }
+  .flow-group::after { bottom: -4px; }
+  .flow-group-legend {
+    position: absolute; top: -8px; left: 16px; padding: 0 8px; line-height: 16px;
+    background: var(--surface);
+    font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .flow-branch,
+  .flow-merge {
+    position: relative; display: grid;
+    grid-template-columns: minmax(0, 1fr); column-gap: var(--flow-handoff);
+  }
+  .flow-branch { height: 30px; }
+  .flow-merge { height: 26px; }
+  /* Stacked, the branch is one line into the first specialist and the merge one line out of
+     the last. Side by side, every specialist gets its own drop and rise off a shared bus. */
+  .flow-drop,
+  .flow-rise { position: relative; display: none; }
+  .flow-drop:first-child,
+  .flow-rise:last-child { display: block; }
+  .flow-drop::before,
+  .flow-rise::before {
+    content: ''; position: absolute; left: 50%; top: 0; bottom: 0;
+    width: 1px; margin-left: -0.5px; background: var(--flow-line);
+  }
+  .flow-drop::before { bottom: 5px; }
+  .flow-drop::after {
+    content: ''; position: absolute; left: 50%; bottom: 0; margin-left: -4.5px;
+    border-style: solid; border-width: 6px 4.5px 0;
+    border-color: var(--flow-line) transparent transparent;
+  }
+  /* The shared bus runs from the first specialist's centre to the last one's. */
+  .flow-branch::before,
+  .flow-merge::before {
+    content: ''; position: absolute; display: none; height: 1px; background: var(--flow-line);
+    left: calc((100% - (var(--flow-count) - 1) * var(--flow-handoff)) / (2 * var(--flow-count)));
+    right: calc((100% - (var(--flow-count) - 1) * var(--flow-handoff)) / (2 * var(--flow-count)));
+  }
+  .flow-branch::before { top: 12px; }
+  .flow-merge::before { top: 13px; }
+  .flow-branch::after,
+  .flow-merge::after {
+    content: ''; position: absolute; display: none; left: 50%;
+    width: 1px; margin-left: -0.5px; background: var(--flow-line);
+  }
+  .flow-branch::after { top: 0; height: 12px; }
+  .flow-merge::after { top: 13px; bottom: 0; }
+
+  .flow-group-row {
+    display: grid; grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--flow-handoff); column-gap: var(--flow-handoff);
+  }
+  .flow-group-cell { position: relative; display: flex; min-width: 0; }
+  .flow-group-cell > .workflow-node { flex: 1 1 auto; }
+  /* Handoff to the next specialist - downward while stacked. */
+  .flow-group-cell:not(:last-child)::before {
+    content: ''; position: absolute; left: 50%; top: 100%;
+    width: 1px; height: calc(var(--flow-handoff) - 5px); margin-left: -0.5px; background: var(--flow-line);
+  }
+  .flow-group-cell:not(:last-child)::after {
+    content: ''; position: absolute; left: 50%; top: calc(100% + var(--flow-handoff) - 6px); margin-left: -4.5px;
+    border-style: solid; border-width: 6px 4.5px 0;
+    border-color: var(--flow-line) transparent transparent;
+  }
+
+  /* ---- Nodes ---- */
   .workflow-node {
     /* A button, because it opens the detail drawer - keyboard and screen-reader reachable
        without any extra wiring. */
-    display: block; width: 100%; text-align: left; cursor: pointer;
+    position: relative; display: flex; flex-direction: column; align-items: stretch;
+    width: 100%; min-width: 0; text-align: left; cursor: pointer;
     background: var(--surface-raised); border: 1px solid var(--border);
     border-left: 3px solid var(--border);
-    border-radius: 12px; padding: 12px 14px; font: inherit; color: inherit;
-    transition: border-color 120ms ease, transform 120ms ease;
+    border-radius: 11px; padding: 11px 14px 12px; font: inherit; color: inherit;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+    transition: border-color 140ms ease, box-shadow 140ms ease;
   }
-  .workflow-node:hover { border-color: var(--accent); transform: translateY(-1px); }
-  .workflow-node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* Above the tallest real content (title, role, two description lines), so every step on a
+     line is the same height rather than varying with how its text happens to wrap. */
+  .flow-step > .workflow-node { min-height: 108px; }
 
   /* The left edge carries the ROLE, so gates and the platform boundary read differently
      from an agent at a glance. Status stays in the chip - never in the border - so a colour
      can never imply a state the run did not report. */
-  .workflow-node[data-kind="gate"] { border-left-color: var(--warn); }
-  .workflow-node[data-kind="boundary"] { border-left-color: var(--danger); }
+  .workflow-node[data-kind="input"] { border-left-color: var(--ink-faint); }
   .workflow-node[data-kind="agent"] { border-left-color: var(--accent); }
   .workflow-node[data-kind="orchestrator"] { border-left-color: var(--accent); }
+  .workflow-node[data-kind="gate"] { border-color: var(--warn-soft); border-left-color: var(--warn); }
+  /* The boundary is the last line before the live store, so it is drawn as one: a dashed
+     perimeter in the boundary colour. */
+  .workflow-node[data-kind="boundary"] {
+    border-color: var(--danger-soft); border-left-color: var(--danger);
+    outline: 1px dashed var(--danger); outline-offset: 4px;
+  }
+  /* After the role rules, and only on three sides, so the role edge survives hover. */
+  .workflow-node:hover {
+    border-top-color: var(--ink-faint); border-right-color: var(--ink-faint); border-bottom-color: var(--ink-faint);
+    box-shadow: 0 6px 18px var(--shadow);
+  }
+  .workflow-node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   .workflow-node-head {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 10px; flex-wrap: wrap;
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
   }
-  .workflow-node-title { color: var(--ink); font-weight: 600; font-size: 13.5px; min-width: 0; overflow-wrap: anywhere; }
+  .workflow-node-title {
+    color: var(--ink); font-weight: 600; font-size: 13.5px; line-height: 1.35;
+    min-width: 0; overflow-wrap: anywhere; padding-top: 1px;
+  }
   .workflow-node-role {
-    font-size: 10px; color: var(--ink-faint); text-transform: uppercase;
-    letter-spacing: 0.05em; margin-top: 4px;
+    display: block; margin-top: 2px;
+    font-size: 10px; font-weight: 500; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--ink-faint);
   }
-  .workflow-node-purpose { font-size: 12px; color: var(--ink-soft); line-height: 1.5; margin-top: 6px; }
-
-  .workflow-connector {
-    display: flex; align-items: center; gap: 8px;
-    padding: 4px 0 4px 18px; min-height: 22px;
-  }
-  .workflow-connector-arrow { color: var(--ink-faint); font-size: 13px; line-height: 1; }
-  .workflow-connector-label {
-    font-size: 10px; color: var(--ink-faint);
-    text-transform: uppercase; letter-spacing: 0.05em;
+  .workflow-node[data-kind="gate"] .workflow-node-role { color: var(--warn); }
+  .workflow-node[data-kind="boundary"] .workflow-node-role { color: var(--danger); }
+  .workflow-node-purpose {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+    margin-top: 7px; font-size: 12px; line-height: 1.5; color: var(--ink-soft);
   }
 
-  .workflow-loopback {
-    font-size: 12px; color: var(--ink-soft); line-height: 1.5;
-    padding: 10px 14px; margin-top: 8px;
-    border-left: 2px dashed var(--border); background: var(--surface-raised); border-radius: 8px;
+  /* ---- The growth loop ---- */
+  .workflow-loop-head { display: flex; align-items: center; gap: 14px; margin: 38px 0 24px; }
+  .workflow-loop-head::before,
+  .workflow-loop-head::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .workflow-loop-title {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  /* The stages in a column, with room on the right for the return path. */
+  .flow-loop { position: relative; width: calc(100% - 64px); margin-left: 0; }
+  .flow-loop .flow-step { width: 100%; }
+  /* From the last stage back up into the first, entering it with an arrowhead. */
+  .flow-return {
+    position: absolute; top: 30px; bottom: 30px; left: calc(100% + 10px); width: 30px;
+    border: 1px solid var(--flow-line); border-left: 0; border-radius: 0 12px 12px 0;
+  }
+  .flow-return::before {
+    content: ''; position: absolute; top: -5px; left: -7px;
+    border-style: solid; border-width: 4.5px 7px 4.5px 0;
+    border-color: transparent var(--flow-line) transparent transparent;
+  }
+  /* The return leaves from the last stage's edge, so the loop is one unbroken path. */
+  .flow-return::after {
+    content: ''; position: absolute; bottom: -1px; left: -10px;
+    width: 10px; height: 1px; background: var(--flow-line);
+  }
+  .flow-return-label {
+    position: absolute; left: calc(100% + 7px); top: 50%;
+    transform: translateY(-50%) rotate(180deg); writing-mode: vertical-rl;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-faint); white-space: nowrap;
+  }
+  .flow-loop-note {
+    margin: 20px auto 0; max-width: 56ch; text-align: center;
+    font-size: 12px; line-height: 1.55; color: var(--ink-soft);
   }
 
   .workflow-chain-step { margin-top: 14px; }
@@ -1466,20 +1656,230 @@
 
   .workflow-verdict { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 9px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; }
 
-  @media (min-width: 900px) {
-    /* Room enough for a flow that reads left-to-right. Nodes share a sensible minimum so a
-       long title wraps inside its own card rather than stretching the row. */
-    .workflow-graph { flex-direction: row; flex-wrap: wrap; align-items: stretch; gap: 0; }
-    .workflow-node { width: auto; flex: 1 1 210px; min-width: 190px; }
-    .workflow-connector { padding: 0 6px; align-self: center; min-height: 0; }
-    .workflow-connector-arrow { transform: rotate(-90deg); }
-    .workflow-connector-label { display: none; }
-    .workflow-loopback { flex-basis: 100%; }
+  @container workflow (min-width: 620px) {
+    /* Room for three readable specialist cards side by side: the branch becomes a bus with a
+       drop into every specialist, the merge a bus with a rise out of every one, and each
+       handoff arrow turns to point along the row. */
+    .flow-branch,
+    .flow-merge,
+    .flow-group-row { grid-template-columns: repeat(var(--flow-count), minmax(0, 1fr)); }
+    .flow-group-row { row-gap: 0; align-items: stretch; }
+    .flow-drop,
+    .flow-rise { display: block; }
+    .flow-branch::before,
+    .flow-merge::before,
+    .flow-branch::after,
+    .flow-merge::after { display: block; }
+    .flow-drop::before { top: 12px; }
+    .flow-rise::before { bottom: auto; height: 13px; }
+    .flow-group-cell:not(:last-child)::before {
+      left: 100%; top: 50%; width: calc(var(--flow-handoff) - 6px); height: 1px;
+      margin-left: 0; margin-top: -0.5px;
+    }
+    .flow-group-cell:not(:last-child)::after {
+      left: calc(100% + var(--flow-handoff) - 7px); top: 50%; margin-left: 0; margin-top: -4.5px;
+      border-width: 4.5px 0 4.5px 6px; border-color: transparent transparent transparent var(--flow-line);
+    }
+    /* On the main line two lines of description are enough, which keeps every step the same
+       height; the detail drawer carries the full text. */
+    .flow-step > .workflow-node .workflow-node-purpose { -webkit-line-clamp: 2; }
+
+    /* The loop column is centred, nudged left by half the return path beside it so the
+       whole loop - column plus return - sits on the page's centre line. */
+    .flow-loop { width: min(100% - 72px, 380px); margin: 0 auto; transform: translateX(-30px); }
+  }
+
+  @container workflow (min-width: 620px) and (max-width: 939.98px) {
+    /* Side by side at tablet width the specialist cards are narrow, so they get one more line
+       rather than cutting a description short. The row stays equal-height. */
+    .flow-group-cell .workflow-node-purpose { -webkit-line-clamp: 4; }
+  }
+
+  @container workflow (max-width: 619.98px) {
+    /* Phones: a narrower return path and no vertical label, so the loop's cards keep the
+       width - and the equal height - of the cards above. The sentence under the loop already
+       says where it returns. */
+    .flow-loop { width: calc(100% - 36px); }
+    .flow-return { left: calc(100% + 8px); width: 22px; }
+    .flow-return-label { display: none; }
+    /* Keeps the stage legend clear of the junction dot at the centre of the group's edge. */
+    .flow-group-legend { left: 8px; letter-spacing: 0.06em; }
   }
 
   @media (max-width: 420px) {
     /* Phones: keep the text at a readable size and let the drawer use the full width. */
+    .workflow-map { padding: 24px 14px 22px; }
     .workflow-node { padding: 11px 12px; }
-    .workflow-node-purpose { font-size: 11.5px; }
     .workflow-drawer-panel { width: 100%; border-left: none; }
+  }
+
+  /* ============ System status band (Overview) ============
+     The Chief Orchestrator, store health and connected channels as ONE band instead of three
+     cards stacked in a side column. The Chief is a compact strip across the top - its content
+     is a state and a sentence, so a tall card would only be empty space - with health and
+     channels side by side beneath it at equal height. Every area keeps its id and its
+     renderer; this block changes layout only. */
+  .status-band-wrap { container: status-band / inline-size; margin-bottom: 26px; }
+  .status-band { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .status-card {
+    display: flex; flex-direction: column; min-width: 0;
+    margin-bottom: 0; padding: 14px 18px 4px;
+  }
+  .status-card-head {
+    display: flex; align-items: center; gap: 9px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+  }
+  .status-card-title { font-size: 12.5px; font-weight: 600; color: var(--ink); letter-spacing: 0.005em; }
+  .status-card-body { min-width: 0; }
+  .status-card-body > .health-row,
+  .status-card-body > .channel-row { padding: 10px 0; }
+  .status-card-body > .health-row:last-child,
+  .status-card-body > .channel-row:last-child { border-bottom: none; }
+  .status-card-body > .panel-empty { padding: 10px 0; }
+  .status-card .status-chip { min-width: 44px; text-align: center; }
+  /* A platform with no adapter in this repo reads as secondary, never as a live channel. */
+  .channel-row:has(.status-chip.unavailable) > div { color: var(--ink-faint); font-weight: 400; }
+
+  /* The Chief strip: title on the left, then the real state chip and its sentence. */
+  .status-card-chief {
+    flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 8px 22px;
+    padding: 14px 18px;
+  }
+  .status-card-chief .status-card-head { flex: none; padding: 1px 0 0; border-bottom: none; min-width: 168px; }
+  .status-card-chief .status-card-body {
+    flex: 1 1 300px; display: grid; grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 12px; align-items: start;
+  }
+  .status-card-chief .orch-head { grid-row: span 3; }
+  .status-card-chief .orch-meta,
+  .status-card-chief .panel-empty { margin-top: 0; padding: 1px 0 0; line-height: 1.5; }
+  .status-card-chief .panel-empty { font-size: 12.5px; color: var(--ink-soft); }
+  .status-card-chief .link-btn { justify-self: start; }
+  .status-card-indicator {
+    width: 7px; height: 7px; border-radius: 50%; flex: none;
+    background: var(--ink-faint); box-shadow: 0 0 0 3px var(--surface-raised);
+  }
+  .status-card[data-tone="ok"] .status-card-indicator { background: var(--growth); box-shadow: 0 0 0 3px var(--growth-soft); }
+  .status-card[data-tone="warn"] .status-card-indicator { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+  .status-card[data-tone="error"] .status-card-indicator { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+
+  @container status-band (min-width: 640px) {
+    .status-band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .status-card-chief { grid-column: 1 / -1; }
+  }
+
+  /* ============ History: a scannable run log ============
+     One ruled list instead of a stack of large cards: when, what ran, its real status. The
+     selected run carries the accent edge, and its detail is scrolled into view below. */
+  .history-list { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); overflow: hidden; }
+  .history-head,
+  .history-row {
+    display: grid; grid-template-columns: 124px minmax(0, 1fr) auto; column-gap: 18px; align-items: center;
+    padding: 11px 18px;
+  }
+  .history-head {
+    padding-top: 9px; padding-bottom: 9px; border-bottom: 1px solid var(--border);
+    font-size: 10px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-faint);
+  }
+  .history-head span:last-child { text-align: right; }
+  .history-row { border-bottom: 1px solid var(--border); cursor: pointer; transition: background-color 120ms ease; }
+  .history-row:last-child { border-bottom: none; }
+  .history-row:hover { background: var(--surface-raised); }
+  .history-row[aria-current="true"] { background: var(--surface-raised); box-shadow: inset 3px 0 0 var(--accent); }
+  .history-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .history-when {
+    display: flex; flex-direction: column; gap: 1px;
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink-soft);
+  }
+  .history-when span + span { color: var(--ink-faint); }
+  .history-main { min-width: 0; }
+  .history-objective {
+    font-size: 13px; font-weight: 500; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .history-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-top: 3px; font-size: 11.5px; color: var(--ink-faint); }
+  .history-meta .section-channel-tag { margin-left: 0; }
+  .history-row .status-chip { justify-self: end; }
+  #historyDetailArea { scroll-margin-top: 16px; }
+
+  @media (max-width: 620px) {
+    .history-head { display: none; }
+    .history-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 5px; padding: 12px 14px; }
+    .history-when { grid-column: 1; grid-row: 1; flex-direction: row; gap: 8px; }
+    .history-main { grid-column: 1 / -1; grid-row: 2; }
+    .history-row .status-chip { grid-column: 2; grid-row: 1; }
+    .history-objective {
+      white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    }
+  }
+
+  /* ============ Overview: How it works preview ============
+     A compact summary of the workflow map, drawn from the same stage definitions
+     (GET /workflow/state). It carries no statuses - the full map does - so it can never
+     disagree with a run. Connectors are drawn, vertical by default and horizontal only when
+     the panel has room for the whole line. */
+  .flow-preview { container: flowpreview / inline-size; padding: 16px 18px 18px; }
+  .flow-preview-row + .flow-preview-row { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .flow-preview-label {
+    margin-bottom: 10px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint);
+  }
+  .flow-preview-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 18px; }
+  .flow-preview-step {
+    position: relative; min-width: 0;
+    background: var(--surface-raised); border: 1px solid var(--border); border-left: 2px solid var(--accent);
+    border-radius: 8px; padding: 8px 11px;
+    font-size: 12.5px; font-weight: 600; line-height: 1.3; color: var(--ink);
+  }
+  .flow-preview-step[data-kind="input"] { border-left-color: var(--ink-faint); }
+  .flow-preview-step[data-kind="gate"] { border-color: var(--warn-soft); border-left-color: var(--warn); }
+  .flow-preview-step[data-kind="boundary"] { border-color: var(--danger-soft); border-left-color: var(--danger); }
+  .flow-preview-step[data-kind="return"] {
+    background: transparent; border: 1px dashed var(--ink-faint); font-weight: 500; color: var(--ink-soft);
+  }
+  .flow-preview-sub { display: block; margin-top: 2px; font-size: 11px; font-weight: 400; color: var(--ink-faint); }
+  .flow-preview-step + .flow-preview-step::before {
+    content: ''; position: absolute; left: 18px; top: -18px; width: 1px; height: 12px; background: var(--ink-faint);
+  }
+  .flow-preview-step + .flow-preview-step::after {
+    content: ''; position: absolute; left: 14px; top: -7px;
+    border-style: solid; border-width: 5px 4.5px 0; border-color: var(--ink-faint) transparent transparent;
+  }
+  @container flowpreview (min-width: 860px) {
+    .flow-preview-steps { flex-direction: row; align-items: stretch; gap: 24px; }
+    .flow-preview-step { flex: 1 1 0; }
+    .flow-preview-step + .flow-preview-step::before { left: -21px; top: 50%; width: 13px; height: 1px; }
+    .flow-preview-step + .flow-preview-step::after {
+      left: -9px; top: 50%; margin-top: -4.5px;
+      border-width: 4.5px 0 4.5px 6px; border-color: transparent transparent transparent var(--ink-faint);
+    }
+  }
+
+  /* ============ Approval Center ============
+     The two safety checks are different things, so they are explained side by side above
+     the list: a compliance verdict is not an approval, and an approval is not a compliance
+     check. Each approval row then lays out only the fields its real record carries. */
+  .gate-explainer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .gate-explainer-item {
+    background: var(--surface); border: 1px solid var(--border); border-left: 2px solid var(--warn);
+    border-radius: 10px; padding: 11px 14px;
+  }
+  .gate-explainer-title { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+  .gate-explainer-text { margin-top: 3px; font-size: 12px; line-height: 1.5; color: var(--ink-soft); }
+
+  .approval-fields {
+    display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 7px 14px;
+    margin: 6px 0 12px; font-size: 12.5px;
+  }
+  .approval-fields dt {
+    padding-top: 2px; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .approval-fields dd { margin: 0; line-height: 1.5; color: var(--ink-soft); overflow-wrap: anywhere; }
+  .approval-fields code { font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--ink-soft); }
+
+  @media (max-width: 620px) {
+    .gate-explainer { grid-template-columns: minmax(0, 1fr); }
+    .approval-fields { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .approval-fields dd { margin-bottom: 7px; }
   }

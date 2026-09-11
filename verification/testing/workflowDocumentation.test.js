@@ -479,11 +479,12 @@ function clearStore() {
   // 22. Mobile-safe representation, and no second architecture.
   // -------------------------------------------------------------------------------------
 
-  test('22. the workflow is vertical by default and only goes horizontal with room', () => {
+  test('22. the workflow is vertical by default and only spreads sideways with room', () => {
     const css = fs.readFileSync(path.join(__dirname, '../../public/dashboard.css'), 'utf8');
     const base = css.slice(css.indexOf('.workflow-graph {'), css.indexOf('.workflow-node {'));
     assert.ok(/flex-direction:\s*column/.test(base), 'the default must be a readable vertical stack');
-    assert.ok(/@media \(min-width: 900px\)[\s\S]*?\.workflow-graph \{[^}]*flex-direction:\s*row/.test(css), 'horizontal only above 900px');
+    assert.ok(/\.flow-group-row \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/.test(css), 'the specialist stage must stack in one column by default');
+    assert.ok(/@container workflow \(min-width: \d+px\)[\s\S]*?\.flow-group-row \{[^}]*grid-template-columns:\s*repeat/.test(css), 'the specialist stage spreads sideways only when the map itself has room');
     assert.ok(/@media \(max-width: 420px\)[\s\S]*?\.workflow-drawer-panel \{[^}]*width:\s*100%/.test(css), 'the drawer must use the full width on a phone');
     assert.ok(/overflow-wrap:\s*anywhere/.test(css), 'long labels must wrap rather than overflow');
   });

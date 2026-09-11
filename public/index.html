@@ -62,9 +62,11 @@
         <div class="page-title" id="pageTitle">Overview</div>
         <div class="page-subtitle" id="pageSubtitle">Everything below reflects a real run against your connected Shopify store — nothing here is sample data.</div>
       </div>
-      <div class="status-pill" id="statusPill" data-state="idle">
+      <!-- The AI provider as the server reports it (GET /overview's ai_provider). Starts
+           neutral: nothing is claimed until the server has answered. -->
+      <div class="status-pill" id="statusPill" data-state="neutral">
         <span class="status-dot"></span>
-        <span id="statusText">Connected · Gemini</span>
+        <span id="statusText">Checking AI provider…</span>
       </div>
     </header>
 
@@ -138,6 +140,31 @@
         </div>
       </div>
 
+      <!-- System status, directly after the store's own figures: the Chief Orchestrator, store
+           health and connected channels read as ONE band - the Chief as a compact strip,
+           health and channels side by side beneath it. Each area keeps its id, so the
+           renderers fill it exactly as before. Not channel-scoped, so no filter hides it. -->
+      <div class="status-band-wrap">
+        <div class="section-label">System status</div>
+        <div class="status-band">
+          <div class="panel-card status-card status-card-chief">
+            <div class="status-card-head">
+              <span class="status-card-indicator" aria-hidden="true"></span>
+              <div class="status-card-title">Chief Orchestrator</div>
+            </div>
+            <div class="status-card-body" id="orchestratorArea"><div class="panel-empty">Loading…</div></div>
+          </div>
+          <div class="panel-card status-card">
+            <div class="status-card-head"><div class="status-card-title">Store health</div></div>
+            <div class="status-card-body" id="storeHealthArea"><div class="panel-empty">Loading…</div></div>
+          </div>
+          <div class="panel-card status-card">
+            <div class="status-card-head"><div class="status-card-title">Connected channels</div></div>
+            <div class="status-card-body" id="channelListArea"><div class="panel-empty">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+
       <!-- AI executive summary: impact + growth status, side by side and trimmed to the
            few figures that answer "what has the AI done for me?" at a glance. -->
       <div class="section-row">
@@ -206,23 +233,21 @@
           <div class="panel-card" id="approvalsOverviewArea"><div class="panel-empty">Loading…</div></div>
 
           <div class="section-row">
-            <div class="section-label">Chief Orchestrator</div>
-          </div>
-          <div class="panel-card" id="orchestratorArea"><div class="panel-empty">Loading…</div></div>
-
-          <div class="section-label">Store health</div>
-          <div class="panel-card" id="storeHealthArea"><div class="panel-empty">Loading…</div></div>
-
-          <div class="section-label">Connected channels</div>
-          <div class="panel-card" id="channelListArea"><div class="panel-empty">Loading…</div></div>
-
-          <div class="section-row">
             <div class="section-label">AI usage</div>
             <button class="section-link" id="viewUsageHistoryLink" type="button">View history →</button>
           </div>
           <div class="panel-card" id="aiUsageArea"><div class="panel-empty">Loading…</div></div>
         </div>
       </div>
+
+      <!-- How it works, in brief: the same stage definitions the workflow map draws
+           (GET /workflow/state), as one line and one loop. No statuses here - the map carries
+           those - so this summary can never disagree with a run. -->
+      <div class="section-row">
+        <div class="section-label">How it works</div>
+        <button class="section-link" id="openWorkflowLink" type="button">Open the workflow map →</button>
+      </div>
+      <div class="panel-card flow-preview" id="workflowPreviewArea"><div class="panel-empty">Loading…</div></div>
     </section>
 
     <!-- ============ ASK PAGE ============ -->
@@ -250,7 +275,7 @@
         </div>
         <div class="composer-footnote">
           <span>digitalstudiobynaeema.com</span>
-          <span id="providerTag">provider: gemini</span>
+          <span id="providerTag">provider: checking…</span>
         </div>
       </form>
     </section>
@@ -332,6 +357,19 @@
         <p>Every approval the Chief has asked you for during this browser session, in one place — decide from here or from the Chief Orchestrator page, both stay in sync. This list is not saved anywhere; closing or reloading the page clears it, exactly like the Chief's own runs do.</p>
       </div>
 
+      <!-- Two separate safety checks, explained side by side so neither is mistaken for the
+           other. Wording follows agent/core/workflowNarrative.js's gate definitions. -->
+      <div class="gate-explainer">
+        <div class="gate-explainer-item">
+          <div class="gate-explainer-title">Compliance gate — PASS · REVIEW · BLOCK</div>
+          <div class="gate-explainer-text">Catches policy, intellectual-property and content risk before anything reaches you. A PASS is not an approval.</div>
+        </div>
+        <div class="gate-explainer-item">
+          <div class="gate-explainer-title">Human approval — pending · approved · rejected</div>
+          <div class="gate-explainer-text">Keeps every consequential decision with you. Nothing gated runs, and nothing touches a live store, until you decide here.</div>
+        </div>
+      </div>
+
       <div class="session-note" id="approvalSessionNote">No approvals yet this session — they will appear here the moment the Chief asks for one.</div>
 
       <div class="filter-row" id="approvalFilterRow">
@@ -361,10 +399,14 @@
       </div>
       <div class="panel-card panel-note" id="workflowRunNote">Loading&hellip;</div>
 
-      <div id="workflowGraph" class="workflow-graph"></div>
+      <!-- One process map: the main line from your goal to the platform boundary, then the
+           growth loop beneath it on the same surface. Connectors are drawn by CSS. -->
+      <div class="panel-card workflow-map">
+        <div id="workflowGraph" class="workflow-graph"></div>
 
-      <div class="section-label">The growth loop</div>
-      <div id="workflowLoop" class="workflow-graph workflow-loop"></div>
+        <div class="workflow-loop-head"><span class="workflow-loop-title">The growth loop</span></div>
+        <div id="workflowLoop" class="workflow-graph workflow-loop"></div>
+      </div>
 
       <div class="section-label">Why was a product recommended?</div>
       <div id="workflowEvidenceArea"></div>

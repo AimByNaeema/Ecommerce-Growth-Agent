@@ -308,7 +308,8 @@
         return;
       }
       addMessage('assistant', data.reply || 'No reply received.');
-      setStatus('idle', 'Connected · Gemini');
+      // Back to the provider state the server reported - not a hard-coded claim.
+      setStatus(aiProviderPill.state, aiProviderPill.text);
       noteActivity('Asked a question just now');
     } catch (err) {
       removeThinking();
@@ -514,6 +515,13 @@
      orchestratorRuns on the server (see server.js) - a reload clears it, and the
      UI says so (see #approvalSessionNote). ---------- */
   const approvalLog = []; // { runId, approvalId, classification, title, reason, status, decidedBy, decidedAt, notes }
+
+  // What each gated classification means for the owner, from approvals/approvalArchitecture.js's
+  // four classes (CLAUDE.md rule 7): both gated classes wait for an explicit human decision.
+  const APPROVAL_CLASS_MEANING = {
+    approval_required: 'A consequential step - it does not run until you approve it.',
+    externally_executable: 'Would act on an external platform - it does not run until you approve it.',
+  };
 
   function upsertApprovalLog(entry) {
     const existing = approvalLog.find((a) => a.approvalId === entry.approvalId);
@@ -1172,12 +1180,30 @@
       row.className = 'approval-row';
       row.dataset.approvalId = entry.approvalId;
 
+      // Only the fields this approval record really carries. A platform, an action type or
+      // a compliance verdict is not part of an approval request, so none is shown here
+      // rather than one being guessed - compliance is a separate check (see the explainer
+      // above the list).
+      const statusText = escapeHtml(String(entry.status || 'pending'));
+      const decision = entry.status === 'pending'
+        ? 'Waiting for your decision.'
+        : escapeHtml(entry.status === 'approved' ? 'Approved' : 'Rejected') +
+          ' by ' + escapeHtml(entry.decidedBy || '—') +
+          (entry.decidedAt ? ' · ' + escapeHtml(formatWhen(entry.decidedAt)) : '') +
+          (entry.notes ? ' — “' + escapeHtml(entry.notes) + '”' : '');
+
       row.innerHTML =
         '<div class="approval-row-head">' +
         '<div><div class="approval-row-title">' + escapeHtml(entry.title || 'Approval') + '</div>' +
-        '<div class="approval-row-meta">' + escapeHtml(entry.classification) + ' · run ' + escapeHtml(entry.runId || '') + '</div></div>' +
-        '<span class="approval-row-status ' + entry.status + '">' + entry.status + '</span>' +
+        '<div class="approval-row-meta">Human approval request</div></div>' +
+        '<span class="approval-row-status ' + statusText + '">' + statusText + '</span>' +
         '</div>' +
+        '<dl class="approval-fields">' +
+        '<dt>Classification</dt><dd><code>' + escapeHtml(entry.classification || 'approval_required') + '</code> — ' +
+        escapeHtml(APPROVAL_CLASS_MEANING[entry.classification] || 'Does not run until you approve it.') + '</dd>' +
+        '<dt>Run</dt><dd><code>' + escapeHtml(entry.runId || 'not recorded') + '</code></dd>' +
+        '<dt>Decision</dt><dd>' + decision + '</dd>' +
+        '</dl>' +
         '<p class="approval-row-reason">' + escapeHtml(entry.reason || '') + '</p>' +
         (entry.status === 'pending'
           ? '<textarea class="approval-notes" placeholder="Optional note (why you approved or rejected this)"></textarea>' +
@@ -1235,38 +1261,86 @@
         return;
       }
 
+      // A scannable log: when, what ran (and on which channel, when the record states one),
+      // and its real saved status. Built from DOM nodes rather than an HTML string, so no
+      // saved text can ever reach an attribute unescaped.
+      const list = document.createElement('div');
+      list.className = 'history-list';
+      const head = document.createElement('div');
+      head.className = 'history-head';
+      head.setAttribute('aria-hidden', 'true');
+      ['When', 'Run', 'Status'].forEach((text) => {
+        const cell = document.createElement('span');
+        cell.textContent = text;
+        head.appendChild(cell);
+      });
+      list.appendChild(head);
+
       runs.forEach((entry) => {
         const row = document.createElement('div');
-        row.className = 'approval-row';
-        row.style.cursor = 'pointer';
+        row.className = 'history-row';
         row.tabIndex = 0;
         row.setAttribute('role', 'button');
 
         const kindLabel = entry.kind === 'orchestrate' ? 'Chief Orchestrator' : 'Specialist: ' + (entry.specialist_name || entry.specialist_id || '');
-        const when = entry.created_at ? new Date(entry.created_at).toLocaleString() : '';
+        const created = entry.created_at ? new Date(entry.created_at) : null;
+        const hasTime = created && !Number.isNaN(created.getTime());
+
+        const when = document.createElement('div');
+        when.className = 'history-when';
+        const whenDate = document.createElement('span');
+        whenDate.textContent = hasTime ? created.toLocaleDateString() : 'Unknown time';
+        when.appendChild(whenDate);
+        if (hasTime) {
+          const whenTime = document.createElement('span');
+          whenTime.textContent = created.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          when.appendChild(whenTime);
+        }
+        row.appendChild(when);
+
+        const main = document.createElement('div');
+        main.className = 'history-main';
+        const objectiveEl = document.createElement('div');
+        objectiveEl.className = 'history-objective';
+        objectiveEl.textContent = entry.objective || '(no objective recorded)';
+        objectiveEl.title = entry.objective || '';
+        main.appendChild(objectiveEl);
+        const meta = document.createElement('div');
+        meta.className = 'history-meta';
         // Same explicit-only rule as the Overview activity rows: a channel shows because
         // the record states one, never because a title looked like it belonged to a
         // marketplace. The listing id is included so a run traces to the exact listing.
         const channel = channelLabel(entry);
-        const channelBit = channel
-          ? escapeHtml(channel) + (entry.channel_reference ? ' #' + escapeHtml(entry.channel_reference) : '') + ' · '
-          : '';
+        if (channel) {
+          const tag = document.createElement('span');
+          tag.className = 'section-channel-tag';
+          tag.textContent = channel + (entry.channel_reference ? ' #' + entry.channel_reference : '');
+          meta.appendChild(tag);
+        }
+        const kind = document.createElement('span');
+        kind.textContent = kindLabel;
+        meta.appendChild(kind);
+        main.appendChild(meta);
+        row.appendChild(main);
 
-        row.innerHTML =
-          '<div class="approval-row-head">' +
-          '<div><div class="approval-row-title">' + escapeHtml(entry.objective || '(no objective recorded)') + '</div>' +
-          '<div class="approval-row-meta">' + channelBit + escapeHtml(kindLabel) + ' · ' + escapeHtml(when) + '</div></div>' +
-          '<span class="approval-row-status ' + historyStatusClass(entry.status) + '">' + escapeHtml(entry.status || 'unknown') + '</span>' +
-          '</div>';
+        const status = document.createElement('span');
+        status.className = 'status-chip ' + historyStatusClass(entry.status);
+        status.textContent = String(entry.status || 'unknown').replace(/_/g, ' ');
+        row.appendChild(status);
 
-        const open = () => loadHistoryDetail(entry.run_id);
+        const open = () => {
+          list.querySelectorAll('.history-row[aria-current]').forEach((other) => other.removeAttribute('aria-current'));
+          row.setAttribute('aria-current', 'true');
+          loadHistoryDetail(entry.run_id);
+        };
         row.addEventListener('click', open);
         row.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
         });
 
-        listArea.appendChild(row);
+        list.appendChild(row);
       });
+      listArea.appendChild(list);
     } catch (err) {
       listArea.innerHTML = '<p class="empty-result">Could not reach the server. Check that it is running.</p>';
     }
@@ -1284,6 +1358,9 @@
         return;
       }
       renderStoredRecordDetail(record, detailArea);
+      // The detail renders beneath the run list, so bring it into view rather than leaving
+      // a click on a lower row with no visible effect.
+      detailArea.scrollIntoView({ block: 'start' });
     } catch (err) {
       detailArea.innerHTML = '<p class="empty-result">Could not reach the server. Check that it is running.</p>';
     }
@@ -2995,8 +3072,12 @@
 
   function renderOrchestrator(orchestrator) {
     const area = document.getElementById('orchestratorArea');
+    // The status band's indicator dot follows the SAME tone as the state chip below, so the
+    // dot can never say something the chip does not.
+    const card = area.closest('.status-card');
     area.innerHTML = '';
     if (!orchestrator) {
+      if (card) delete card.dataset.tone;
       area.innerHTML = '<div class="panel-empty">No data available.</div>';
       return;
     }
@@ -3010,6 +3091,7 @@
         : orchestrator.state === 'error'
           ? 'error'
           : 'warn';
+    if (card) card.dataset.tone = cls;
     state.className = 'status-chip ' + cls;
     state.textContent = ORCHESTRATOR_STATE_LABELS[orchestrator.state] || orchestrator.state;
     head.appendChild(state);
@@ -3091,6 +3173,36 @@
     area.appendChild(note);
   }
 
+  /* ---------- AI provider status ----------
+     The header pill and the Ask page's provider tag state what the SERVER reports in
+     GET /overview's ai_provider: the provider AI_PROVIDER selects and whether its key is
+     configured. It says "configured", never "connected" - a key being set is not proof a
+     model call will succeed, and a failed call is reported by that call itself. */
+  const AI_PROVIDER_NAMES = { gemini: 'Gemini', claude: 'Claude' };
+  let aiProviderPill = { state: 'neutral', text: 'AI provider unknown' };
+
+  function renderAiProvider(ai) {
+    const providerTag = document.getElementById('providerTag');
+    // A server that does not report ai_provider at all (an older deployment) is UNKNOWN,
+    // not "not configured" - claiming either state would be a guess.
+    if (ai === null || ai === undefined) {
+      aiProviderPill = { state: 'neutral', text: 'AI provider status unavailable' };
+      setStatus(aiProviderPill.state, aiProviderPill.text);
+      if (providerTag) providerTag.textContent = 'provider: status unavailable';
+      return;
+    }
+    if (ai && ai.provider && ai.configured) {
+      aiProviderPill = { state: 'idle', text: (AI_PROVIDER_NAMES[ai.provider] || ai.provider) + ' · configured' };
+    } else if (ai && ai.provider) {
+      aiProviderPill = { state: 'warn', text: (AI_PROVIDER_NAMES[ai.provider] || ai.provider) + ' · key not configured' };
+    } else {
+      aiProviderPill = { state: 'warn', text: 'AI provider not configured' };
+    }
+    if (ai && ai.detail) statusPill.title = ai.detail;
+    setStatus(aiProviderPill.state, aiProviderPill.text);
+    if (providerTag) providerTag.textContent = 'provider: ' + (ai && ai.provider ? ai.provider : 'not configured');
+  }
+
   async function loadOverviewState() {
     try {
       const res = await apiFetch('/overview');
@@ -3099,6 +3211,7 @@
         document.getElementById('ovBusinessName').textContent = 'Could not load store overview';
         return;
       }
+      renderAiProvider(data.ai_provider || null);
       renderOverviewBusiness(data.business, data.channels);
       renderChannels(data.channels);
       // The filter is built from the SAME channel states the section above renders, so a
@@ -3161,6 +3274,9 @@
   // live Shopify pull (server-cached, see server.js's METRICS_TTL_MS) is in flight.
   async function loadOverview() {
     await loadOverviewState();
+    // Zero-network like /overview: the stage definitions for the How it works summary.
+    // Not awaited, so the live Shopify pull below is never held up by it.
+    loadWorkflowPreview();
     await loadStoreMetrics();
   }
 
@@ -3179,6 +3295,7 @@
     if (el) el.addEventListener('click', handler);
   }
 
+  wireOverviewLink('openWorkflowLink', () => selectPage('workflow'));
   wireOverviewLink('viewAllHistoryBtn', () => selectPage('history'));
   wireOverviewLink('viewAllActivityLink', () => selectPage('history'));
   wireOverviewLink('viewAiActivityLink', () => selectPage('history'));
@@ -3228,6 +3345,22 @@
     return 'idle';
   }
 
+  // PRESENTATION ONLY. The map's shape comes from each stage's own `kind`: the specialist
+  // stage is the run of consecutive `agent` stages between the Chief and the gates. These
+  // labels only caption stages the definitions already contain; a stage with no entry here is
+  // captioned by its own title, so a new stage never renders uncaptioned or invented.
+  const WORKFLOW_STAGE_LABELS = {
+    goal: 'Input',
+    chief: 'Orchestration',
+    compliance: 'Compliance gate',
+    approval: 'Human decision',
+    platform_action: 'Platform boundary',
+  };
+  // A run of at least this many consecutive specialist stages is drawn as one grouped stage.
+  // The run's LAST stage stays on the main line: it is the one that hands the prepared work
+  // on to the gates (Listing's draft is what Compliance checks).
+  const WORKFLOW_GROUP_MIN_AGENTS = 3;
+
   function workflowNode(stageKey, definition, state) {
     const node = document.createElement('button');
     node.type = 'button';
@@ -3237,7 +3370,7 @@
     node.dataset.state = state.state;
     node.setAttribute('aria-label', definition.title + ' - ' + state.state_label);
 
-    const head = document.createElement('div');
+    const head = document.createElement('span');
     head.className = 'workflow-node-head';
     const title = document.createElement('span');
     title.className = 'workflow-node-title';
@@ -3249,12 +3382,12 @@
     head.appendChild(chip);
     node.appendChild(head);
 
-    const role = document.createElement('div');
+    const role = document.createElement('span');
     role.className = 'workflow-node-role';
     role.textContent = definition.kind === 'agent' ? 'Specialist agent' : definition.kind === 'gate' ? 'Gate' : definition.kind === 'boundary' ? 'Boundary' : definition.kind === 'orchestrator' ? 'Coordinator' : 'Your input';
     node.appendChild(role);
 
-    const purpose = document.createElement('div');
+    const purpose = document.createElement('span');
     purpose.className = 'workflow-node-purpose';
     purpose.textContent = definition.purpose;
     node.appendChild(purpose);
@@ -3263,21 +3396,182 @@
     return node;
   }
 
-  function workflowConnector(label) {
-    const wrap = document.createElement('div');
-    wrap.className = 'workflow-connector';
-    wrap.setAttribute('aria-hidden', 'true');
-    const arrow = document.createElement('span');
-    arrow.className = 'workflow-connector-arrow';
-    arrow.textContent = '↓';
-    wrap.appendChild(arrow);
-    if (label) {
+  // A drawn connector - a CSS line and arrowhead, never a text glyph. `into` names what it
+  // leads to: a link into a gate carries the existing "must pass this gate" note, the link
+  // into the platform boundary is drawn crossing a boundary line, and the link into the
+  // specialist stage ends on that stage's junction. Decorative: the order is the DOM order.
+  function workflowLink(into) {
+    const link = document.createElement('div');
+    link.className = 'flow-link';
+    link.setAttribute('aria-hidden', 'true');
+    if (into) link.dataset.into = into;
+    if (into === 'gate') {
       const text = document.createElement('span');
-      text.className = 'workflow-connector-label';
-      text.textContent = label;
-      wrap.appendChild(text);
+      text.className = 'flow-link-label';
+      text.textContent = 'must pass this gate';
+      link.appendChild(text);
     }
-    return wrap;
+    if (into === 'boundary') {
+      const rule = document.createElement('span');
+      rule.className = 'flow-link-boundary';
+      link.appendChild(rule);
+    }
+    return link;
+  }
+
+  // One step on a line: an optional stage caption above the stage's node.
+  function workflowStep(key, definitions, caption) {
+    const step = document.createElement('div');
+    step.className = 'flow-step';
+    if (caption) {
+      const label = document.createElement('div');
+      label.className = 'flow-stage-label';
+      label.textContent = caption;
+      step.appendChild(label);
+    }
+    step.appendChild(workflowNode(key, definitions[key], workflowData.stages[key]));
+    return step;
+  }
+
+  // The specialist stage. The Chief dispatches into it (the branch), the specialists sit in
+  // the order the definitions give - each stage's nextStep is the one to its right - with a
+  // handoff arrow between neighbours, and their work converges (the merge) before the main
+  // line continues. Nothing here implies they run in parallel, or that any of them ran: each
+  // node's chip is the real run's state.
+  function workflowGroup(keys, definitions) {
+    const group = document.createElement('div');
+    group.className = 'flow-group';
+    group.style.setProperty('--flow-count', String(keys.length));
+
+    const legend = document.createElement('div');
+    legend.className = 'flow-group-legend';
+    legend.textContent = 'Specialist agents';
+    group.appendChild(legend);
+
+    const branch = document.createElement('div');
+    branch.className = 'flow-branch';
+    branch.setAttribute('aria-hidden', 'true');
+    const row = document.createElement('div');
+    row.className = 'flow-group-row';
+    const merge = document.createElement('div');
+    merge.className = 'flow-merge';
+    merge.setAttribute('aria-hidden', 'true');
+
+    keys.forEach((key) => {
+      const drop = document.createElement('span');
+      drop.className = 'flow-drop';
+      branch.appendChild(drop);
+      const cell = document.createElement('div');
+      cell.className = 'flow-group-cell';
+      cell.appendChild(workflowNode(key, definitions[key], workflowData.stages[key]));
+      row.appendChild(cell);
+      const rise = document.createElement('span');
+      rise.className = 'flow-rise';
+      merge.appendChild(rise);
+    });
+
+    group.appendChild(branch);
+    group.appendChild(row);
+    group.appendChild(merge);
+    return group;
+  }
+
+  // The main line as the map draws it, in primary_flow order: a run of consecutive specialist
+  // stages becomes one grouped stage plus its last member on the line; everything else is a
+  // single step. Shared by the workflow map and the Overview's summary of it, so the two can
+  // never group the same stages differently.
+  function workflowMainLineItems(flow, definitions) {
+    const items = [];
+    for (let i = 0; i < flow.length;) {
+      if (definitions[flow[i]].kind !== 'agent') {
+        items.push({ key: flow[i] });
+        i += 1;
+        continue;
+      }
+      let end = i;
+      while (end < flow.length && definitions[flow[end]].kind === 'agent') end += 1;
+      const run = flow.slice(i, end);
+      if (run.length >= WORKFLOW_GROUP_MIN_AGENTS) {
+        items.push({ group: run.slice(0, -1) });
+        items.push({ key: run[run.length - 1] });
+      } else {
+        run.forEach((key) => items.push({ key }));
+      }
+      i = end;
+    }
+    return items;
+  }
+
+  /* ---------- Overview: How it works, in brief ----------
+     The same stage definitions GET /workflow/state serves the full map, drawn as one line and
+     one loop. Titles and kinds only - no statuses, which the map itself carries - so this
+     summary can never disagree with a run. The return step is drawn only when the last loop
+     stage's own definition says it feeds back to the first. */
+  function renderWorkflowPreview(state) {
+    const area = document.getElementById('workflowPreviewArea');
+    if (!area) return;
+    area.innerHTML = '';
+    if (!state || !Array.isArray(state.stage_definitions)) {
+      area.innerHTML = '<div class="panel-empty">The workflow definition could not be loaded.</div>';
+      return;
+    }
+    const definitions = {};
+    state.stage_definitions.forEach((d) => { definitions[d.key] = d; });
+    const known = (key) => Boolean(definitions[key]);
+
+    const addRow = (label, fill) => {
+      const row = document.createElement('div');
+      row.className = 'flow-preview-row';
+      const heading = document.createElement('div');
+      heading.className = 'flow-preview-label';
+      heading.textContent = label;
+      row.appendChild(heading);
+      const list = document.createElement('ol');
+      list.className = 'flow-preview-steps';
+      fill(list);
+      row.appendChild(list);
+      area.appendChild(row);
+    };
+    const addStep = (list, kind, title, sub) => {
+      const item = document.createElement('li');
+      item.className = 'flow-preview-step';
+      item.dataset.kind = kind;
+      item.textContent = title;
+      if (sub) {
+        const subEl = document.createElement('span');
+        subEl.className = 'flow-preview-sub';
+        subEl.textContent = sub;
+        item.appendChild(subEl);
+      }
+      list.appendChild(item);
+    };
+
+    addRow('Main line', (list) => {
+      workflowMainLineItems((state.primary_flow || []).filter(known), definitions).forEach((item) => {
+        if (item.group) addStep(list, 'agent', 'Specialist agents', item.group.map((key) => definitions[key].title).join(' · '));
+        else addStep(list, definitions[item.key].kind, definitions[item.key].title);
+      });
+    });
+
+    const loopKeys = (state.growth_loop || []).filter(known);
+    if (loopKeys.length > 0) {
+      addRow('Growth loop', (list) => {
+        loopKeys.forEach((key) => addStep(list, definitions[key].kind, definitions[key].title));
+        const last = definitions[loopKeys[loopKeys.length - 1]];
+        if (loopKeys.length > 1 && last.feedsBackTo === loopKeys[0]) {
+          addStep(list, 'return', 'Back to ' + definitions[loopKeys[0]].title);
+        }
+      });
+    }
+  }
+
+  async function loadWorkflowPreview() {
+    try {
+      const res = await apiFetch('/workflow/state');
+      renderWorkflowPreview(res.ok ? await res.json() : null);
+    } catch (err) {
+      renderWorkflowPreview(null);
+    }
   }
 
   function renderWorkflowGraph() {
@@ -3286,31 +3580,51 @@
     if (!graph || !workflowData) return;
     const definitions = {};
     (workflowData.stage_definitions || []).forEach((d) => { definitions[d.key] = d; });
+    const renderable = (key) => Boolean(definitions[key] && workflowData.stages[key]);
+
+    const items = workflowMainLineItems((workflowData.primary_flow || []).filter(renderable), definitions);
 
     graph.innerHTML = '';
-    (workflowData.primary_flow || []).forEach((key, index) => {
-      const definition = definitions[key];
-      const state = workflowData.stages[key];
-      if (!definition || !state) return;
-      graph.appendChild(workflowNode(key, definition, state));
-      if (index < workflowData.primary_flow.length - 1) {
-        const next = definitions[workflowData.primary_flow[index + 1]];
-        graph.appendChild(workflowConnector(next && next.kind === 'gate' ? 'must pass this gate' : ''));
+    items.forEach((item, index) => {
+      if (index > 0) {
+        const kind = item.group ? 'group' : definitions[item.key].kind;
+        graph.appendChild(workflowLink(['group', 'gate', 'boundary'].includes(kind) ? kind : ''));
+      }
+      if (item.group) {
+        graph.appendChild(workflowGroup(item.group, definitions));
+      } else {
+        graph.appendChild(workflowStep(item.key, definitions, WORKFLOW_STAGE_LABELS[item.key] || definitions[item.key].title));
       }
     });
 
+    // The growth loop, drawn as a loop: its stages in order, then a return path from the last
+    // stage into the first - drawn only when the last stage's own definition says it feeds
+    // back there (feedsBackTo), never assumed. The existing sentence stays as supporting text.
     loop.innerHTML = '';
-    (workflowData.growth_loop || []).forEach((key, index) => {
-      const definition = definitions[key];
-      const state = workflowData.stages[key];
-      if (!definition || !state) return;
-      loop.appendChild(workflowNode(key, definition, state));
-      if (index < workflowData.growth_loop.length - 1) loop.appendChild(workflowConnector(''));
+    const loopKeys = (workflowData.growth_loop || []).filter(renderable);
+    const column = document.createElement('div');
+    column.className = 'flow-loop';
+    loopKeys.forEach((key, index) => {
+      if (index > 0) column.appendChild(workflowLink(''));
+      column.appendChild(workflowStep(key, definitions, ''));
     });
-    const back = document.createElement('div');
-    back.className = 'workflow-loopback';
-    back.textContent = 'Recommendations feed back into Marketing strategy, so the next cycle starts from what actually happened.';
-    loop.appendChild(back);
+    const lastKey = loopKeys[loopKeys.length - 1];
+    const returnsTo = lastKey ? definitions[lastKey].feedsBackTo : null;
+    if (loopKeys.length > 1 && returnsTo === loopKeys[0]) {
+      const back = document.createElement('div');
+      back.className = 'flow-return';
+      back.setAttribute('aria-hidden', 'true');
+      const label = document.createElement('span');
+      label.className = 'flow-return-label';
+      label.textContent = 'Back to ' + definitions[returnsTo].title;
+      back.appendChild(label);
+      column.appendChild(back);
+    }
+    loop.appendChild(column);
+    const note = document.createElement('p');
+    note.className = 'flow-loop-note';
+    note.textContent = 'Recommendations feed back into Marketing strategy, so the next cycle starts from what actually happened.';
+    loop.appendChild(note);
   }
 
   function drawerRow(label, value, { muted = false } = {}) {
