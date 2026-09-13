@@ -274,6 +274,131 @@ const SEO_SUBJECT = 'Review the SEO findings from my Shopify products';
     assert.strictEqual(result.routing.plan[1].inputs.capability_id, 'seo_quality_check');
   });
 
+  // --- 6b. Coordinated framing lists and descriptive modifiers ------------------------
+  //
+  // THE SECOND PRODUCTION FAILURE (deployed 95d6b16):
+  //   "... For each product, show the actual issue, why it matters, and the recommended
+  //    improvement. Do not make any changes."
+  //   -> No known capability matches "show the actual issue"
+  // Three structural gaps, not a missing word: a descriptive modifier ("actual") was
+  // rejected word-by-word; and the comma/"and" split cut the list items "why it matters" and
+  // "the recommended improvement" off from the verb "show" that governs them. These tests pin
+  // the STRUCTURE (modifier before a grounded head, list items under one directive, question
+  // complements that refer back) with varied wording, so the next phrasing is not a new patch.
+
+  const SECOND_FAILURE =
+    "Analyse my Shopify store's SEO findings. Rank the 10 products with the most important SEO problems. For each product, show the actual issue, why it matters, and the recommended improvement. Do not make any changes.";
+  const SEO_STORE_SUBJECT = "Analyse my Shopify store's SEO findings.";
+
+  test('SECOND PRODUCTION FAILURE plans instead of "No known capability matches"', () => {
+    const result = plan(SECOND_FAILURE);
+    assert.strictEqual(result.status, 'planned', `got ${result.status}: ${result.reason}`);
+    assert.ok(!/No known capability matches/.test(JSON.stringify(result)));
+    assert.deepStrictEqual(ids(result), ['seo']);
+  });
+
+  test('SECOND PRODUCTION FAILURE: every list item is framing under "show", and the safety constraint stays', () => {
+    const result = plan(SECOND_FAILURE);
+    const framing = result.instructions.framing.join(' | ');
+    assert.ok(/show the actual issue/.test(framing), framing);
+    assert.ok(/why it matters/.test(framing), framing);
+    assert.ok(/the recommended improvement/.test(framing), framing);
+    assert.deepStrictEqual(result.instructions.safety, ['Do not make any changes']);
+    assert.strictEqual(mutationIntent.maySelectMutationTool(SECOND_FAILURE), false);
+  });
+
+  await testAsync('SECOND PRODUCTION FAILURE: SEO still receives the real Product data, read-only', async () => {
+    const readsBefore = READ_CALLS.length;
+    const result = await contract.runOrchestratorContract(SECOND_FAILURE);
+    assert.strictEqual(result.routing.status, 'planned', result.routing.reason);
+    assert.deepStrictEqual(specialists(result), ['product', 'seo']);
+    const seo = result.routing.plan[1];
+    assert.strictEqual(seo.inputs.capability_id, 'seo_quality_check');
+    assert.strictEqual(seo.outputs.result.products_checked, FIXTURE_PRODUCTS.length);
+    assert.strictEqual(READ_CALLS.slice(readsBefore).filter((call) => call === 'getProducts').length, 1);
+    assert.deepStrictEqual(MUTATION_CALLS, []);
+    assert.strictEqual((result.pending_approvals || []).length, 0);
+  });
+
+  const COORDINATED_VARIATIONS = [
+    'For each product, show the actual issue, why it matters, and the recommended improvement.',
+    'For every product, describe the underlying problem, how it affects them, and the best next step.',
+    'List the current problems, what they mean and the most useful recommendation.',
+    'Explain the main reason, why it is important, and the expected result.',
+    'Summarise the key findings, why they matter and the suggested improvement for each one.',
+    'Show the underlying cause and how it affects each product.',
+    'Rank the real issues, then give me the likely impact and the exact improvement.',
+  ];
+  const storeBaseTargets = ids(plan(SEO_STORE_SUBJECT));
+  for (const variation of COORDINATED_VARIATIONS) {
+    test(`VARIATION is framing on the established task: ${JSON.stringify(variation)}`, () => {
+      const result = plan(`${SEO_STORE_SUBJECT} ${variation} Do not make any changes.`);
+      assert.strictEqual(result.status, 'planned', `got ${result.status}: ${result.reason}`);
+      assert.deepStrictEqual(ids(result), storeBaseTargets);
+      assert.ok(result.instructions.framing.length >= 1, JSON.stringify(result.instructions));
+      assert.deepStrictEqual(result.instructions.safety, ['Do not make any changes']);
+    });
+  }
+
+  const STILL_NEW_ACTIONS = [
+    [`${SEO_STORE_SUBJECT} Show the actual issue and book a photoshoot with a model.`, /photoshoot/],
+    [`${SEO_STORE_SUBJECT} Show the Amazon pricing issue.`, /Amazon/],
+    [`${SEO_STORE_SUBJECT} Explain the flibbertigibbet dance, why it matters.`, /flibbertigibbet/],
+    [`${SEO_STORE_SUBJECT} Show the actual issue, what the flibbertigibbet dance is.`, /flibbertigibbet/],
+    [`${SEO_STORE_SUBJECT} Show the actual issue, and we need help hiring a photographer.`, /photographer/],
+  ];
+  for (const [objective, segment] of STILL_NEW_ACTIONS) {
+    test(`STILL A NEW ACTION (asks for clarification): ${JSON.stringify(objective.slice(SEO_STORE_SUBJECT.length + 1))}`, () => {
+      const result = plan(objective);
+      assert.strictEqual(result.status, 'clarification_required', `planned ${ids(result).join(',')} ${JSON.stringify(result.instructions)}`);
+      assert.ok(segment.test(result.unmatched_segment || result.reason), result.reason);
+    });
+  }
+
+  test('a descriptive phrase naming ANOTHER specialist\'s subject is routed as a task, never absorbed', () => {
+    const result = plan(`${SEO_STORE_SUBJECT} Show the advertising issue.`);
+    assert.strictEqual(result.status, 'planned');
+    assert.ok(ids(result).includes('social_advertising'), ids(result).join(','));
+  });
+
+  const STILL_MUTATIONS = [
+    `${SEO_STORE_SUBJECT} Show the actual issue, why it matters, and fix it.`,
+    `${SEO_STORE_SUBJECT} Show the actual issue and apply the recommended improvement.`,
+    `${SEO_STORE_SUBJECT} Show the actual issue, why it matters, and replace the current titles.`,
+  ];
+  for (const objective of STILL_MUTATIONS) {
+    test(`STILL NOT FRAMING (change intent): ${JSON.stringify(objective.slice(SEO_STORE_SUBJECT.length + 1))}`, () => {
+      const result = plan(objective);
+      const framing = result.instructions ? result.instructions.framing.join(' | ') : '';
+      assert.ok(!/\b(fix|apply|replace)\b/i.test(framing), `change intent absorbed as framing: ${framing}`);
+      if (result.status === 'planned') {
+        // Routed to a real capability instead: the mutation-intent gate then applies at tool level.
+        assert.strictEqual(mutationIntent.classifyRequestIntent(objective) === 'read_only', false);
+      }
+    });
+  }
+
+  test('a weak generic match that names the owner\'s own data stays a task; one that refers back is framing', () => {
+    // "show me my product data" matches Product only on generic words, but it asks for that data.
+    assert.deepStrictEqual(ids(plan('show me my product data and improve my listing content')), ['product', 'listing']);
+    assert.deepStrictEqual(ids(plan('Show me my product data.')), ['product']);
+    // "for each product" refers back to the subject the SEO task established.
+    const scoped = plan(`${SEO_STORE_SUBJECT} For each product, explain the actual issue.`);
+    assert.deepStrictEqual(ids(scoped), storeBaseTargets);
+    assert.ok(scoped.instructions.framing.includes('For each product'), JSON.stringify(scoped.instructions));
+  });
+
+  test('a sentence that only restates the objective\'s scope adds no infrastructure step', () => {
+    const result = plan('Analyse my Shopify store using real Shopify data. Check products, inventory, orders.');
+    assert.ok(!ids(result).includes('configuration'), ids(result).join(','));
+    assert.deepStrictEqual(ids(plan('Show me my business configuration')), ['configuration']);
+  });
+
+  test('an inherited list item never crosses a sentence boundary', () => {
+    const parsed = contract.classifyObjectiveClause('show the actual issue. The flibbertigibbet dance.', new Set(['seo', 'finding']));
+    assert.strictEqual(parsed.kind, 'new_action');
+  });
+
   // --- 7. No Shopify writes ------------------------------------------------------------
 
   test('NO SHOPIFY WRITE FUNCTION WAS CALLED ANYWHERE IN THIS FILE', () => {

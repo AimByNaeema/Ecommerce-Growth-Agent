@@ -105,6 +105,7 @@ const {
   maySelectMutationTool,
   classifyRequestIntent,
   hasExplicitMutationIntent,
+  MUTATION_VERBS,
   mutationIntentRefusalReason,
 } = require('./mutationIntent');
 // The Memory layer's own connection into this run flow (agent/core/memoryStore.js's
@@ -1404,9 +1405,17 @@ function protectFileFormatLists(objective) {
   });
 }
 
+// SENTENCES ARE CLAUSE BOUNDARIES. Splitting only on commas/"and" left several sentences in
+// one clause, so an extra sentence rode along with whichever task its neighbour routed to:
+// "Analyse my store's SEO findings. Show the Amazon pricing issue." planned SEO and silently
+// dropped the Amazon request, and "... SEO findings. Show the advertising issue." tied the
+// whole clause between two specialists. A sentence end is a stronger boundary than a comma,
+// so it is applied first; the instruction parser then sees every sentence. The terminator is
+// kept on the clause, which is how a list item knows its sentence has ended.
 function splitIntoClauses(objective) {
   return protectFileFormatLists(objective)
-    .split(CLAUSE_SPLIT_REGEX)
+    .split(/(?<=[.!?])\s+/)
+    .flatMap((sentence) => sentence.split(CLAUSE_SPLIT_REGEX))
     .map((clause) => clause.trim())
     .filter((clause) => clause.length > 0);
 }
@@ -1649,53 +1658,187 @@ function splitSentences(text) {
   return String(text || '').split(/(?<=[.!?;:])\s+/).map((part) => part.trim()).filter((part) => part.length > 0);
 }
 
-// Classifies one fragment. groundingWords: singular forms of the words the objective's
-// routed task clauses use.
-function classifyInstructionFragment(fragment, groundingWords = new Set()) {
+// PHRASE STRUCTURE OF A FRAMING FRAGMENT. Checking the object word by word against closed
+// lists failed on ordinary descriptive language - "show the actual issue" was rejected on
+// "actual" - and the comma/"and" split cut coordinated list items ("..., why it matters, and
+// the recommended improvement") off from the verb that governs them. The object is parsed
+// by structure instead:
+//
+//   LIST ITEMS inherit the directive. A fragment opening with a determiner, possessive or
+//   question word has no verb of its own; directly after a framing fragment in the SAME
+//   sentence it is the next item of that directive's list. A fragment opening with any other
+//   word ("book a photoshoot", "we need help", "apply the improvement") never inherits.
+//
+//   NOUN PHRASES are judged by their HEAD. Conjunctions and prepositions end a phrase. An
+//   unrecognised word is accepted only as a MODIFIER: it must be followed, inside the same
+//   phrase, by a grounded head word (an answer part, or a word the routed task already
+//   uses). "the actual issue", "the recommended improvement", "the likely impact" pass;
+//   "the flibbertigibbet dance", "prices with Amazon" and "... and apply it" have no grounded
+//   head and fail. A modifier is also refused when it is a capitalised proper noun (a new
+//   named subject - "the Amazon pricing issue"), a word that routes to a capability of its
+//   own (another specialist's subject), or a change verb.
+//
+//   QUESTION COMPLEMENTS ("why it matters", "how they affect it") describe the established
+//   subject only when they REFER BACK with a pronoun and add at most two plain words that are
+//   neither a named subject, a routable subject nor a change verb. "what the flibbertigibbet
+//   dance is" does not refer back and is judged as an ordinary phrase - and fails.
+const LIST_ITEM_OPENERS = new Set([
+  'the', 'a', 'an', 'each', 'every', 'its', 'their', 'any', 'all',
+  'why', 'how', 'what', 'which', 'where', 'when', 'whether',
+]);
+const QUESTION_WORDS = new Set(['why', 'how', 'what', 'which', 'where', 'when', 'whether']);
+const REFERRING_PRONOUNS = new Set(['it', 'its', 'they', 'them', 'their', 'this', 'that', 'these', 'those']);
+// Distributive determiners refer back to a set the objective already established ("each
+// product", "every listing").
+const DISTRIBUTIVE_REFERENCES = new Set(['each', 'every']);
+
+function refersBackToSubject(text) {
+  return phraseTokens(text).some((token) => REFERRING_PRONOUNS.has(token.lower) || DISTRIBUTIVE_REFERENCES.has(token.lower));
+}
+const PHRASE_BREAKS = new Set(['and', 'or', 'but', 'then', 'with', 'for', 'from', 'to', 'of', 'in', 'on', 'at', 'by', 'about', 'into', 'than', 'per', 'as']);
+const MAX_QUESTION_COMPLEMENT_WORDS = 2;
+
+function phraseTokens(text) {
+  return String(text || '')
+    .split(/[^A-Za-z0-9]+/)
+    .filter((word) => word.length > 0)
+    .map((word, index) => ({ lower: word.toLowerCase(), capitalised: index > 0 && /^[A-Z]/.test(word) }));
+}
+
+// The NOUNS among GENERIC_ROUTING_WORDS: generic e-commerce subjects ("product", "business",
+// "data") that list documents as naming no specialist on their own. In a framing phrase they
+// refer to the established subject ("for each product", "how it affects each product") rather
+// than introducing one. The generic VERBS in that list ("check", "help", "analyze") are left
+// out on purpose - "check business data" stays a task.
+const GENERIC_SUBJECT_NOUNS = new Set(
+  [...GENERIC_ROUTING_WORDS].filter((word) => !['analyze', 'analyse', 'help', 'check'].includes(word))
+);
+
+function isGroundedWord(lower, groundingWords) {
+  const singular = singularForm(lower);
+  return (
+    /^\d+$/.test(lower) ||
+    FUNCTION_WORDS.has(lower) ||
+    OUTPUT_DIRECTIVE_VERBS.has(lower) ||
+    ANSWER_STRUCTURE_WORDS.has(lower) ||
+    ANSWER_STRUCTURE_WORDS.has(singular) ||
+    GENERIC_SUBJECT_NOUNS.has(singular) ||
+    groundingWords.has(singular)
+  );
+}
+
+function isGroundedHead(lower, groundingWords) {
+  return isGroundedWord(lower, groundingWords) && !FUNCTION_WORDS.has(lower) && !/^\d+$/.test(lower);
+}
+
+// A word that may only MODIFY a grounded head: never a named subject, a subject some
+// capability routes on, or a change verb.
+function isAcceptableModifier(token, groundingWords) {
+  if (token.capitalised) return false;
+  if (MUTATION_VERBS.includes(token.lower)) return false;
+  return scoreRoutingTargets(token.lower).length === 0 || groundingWords.has(singularForm(token.lower));
+}
+
+// Returns the words that make the object a NEW subject ([] when it is framing).
+function ungroundedObjectWords(objectTokens, groundingWords) {
+  const first = objectTokens.find((token) => !FUNCTION_WORDS.has(token.lower) || QUESTION_WORDS.has(token.lower));
+  if (first && QUESTION_WORDS.has(first.lower) && objectTokens.some((token) => REFERRING_PRONOUNS.has(token.lower))) {
+    const plain = objectTokens.filter((token) => !isGroundedWord(token.lower, groundingWords));
+    const refused = plain.filter((token) => !isAcceptableModifier(token, groundingWords));
+    if (refused.length === 0 && plain.length <= MAX_QUESTION_COMPLEMENT_WORDS) return [];
+  }
+
+  const problems = [];
+  let phrase = [];
+  const closePhrase = () => {
+    phrase.forEach((token, index) => {
+      if (isGroundedWord(token.lower, groundingWords)) return;
+      const hasHeadAfter = phrase.slice(index + 1).some((later) => isGroundedHead(later.lower, groundingWords));
+      if (!hasHeadAfter || !isAcceptableModifier(token, groundingWords)) problems.push(token.lower);
+    });
+    phrase = [];
+  };
+  for (const token of objectTokens) {
+    if (PHRASE_BREAKS.has(token.lower)) closePhrase();
+    else phrase.push(token);
+  }
+  closePhrase();
+  return problems;
+}
+
+// Classifies one fragment. groundingWords: singular forms of the words the objective's routed
+// task clauses use. inheritedDirective: the directive of the framing fragment immediately
+// before this one in the same sentence, if any.
+function classifyInstructionFragment(fragment, groundingWords = new Set(), inheritedDirective = null) {
   const safety = (fragment.match(SAFETY_CONSTRAINT_REGEX) || []).map((constraint) => constraint.trim());
   const remaining = fragment.replace(SAFETY_CONSTRAINT_REGEX, ' ');
-  const words = rawWords(remaining);
-  while (words.length > 0 && FRAGMENT_OPENERS.has(words[0])) words.shift();
+  const tokens = phraseTokens(remaining);
+  while (tokens.length > 0 && FRAGMENT_OPENERS.has(tokens[0].lower)) tokens.shift();
 
-  if (words.length === 0) {
+  if (tokens.length === 0) {
     return safety.length > 0 ? { kind: 'safety', safety } : { kind: 'empty', safety };
   }
   if (hasExplicitMutationIntent(remaining) || classifyRequestIntent(remaining) === 'mutation') {
     return { kind: 'new_action', reason: 'mutation_intent', safety };
   }
-  if (!OUTPUT_DIRECTIVE_VERBS.has(words[0])) {
+
+  let directive = null;
+  let objectTokens = tokens;
+  let inherited = false;
+  if (OUTPUT_DIRECTIVE_VERBS.has(tokens[0].lower)) {
+    directive = tokens[0].lower;
+    objectTokens = tokens.slice(1);
+  } else if (inheritedDirective && LIST_ITEM_OPENERS.has(tokens[0].lower)) {
+    directive = inheritedDirective;
+    inherited = true;
+  } else if (tokens.every((token) => isGroundedWord(token.lower, groundingWords))) {
+    // A verbless phrase made only of grounded words ("For each product", "in order of
+    // priority") scopes the answer to the established subject; it asks for nothing new and
+    // carries no directive for a following list item.
+    return { kind: 'framing', directive: null, inherited: false, safety };
+  } else {
     return { kind: 'new_action', reason: 'no_output_directive', safety };
   }
-  const ungrounded = words.slice(1).filter((word) => {
-    const singular = singularForm(word);
-    return !(
-      /^\d+$/.test(word) ||
-      FUNCTION_WORDS.has(word) ||
-      OUTPUT_DIRECTIVE_VERBS.has(word) ||
-      ANSWER_STRUCTURE_WORDS.has(word) ||
-      ANSWER_STRUCTURE_WORDS.has(singular) ||
-      groundingWords.has(singular)
-    );
-  });
+
+  const ungrounded = ungroundedObjectWords(objectTokens, groundingWords);
   if (ungrounded.length > 0) {
     return { kind: 'new_action', reason: 'introduces_new_subject', ungrounded, safety };
   }
-  return { kind: 'framing', directive: words[0], safety };
+  return { kind: 'framing', directive, inherited, safety };
+}
+
+// The directive a following list item may inherit: only from a framing fragment whose
+// sentence has not ended.
+function directiveCarriedBy(fragment) {
+  return fragment.kind === 'framing' && !/[.!?;:]\s*$/.test(fragment.text) ? fragment.directive : null;
 }
 
 // Classifies a clause that did not route: 'instruction' (framing and/or safety only) when
-// EVERY sentence in it is B or C, otherwise 'new_action'. Exported so the distinction is
-// inspectable and tested directly, not buried inside routing.
-function classifyObjectiveClause(clauseText, groundingWords = new Set()) {
-  const fragments = splitSentences(clauseText).map((fragment) => ({
-    text: fragment,
-    ...classifyInstructionFragment(fragment, groundingWords),
-  }));
+// EVERY sentence in it is B or C, otherwise 'new_action'. carriedDirective lets its first
+// fragment continue a list opened just before it. Exported so the distinction is inspectable
+// and tested directly, not buried inside routing.
+function classifyObjectiveClause(clauseText, groundingWords = new Set(), carriedDirective = null) {
+  let carry = carriedDirective;
+  const fragments = splitSentences(clauseText).map((fragment) => {
+    const classified = { text: fragment, ...classifyInstructionFragment(fragment, groundingWords, carry) };
+    carry = directiveCarriedBy(classified);
+    return classified;
+  });
   const isInstruction =
     fragments.length > 0 &&
     fragments.every((fragment) => fragment.kind === 'framing' || fragment.kind === 'safety' || fragment.kind === 'empty') &&
     fragments.some((fragment) => fragment.kind !== 'empty');
-  return { kind: isInstruction ? 'instruction' : 'new_action', fragments };
+  return { kind: isInstruction ? 'instruction' : 'new_action', fragments, carriedDirective: carry };
+}
+
+// A clause routed as a TASK can still end with a presentation directive whose list continues
+// in the next clause ("... SEO findings. Explain the main reason, why it is important, ...").
+// Its final sentence is read for that directive only - the clause itself keeps its route.
+function directiveEndingRoutedClause(clauseText, groundingWords) {
+  const sentences = splitSentences(clauseText);
+  if (sentences.length === 0) return null;
+  const last = sentences[sentences.length - 1];
+  return directiveCarriedBy({ text: last, ...classifyInstructionFragment(last, groundingWords, null) });
 }
 
 // Grounding comes only from OTHER routed clauses, so a clause can never ground itself.
@@ -1717,23 +1860,84 @@ function groundingWordsFor(routedClauses, excludeIndex) {
 // presentation wording. A clause routed to a SPECIALIST is never reinterpreted.
 function isParserCandidate(clause) {
   if (clause.result.status === 'unmatched' || clause.result.status === 'ambiguous') return true;
-  return clause.result.status === 'matched' && clause.result.target && clause.result.target.type === 'shared_infrastructure';
+  if (clause.result.status !== 'matched' || !clause.result.target) return false;
+  if (clause.result.target.type === 'shared_infrastructure') return true;
+  return matchRestsOnGenericWords(clause.text, clause.result.target);
+}
+
+// A specialist match carried ONLY by GENERIC_ROUTING_WORDS ("how it affects each product"
+// scored for Product on "product" alone) is the weak evidence that list already documents as
+// unable to decide a route on its own - so the parser may still read it as framing. Any
+// non-generic overlap ("my Shopify products", "inventory", "advertising") is a real task
+// signal and is never reinterpreted.
+function matchRestsOnGenericWords(clauseText, target) {
+  const clauseWords = new Set(tokenize(clauseText));
+  const overlap = tokenize(target.text).filter((word) => clauseWords.has(word));
+  return overlap.length > 0 && overlap.every((word) => GENERIC_ROUTING_WORDS.has(word));
 }
 
 // Separates B/C from A and D after every clause has been routed. A D clause is left as it
 // was, so planRouting still stops for clarification (or keeps its infrastructure route).
 function absorbObjectiveFramingClauses(routedClauses) {
   const framing = [];
-  const nextClauses = routedClauses.map((clause, index) => {
-    if (!isParserCandidate(clause)) return clause;
+  const nextClauses = [];
+  // The directive an adjacent list item may inherit. Clauses are walked IN ORDER because a
+  // list ("show A, B, and C") spans consecutive clauses; anything that is not framing - a new
+  // action, or a routed task that does not end in a directive - ends the list.
+  let carry = null;
+  routedClauses.forEach((clause, index) => {
     const otherRouted = routedClauses.some((other, otherIndex) => otherIndex !== index && other.result.status === 'matched');
-    if (!otherRouted) return clause;
-    const parsed = classifyObjectiveClause(clause.text, groundingWordsFor(routedClauses, index));
-    if (parsed.kind !== 'instruction') return clause;
+    const groundingWords = groundingWordsFor(routedClauses, index);
+
+    // SCOPE SENTENCES. Splitting on sentences left "Analyse my Shopify store using real Shopify
+    // data." on its own, where it scores highest for the configuration tool (a context
+    // provider) although it also scores for specialists this plan already routes to. Such a
+    // sentence describes the objective's scope - the store and its data - rather than asking
+    // for infrastructure: when every specialist it scores for is already routed elsewhere in
+    // this objective, it adds nothing and is absorbed. A request that genuinely targets
+    // infrastructure ("Show me my business configuration") has no such specialists in its
+    // plan and keeps its route.
+    if (otherRouted && clause.result.status === 'matched' && clause.result.target && clause.result.target.type === 'shared_infrastructure') {
+      const routedSpecialists = new Set(
+        routedClauses
+          .filter((other, otherIndex) => otherIndex !== index && other.result.status === 'matched' && other.result.target && other.result.target.type === 'specialist')
+          .map((other) => other.result.target.id)
+      );
+      const scoredSpecialists = scoreRoutingTargets(clause.text)
+        .filter((entry) => entry.target.type === 'specialist')
+        .map((entry) => entry.target.id);
+      if (scoredSpecialists.length > 0 && scoredSpecialists.every((id) => routedSpecialists.has(id))) {
+        framing.push(clause.text);
+        nextClauses.push({ text: clause.text, result: { status: 'absorbed' } });
+        carry = null;
+        return;
+      }
+    }
+
+    if (!isParserCandidate(clause) || !otherRouted) {
+      nextClauses.push(clause);
+      // Grounded by the OTHER clauses only: "Explain the flibbertigibbet dance" must not ground
+      // itself into a directive that "why it matters" could then inherit.
+      carry = clause.result.status === 'matched' ? directiveEndingRoutedClause(clause.text, groundingWords) : null;
+      return;
+    }
+
+    const parsed = classifyObjectiveClause(clause.text, groundingWords, carry);
+    // A clause a SPECIALIST matched (weakly) is framing only when it REFERS BACK to the
+    // established subject ("for each product", "how it affects them"). One that names the
+    // owner's own thing ("show me my product data") is a request for that data and keeps its
+    // route - a reference, not a word list, is what separates the two.
+    const weakSpecialistMatch = clause.result.status === 'matched' && clause.result.target.type === 'specialist';
+    if (parsed.kind !== 'instruction' || (weakSpecialistMatch && !refersBackToSubject(clause.text))) {
+      nextClauses.push(clause);
+      carry = null;
+      return;
+    }
     for (const fragment of parsed.fragments) {
       if (fragment.kind === 'framing') framing.push(fragment.text);
     }
-    return { text: clause.text, result: { status: 'absorbed' } };
+    nextClauses.push({ text: clause.text, result: { status: 'absorbed' } });
+    carry = parsed.carriedDirective;
   });
   return { routedClauses: nextClauses, framing };
 }
