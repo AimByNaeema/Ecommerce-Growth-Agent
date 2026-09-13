@@ -18,6 +18,13 @@ platform: "Shopify"
 # sells on both and both have a real adapter: Shopify (read/write) and Etsy (read-only).
 enabled_platforms: [shopify, etsy]
 
+# Autonomy for this business. enabled stays false until the owner starts the observation trial.
+autonomy:
+  enabled: false
+  daily_token_budget: 500000
+  daily_run_budget: 10
+  approval_ttl_hours: 24
+
 store_url: "https://digitalstudionaeema.com/"
 
 # From the public storefront's own text: "Instant Digital Access - Receive access
