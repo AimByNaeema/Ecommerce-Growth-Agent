@@ -279,6 +279,7 @@ const TEST_FILES = [
   'chiefSeoDataFlow.test.js',
   'chiefInstructionParsing.test.js',
   'chiefObjectiveIntent.test.js',
+  'seoStoreAudit.test.js',
 ];
 
 function runAll() {

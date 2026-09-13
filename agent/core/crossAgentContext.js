@@ -672,6 +672,18 @@ const EMPTY_MEANS_NOT_SET = {
   'metadata.meta_description': 'Empty when the product has no custom SEO description in Shopify (the storefront then uses the description).',
 };
 
+// The seo_quality_check inputs a store audit is never given - named so the checker reports
+// the dependent checks as not assessed instead of scoring them as failed.
+const INPUTS_WITHOUT_STORE_SOURCE = [
+  { field: 'keywordRecords', reason: 'Target keyword research is not a stored product field, and none was supplied to this store audit.' },
+  { field: 'factualAttributes', reason: 'Verified product facts to check the listing copy against are not a stored product field, and none were supplied.' },
+];
+
+// Listing-quality data a store product has but the product read does not request.
+const NOT_REQUESTED_BY_READ = [
+  { field: 'metadata.alt_text', reason: 'The product read does not request product images, so image alt text is not assessed.' },
+];
+
 function stringOrEmpty(value) {
   return typeof value === 'string' ? value : '';
 }
@@ -679,6 +691,7 @@ function stringOrEmpty(value) {
 function extractLiveListingSourcesToSeo(fromWrapper) {
   const sources = fromWrapper && Array.isArray(fromWrapper.listing_sources) ? fromWrapper.listing_sources : [];
   const listingRecords = [];
+  const listingStoreFields = [];
   const notReturnedByRead = [];
   for (const source of sources) {
     if (!source || !isNonEmptyString(source.product_reference)) continue;
@@ -689,20 +702,39 @@ function extractLiveListingSourcesToSeo(fromWrapper) {
     record.metadata.meta_description = stringOrEmpty(source.seo_description);
     record.metadata.url_slug = stringOrEmpty(source.handle);
     listingRecords.push(record);
+    // The store's own listing fields (product type, vendor, tags, published status), relayed
+    // exactly as read, index-aligned with listingRecords. A read without them relays null.
+    const storeFields = source.store_fields && typeof source.store_fields === 'object' ? source.store_fields : null;
+    listingStoreFields.push(
+      storeFields
+        ? {
+            product_reference: source.product_reference,
+            product_type: storeFields.product_type,
+            vendor: storeFields.vendor,
+            tags: Array.isArray(storeFields.tags) ? [...storeFields.tags] : storeFields.tags,
+            status: storeFields.status,
+            unavailable_fields: Array.isArray(storeFields.unavailable_fields) ? [...storeFields.unavailable_fields] : [],
+          }
+        : null
+    );
     const unread = (Array.isArray(source.unavailable_fields) ? source.unavailable_fields : [])
       .map((field) => LISTING_SOURCE_TO_RECORD_FIELD[field])
       .filter(Boolean);
     if (unread.length > 0) notReturnedByRead.push({ product_reference: source.product_reference, fields: unread });
   }
   if (listingRecords.length === 0) return {};
-  return {
+  const context = {
     listingRecords,
     listingFieldGaps: {
       not_on_store_product: NOT_ON_STORE_PRODUCT.map((entry) => ({ ...entry })),
+      inputs_without_store_source: INPUTS_WITHOUT_STORE_SOURCE.map((entry) => ({ ...entry })),
       not_returned_by_read: notReturnedByRead,
+      not_requested_by_read: NOT_REQUESTED_BY_READ.map((entry) => ({ ...entry })),
       empty_means_not_set: { ...EMPTY_MEANS_NOT_SET },
     },
   };
+  if (listingStoreFields.some(Boolean)) context.listingStoreFields = listingStoreFields;
+  return context;
 }
 
 function deriveLiveListingContextForSeo({ completedSteps, toCapabilityId, existingResearchParams }) {

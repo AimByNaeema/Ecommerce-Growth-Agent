@@ -29,6 +29,19 @@
 // ranking. See agent/core/seoQualityCheckModel.js's own header for how this
 // deliberately differs from agent/core/productOpportunityScoreModel.js's
 // coverage_score (evidence *availability* vs check *pass/fail*).
+//
+// AUDITING A REAL STORE LISTING (checkSeoQualityOnAvailableData). The 9 dimensions were
+// designed for a composed SEO suggestion, which carries keywords, search intent,
+// headings, internal links and supporting content. A live store product has none of those
+// fields - they are SEO research and suggestion data, not stored product data. Scored as
+// if they had been supplied, every real product "failed" keyword targeting, search intent,
+// over-optimization and internal linking, and could never reach 'success', so the Chief's
+// store audit was always reported as missing data. The caller now DECLARES which inputs
+// have no source (agent/core/crossAgentContext.js's Product -> SEO relay does), each with a
+// reason. A check whose input is both declared unavailable AND genuinely absent from what
+// was supplied is reported as NOT ASSESSED, with that reason, instead of as a failed check;
+// anything actually supplied is always checked. Without a declaration, checkSeoQuality's
+// behaviour is exactly what it always was.
 
 const { validateListingOptimizationShape } = require('./listingOptimizationModel');
 const { validateSeoResearchShape } = require('./seoResearchModel');
@@ -93,14 +106,26 @@ function onPageText(listingRecord) {
   ].join(' ');
 }
 
+// No input is declared unavailable: every check runs exactly as it always has.
+const NOTHING_UNAVAILABLE = () => null;
+
+// The honest result of a dimension none of whose checks had a source.
+function notAssessed(reason) {
+  return { status: 'empty', findings: [`Not assessed: ${reason}`], recommendations: [], notAssessedReason: reason };
+}
+
 // ---------------------------------------------------------------------------------
 // One check function per dimension. Each returns { status, findings, recommendations }
 // - status is always 'empty' (nothing to check, or every applicable check failed),
-// 'partial' (some passed), or 'success' (every applicable check passed).
+// 'partial' (some passed), or 'success' (every applicable check passed). `unavailable`
+// (field -> reason | null) names inputs the caller declared as having no source; it only
+// ever excludes a check whose input is ALSO absent from what was supplied.
 // ---------------------------------------------------------------------------------
 
-function checkKeywordTargeting(listingRecord, keywordRecords) {
+function checkKeywordTargeting(listingRecord, keywordRecords, unavailable = NOTHING_UNAVAILABLE) {
   if (keywordRecords.length === 0) {
+    const reason = unavailable('keywordRecords');
+    if (reason) return notAssessed(reason);
     return {
       status: 'empty',
       findings: ['No target keywords were supplied to check targeting against.'],
@@ -123,8 +148,10 @@ function checkKeywordTargeting(listingRecord, keywordRecords) {
   return { status, findings, recommendations };
 }
 
-function checkSearchIntent(listingRecord, keywordRecords) {
+function checkSearchIntent(listingRecord, keywordRecords, unavailable = NOTHING_UNAVAILABLE) {
   if (!listingRecord.search_intent) {
+    const reason = unavailable('search_intent');
+    if (reason) return notAssessed(reason);
     return {
       status: 'empty',
       findings: ['No search intent is set on the listing.'],
@@ -164,9 +191,11 @@ function checkSearchIntent(listingRecord, keywordRecords) {
   };
 }
 
-function checkTitle(listingRecord, keywordRecords) {
+function checkTitle(listingRecord, keywordRecords, unavailable = NOTHING_UNAVAILABLE) {
   const title = listingRecord.product_title || '';
   if (!title) {
+    const reason = unavailable('product_title');
+    if (reason) return notAssessed(reason);
     return {
       status: 'empty',
       findings: ['Product title is missing.'],
@@ -203,16 +232,27 @@ function checkTitle(listingRecord, keywordRecords) {
   return { status, findings, recommendations };
 }
 
-function checkMetadata(listingRecord) {
+function checkMetadata(listingRecord, unavailable = NOTHING_UNAVAILABLE) {
   const metadata = listingRecord.metadata;
   const findings = [];
   const recommendations = [];
   let passed = 0;
-  const applicable = 3;
+  let applicable = 3;
+  const skippedReasons = [];
+  const skip = (field) => {
+    const reason = unavailable(field);
+    if (!reason) return false;
+    applicable -= 1;
+    skippedReasons.push(reason);
+    findings.push(`${field.replace('metadata.', '')} not assessed: ${reason}`);
+    return true;
+  };
 
   if (!metadata.meta_title) {
-    findings.push('meta_title is missing.');
-    recommendations.push('Add a meta_title.');
+    if (!skip('metadata.meta_title')) {
+      findings.push('meta_title is missing.');
+      recommendations.push('Add a meta_title.');
+    }
   } else if (metadata.meta_title.length > META_TITLE_MAX_LENGTH) {
     findings.push(`meta_title is ${metadata.meta_title.length} character(s) (conventional guideline: up to ${META_TITLE_MAX_LENGTH}).`);
     recommendations.push(`Consider shortening meta_title to roughly ${META_TITLE_MAX_LENGTH} characters or fewer.`);
@@ -222,8 +262,10 @@ function checkMetadata(listingRecord) {
   }
 
   if (!metadata.meta_description) {
-    findings.push('meta_description is missing.');
-    recommendations.push('Add a meta_description.');
+    if (!skip('metadata.meta_description')) {
+      findings.push('meta_description is missing.');
+      recommendations.push('Add a meta_description.');
+    }
   } else if (
     metadata.meta_description.length < META_DESCRIPTION_MIN_LENGTH ||
     metadata.meta_description.length > META_DESCRIPTION_MAX_LENGTH
@@ -236,13 +278,16 @@ function checkMetadata(listingRecord) {
   }
 
   if (!metadata.url_slug) {
-    findings.push('url_slug is missing.');
-    recommendations.push('Add a url_slug.');
+    if (!skip('metadata.url_slug')) {
+      findings.push('url_slug is missing.');
+      recommendations.push('Add a url_slug.');
+    }
   } else {
     findings.push('url_slug is present.');
     passed += 1;
   }
 
+  if (applicable === 0) return notAssessed(skippedReasons[0]);
   let status = 'empty';
   if (passed === applicable) status = 'success';
   else if (passed > 0) status = 'partial';
@@ -253,16 +298,24 @@ function checkMetadata(listingRecord) {
 // structure, presence of supporting content. Never evaluates grammar, tone, or
 // persuasiveness, which would require human or AI review this deterministic module
 // does not perform.
-function checkContentQuality(listingRecord) {
+function checkContentQuality(listingRecord, unavailable = NOTHING_UNAVAILABLE) {
   const findings = [];
   const recommendations = [];
   let passed = 0;
-  const applicable = 3;
+  let applicable = 3;
+  const skippedReasons = [];
 
   const description = listingRecord.description || '';
   if (!description) {
-    findings.push('Description is missing.');
-    recommendations.push('Add a description.');
+    const reason = unavailable('description');
+    if (reason) {
+      applicable -= 1;
+      skippedReasons.push(reason);
+      findings.push(`Description not assessed: ${reason}`);
+    } else {
+      findings.push('Description is missing.');
+      recommendations.push('Add a description.');
+    }
   } else if (description.length < DESCRIPTION_MIN_LENGTH) {
     findings.push(`Description is ${description.length} character(s), below the ${DESCRIPTION_MIN_LENGTH}-character thin-content guideline.`);
     recommendations.push(`Consider expanding the description to at least ${DESCRIPTION_MIN_LENGTH} characters.`);
@@ -272,7 +325,12 @@ function checkContentQuality(listingRecord) {
   }
 
   const hasStructure = Boolean(listingRecord.structure) || listingRecord.headings.length > 0;
-  if (!hasStructure) {
+  const structureReason = !hasStructure && unavailable('structure') && unavailable('headings') ? unavailable('structure') : null;
+  if (structureReason) {
+    applicable -= 1;
+    skippedReasons.push(structureReason);
+    findings.push(`Structure and headings not assessed: ${structureReason}`);
+  } else if (!hasStructure) {
     findings.push('No structure or headings are suggested for this listing.');
     recommendations.push('Suggest a content structure or at least one heading.');
   } else {
@@ -280,7 +338,12 @@ function checkContentQuality(listingRecord) {
     passed += 1;
   }
 
-  if (listingRecord.supporting_content.length === 0) {
+  const supportingReason = listingRecord.supporting_content.length === 0 ? unavailable('supporting_content') : null;
+  if (supportingReason) {
+    applicable -= 1;
+    skippedReasons.push(supportingReason);
+    findings.push(`Supporting content not assessed: ${supportingReason}`);
+  } else if (listingRecord.supporting_content.length === 0) {
     findings.push('No supporting content ideas are suggested.');
     recommendations.push('Consider suggesting supporting content (e.g. a buying guide or FAQ section).');
   } else {
@@ -288,6 +351,7 @@ function checkContentQuality(listingRecord) {
     passed += 1;
   }
 
+  if (applicable === 0) return notAssessed(skippedReasons[0]);
   // 'empty' only when there is truly nothing here (no description, no structure/
   // headings, no supporting content) - once any real content exists, a failed
   // sub-check is a 'partial' finding, never a regression back to 'empty'.
@@ -301,8 +365,10 @@ function checkContentQuality(listingRecord) {
 // product that must be reflected). Checks presence only (a literal substring match) -
 // never judges truthfulness, since this module has no independent source of truth.
 // Honestly 'empty' (not a failure) when nothing was supplied to check.
-function checkProductAccuracy(listingRecord, factualAttributes) {
+function checkProductAccuracy(listingRecord, factualAttributes, unavailable = NOTHING_UNAVAILABLE) {
   if (factualAttributes.length === 0) {
+    const reason = unavailable('factualAttributes');
+    if (reason) return notAssessed(reason);
     return {
       status: 'empty',
       findings: ['No factual attributes were supplied to check description/title coverage against.'],
@@ -335,17 +401,25 @@ const EXPECTED_FIELD_CHECKS = [
   { label: 'headings', present: (record) => record.headings.length > 0 },
 ];
 
-function checkMissingInformation(listingRecord) {
-  const missing = EXPECTED_FIELD_CHECKS.filter((check) => !check.present(listingRecord));
-  const present = EXPECTED_FIELD_CHECKS.length - missing.length;
+function checkMissingInformation(listingRecord, unavailable = NOTHING_UNAVAILABLE) {
+  // A field with no source is not "missing" from the listing - it is not assessed.
+  const excluded = EXPECTED_FIELD_CHECKS.filter((check) => !check.present(listingRecord) && unavailable(check.label));
+  const expected = EXPECTED_FIELD_CHECKS.filter((check) => !excluded.includes(check));
+  const missing = expected.filter((check) => !check.present(listingRecord));
+  const present = expected.length - missing.length;
+
+  if (expected.length === 0) return notAssessed(unavailable(excluded[0].label));
 
   const findings = [
-    `${present}/${EXPECTED_FIELD_CHECKS.length} expected field(s) are populated.`,
+    `${present}/${expected.length} expected field(s) are populated.`,
   ];
+  if (excluded.length > 0) {
+    findings.push(`Not assessed (no source): ${excluded.map((check) => check.label).join(', ')}.`);
+  }
   const recommendations = missing.map((check) => `${check.label} is missing.`);
 
   let status = 'empty';
-  if (present === EXPECTED_FIELD_CHECKS.length) status = 'success';
+  if (present === expected.length) status = 'success';
   else if (present > 0) status = 'partial';
   return { status, findings, recommendations };
 }
@@ -353,8 +427,10 @@ function checkMissingInformation(listingRecord) {
 // Keyword-stuffing heuristic: counts raw occurrences of each target keyword across
 // title/description/meta_title/meta_description. A fixed, documented threshold - never
 // a claim about actual ranking impact.
-function checkOverOptimization(listingRecord, keywordRecords) {
+function checkOverOptimization(listingRecord, keywordRecords, unavailable = NOTHING_UNAVAILABLE) {
   if (keywordRecords.length === 0) {
+    const reason = unavailable('keywordRecords');
+    if (reason) return notAssessed(reason);
     return {
       status: 'empty',
       findings: ['No target keywords were supplied to check for over-optimization.'],
@@ -392,9 +468,11 @@ function checkOverOptimization(listingRecord, keywordRecords) {
   return { status, findings, recommendations };
 }
 
-function checkInternalLinkingOpportunities(listingRecord) {
+function checkInternalLinkingOpportunities(listingRecord, unavailable = NOTHING_UNAVAILABLE) {
   const links = listingRecord.internal_links || [];
   if (links.length === 0) {
+    const reason = unavailable('internal_links');
+    if (reason) return notAssessed(reason);
     return {
       status: 'empty',
       findings: ['No internal links are suggested for this listing.'],
@@ -417,16 +495,21 @@ function checkInternalLinkingOpportunities(listingRecord) {
 }
 
 const DIMENSION_CHECKS = {
-  keyword_targeting: (listingRecord, keywordRecords) => checkKeywordTargeting(listingRecord, keywordRecords),
-  search_intent: (listingRecord, keywordRecords) => checkSearchIntent(listingRecord, keywordRecords),
-  title: (listingRecord, keywordRecords) => checkTitle(listingRecord, keywordRecords),
-  metadata: (listingRecord) => checkMetadata(listingRecord),
-  content_quality: (listingRecord) => checkContentQuality(listingRecord),
-  product_accuracy: (listingRecord, keywordRecords, factualAttributes) =>
-    checkProductAccuracy(listingRecord, factualAttributes),
-  missing_information: (listingRecord) => checkMissingInformation(listingRecord),
-  over_optimization: (listingRecord, keywordRecords) => checkOverOptimization(listingRecord, keywordRecords),
-  internal_linking_opportunities: (listingRecord) => checkInternalLinkingOpportunities(listingRecord),
+  keyword_targeting: (listingRecord, keywordRecords, factualAttributes, unavailable) =>
+    checkKeywordTargeting(listingRecord, keywordRecords, unavailable),
+  search_intent: (listingRecord, keywordRecords, factualAttributes, unavailable) =>
+    checkSearchIntent(listingRecord, keywordRecords, unavailable),
+  title: (listingRecord, keywordRecords, factualAttributes, unavailable) => checkTitle(listingRecord, keywordRecords, unavailable),
+  metadata: (listingRecord, keywordRecords, factualAttributes, unavailable) => checkMetadata(listingRecord, unavailable),
+  content_quality: (listingRecord, keywordRecords, factualAttributes, unavailable) => checkContentQuality(listingRecord, unavailable),
+  product_accuracy: (listingRecord, keywordRecords, factualAttributes, unavailable) =>
+    checkProductAccuracy(listingRecord, factualAttributes, unavailable),
+  missing_information: (listingRecord, keywordRecords, factualAttributes, unavailable) =>
+    checkMissingInformation(listingRecord, unavailable),
+  over_optimization: (listingRecord, keywordRecords, factualAttributes, unavailable) =>
+    checkOverOptimization(listingRecord, keywordRecords, unavailable),
+  internal_linking_opportunities: (listingRecord, keywordRecords, factualAttributes, unavailable) =>
+    checkInternalLinkingOpportunities(listingRecord, unavailable),
 };
 
 const DIMENSION_LABELS = {
@@ -441,6 +524,10 @@ const DIMENSION_LABELS = {
   internal_linking_opportunities: 'Internal linking opportunities',
 };
 
+function labelForDimension(dimensionId) {
+  return DIMENSION_LABELS[dimensionId] || dimensionId;
+}
+
 function buildDimensionGapReason(dimensionId, status) {
   const label = DIMENSION_LABELS[dimensionId];
   if (status === 'empty') {
@@ -454,7 +541,7 @@ function buildDimensionGapReason(dimensionId, status) {
 // audits existing SEO Agent output, it does not build it.
 // ---------------------------------------------------------------------------------
 
-function checkSeoQuality({ listingRecord, keywordRecords = [], factualAttributes = [], researchDate } = {}) {
+function runChecks({ listingRecord, keywordRecords = [], factualAttributes = [], researchDate } = {}, unavailable = NOTHING_UNAVAILABLE) {
   const fnName = 'checkSeoQuality';
 
   const listingValidation = validateListingOptimizationShape(listingRecord);
@@ -472,14 +559,18 @@ function checkSeoQuality({ listingRecord, keywordRecords = [], factualAttributes
   const findings = [];
   const recommendations = [];
   const dimensionGaps = [];
+  const notAssessedDimensions = [];
 
   for (const dimensionId of SEO_QUALITY_DIMENSIONS) {
-    const check = DIMENSION_CHECKS[dimensionId](listingRecord, keywordRecords, factualAttributes);
+    const check = DIMENSION_CHECKS[dimensionId](listingRecord, keywordRecords, factualAttributes, unavailable);
     dimensionStatus[dimensionId] = check.status;
     const label = DIMENSION_LABELS[dimensionId];
     findings.push(...check.findings.map((finding) => `[${label}] ${finding}`));
     recommendations.push(...check.recommendations.map((recommendation) => `[${label}] ${recommendation}`));
-    if (check.status !== 'success') {
+    if (check.notAssessedReason) {
+      notAssessedDimensions.push({ dimension: dimensionId, reason: check.notAssessedReason });
+      dimensionGaps.push({ dimension: dimensionId, reason: `${label} was not assessed: ${check.notAssessedReason}` });
+    } else if (check.status !== 'success') {
       dimensionGaps.push({ dimension: dimensionId, reason: buildDimensionGapReason(dimensionId, check.status) });
     }
   }
@@ -514,11 +605,103 @@ function checkSeoQuality({ listingRecord, keywordRecords = [], factualAttributes
   if (!resultValidation.valid) {
     throw new Error(`Composed SEO quality check failed validation: ${resultValidation.errors.join('; ')}`);
   }
-  return result;
+  return { result, notAssessedDimensions };
+}
+
+function checkSeoQuality(params = {}) {
+  return runChecks(params).result;
+}
+
+// Validates a caller's declaration of inputs with no source: [{ field, reason }].
+function unavailabilityLookup(unavailableInputs) {
+  if (!Array.isArray(unavailableInputs)) {
+    throw new Error('checkSeoQualityOnAvailableData requires unavailableInputs to be an array of { field, reason } entries.');
+  }
+  const reasons = new Map();
+  unavailableInputs.forEach((entry, index) => {
+    if (!entry || typeof entry.field !== 'string' || !entry.field || typeof entry.reason !== 'string' || !entry.reason.trim()) {
+      throw new Error(`checkSeoQualityOnAvailableData: unavailableInputs[${index}] must be { field, reason } with a non-empty reason.`);
+    }
+    if (!reasons.has(entry.field)) reasons.set(entry.field, entry.reason.trim());
+  });
+  return (field) => reasons.get(field) || null;
+}
+
+// Audits a REAL listing on the data it actually has. Returns the schema-valid check record
+// plus which dimensions were not assessed (and why), and `assessed_status` - the verdict
+// over the dimensions that WERE assessed: 'success' (every one passed), 'empty' (none had
+// anything present), 'partial' (the listing has at least one finding to act on).
+function checkSeoQualityOnAvailableData({ unavailableInputs = [], ...params } = {}) {
+  const { result, notAssessedDimensions } = runChecks(params, unavailabilityLookup(unavailableInputs));
+  const notAssessedIds = new Set(notAssessedDimensions.map((entry) => entry.dimension));
+  const assessedDimensions = SEO_QUALITY_DIMENSIONS.filter((dimension) => !notAssessedIds.has(dimension));
+  const assessedStatuses = assessedDimensions.map((dimension) => result.dimension_status[dimension]);
+  let assessedStatus = 'partial';
+  if (assessedStatuses.length === 0 || assessedStatuses.every((status) => status === 'empty')) assessedStatus = 'empty';
+  else if (assessedStatuses.every((status) => status === 'success')) assessedStatus = 'success';
+  return {
+    check: result,
+    not_assessed: notAssessedDimensions,
+    assessed_dimensions: assessedDimensions,
+    assessed_status: assessedStatus,
+  };
+}
+
+// STORE LISTING FIELDS. The listing-quality fields a store product carries outside the SEO
+// suggestion shape - product type, vendor, tags, and whether it is published. Mechanical
+// presence facts only. A field the read did not return is not assessed, never guessed.
+const STORE_LISTING_FIELD_CHECKS = [
+  {
+    field: 'product_type',
+    check: (value) => (value ? { passed: true, finding: `Product type is set ("${value}").` } : { passed: false, finding: 'Product type is not set.', recommendation: 'Set a product type so the listing is categorised in the store and in search.' }),
+  },
+  {
+    field: 'vendor',
+    check: (value) => (value ? { passed: true, finding: 'Vendor is set.' } : { passed: false, finding: 'Vendor is not set.', recommendation: 'Set the vendor on this product.' }),
+  },
+  {
+    field: 'tags',
+    check: (value) => (Array.isArray(value) && value.length > 0
+      ? { passed: true, finding: `${value.length} tag(s) are set.` }
+      : { passed: false, finding: 'The product has no tags.', recommendation: 'Add descriptive tags so the product is easier to find and group.' }),
+  },
+  {
+    field: 'status',
+    check: (value) => (value === 'ACTIVE'
+      ? { passed: true, finding: 'Product status is ACTIVE (published to the storefront).' }
+      : { passed: false, finding: `Product status is ${value || 'not set'} - it is not published to the storefront, so shoppers and search engines cannot see it.`, recommendation: 'Review whether this product should be published.' }),
+  },
+];
+
+function checkStoreListingFields(storeFields) {
+  const fields = storeFields && typeof storeFields === 'object' ? storeFields : {};
+  const unread = new Set(Array.isArray(fields.unavailable_fields) ? fields.unavailable_fields : []);
+  const findings = [];
+  const recommendations = [];
+  const notAssessedFields = [];
+  let applicable = 0;
+  let passed = 0;
+  for (const { field, check } of STORE_LISTING_FIELD_CHECKS) {
+    if (unread.has(field) || !(field in fields)) {
+      notAssessedFields.push({ field, reason: 'The store read did not return this field for this product.' });
+      continue;
+    }
+    applicable += 1;
+    const outcome = check(fields[field]);
+    findings.push(outcome.finding);
+    if (outcome.passed) passed += 1;
+    else recommendations.push(outcome.recommendation);
+  }
+  let status = 'empty';
+  if (applicable > 0) status = deriveNonEmptyCheckStatus(passed, applicable);
+  return { status, findings, recommendations, not_assessed: notAssessedFields };
 }
 
 module.exports = {
   checkSeoQuality,
+  checkSeoQualityOnAvailableData,
+  checkStoreListingFields,
+  labelForDimension,
 };
 
 if (require.main === module) {

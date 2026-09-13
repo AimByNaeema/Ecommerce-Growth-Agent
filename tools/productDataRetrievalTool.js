@@ -95,6 +95,30 @@ const LISTING_SOURCE_READERS = {
   seo_description: (product) => (product.seo ? product.seo.description : undefined),
 };
 
+// The store's own listing-quality fields the same read already returns - product type,
+// vendor, tags and published status - relayed as read for the SEO/listing audit. Same rule:
+// a field the read did not return is named in unavailable_fields, never filled in.
+const STORE_FIELD_READERS = {
+  product_type: (product) => product.productType,
+  vendor: (product) => product.vendor,
+  tags: (product) => product.tags,
+  status: (product) => product.status,
+};
+
+function buildStoreFields(shopifyProduct) {
+  const storeFields = { unavailable_fields: [] };
+  for (const [field, read] of Object.entries(STORE_FIELD_READERS)) {
+    const value = read(shopifyProduct);
+    if (value === undefined) {
+      storeFields.unavailable_fields.push(field);
+      continue;
+    }
+    if (field === 'tags') storeFields.tags = Array.isArray(value) ? value.filter((tag) => typeof tag === 'string') : [];
+    else storeFields[field] = typeof value === 'string' ? value : '';
+  }
+  return storeFields;
+}
+
 function buildListingSource(shopifyProduct) {
   const source = {
     product_reference: shopifyProduct.title || '',
@@ -106,6 +130,7 @@ function buildListingSource(shopifyProduct) {
     if (value === undefined) source.unavailable_fields.push(field);
     source[field] = typeof value === 'string' ? value : '';
   }
+  source.store_fields = buildStoreFields(shopifyProduct);
   return source;
 }
 

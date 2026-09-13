@@ -190,6 +190,8 @@ const PRODUCTION_REQUEST =
       description: FIXTURE_PRODUCTS[0].description,
       seo_title: 'Watercolor Clipart PNG Bundle | Fixture Studio',
       seo_description: FIXTURE_PRODUCTS[0].seo.description,
+      // The store's own listing fields from the same read, exactly as held.
+      store_fields: { unavailable_fields: [], product_type: 'Clipart', vendor: 'Fixture Studio', tags: ['png'], status: 'ACTIVE' },
     });
     // No custom SEO value on the store is relayed as empty - what the store holds - not as unavailable.
     assert.strictEqual(outcome.listing_sources[1].seo_title, '');

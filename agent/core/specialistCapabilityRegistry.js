@@ -953,8 +953,9 @@ const SEO_TASKS = [
     required: ['listingRecord'],
     // listingRecords is the declared batch form of listingRecord (one record per real store
     // product, relayed by agent/core/crossAgentContext.js from the Product step's live read);
-    // listingFieldGaps names the fields that relay could not supply.
-    optional: ['keywordRecords', 'factualAttributes', 'researchDate', 'listingRecords', 'listingFieldGaps'],
+    // listingFieldGaps names the fields that relay could not supply; listingStoreFields carries
+    // each product's own store listing fields (product type, vendor, tags, status), index-aligned.
+    optional: ['keywordRecords', 'factualAttributes', 'researchDate', 'listingRecords', 'listingFieldGaps', 'listingStoreFields'],
     model: 'agent/core/seoQualityCheckModel.js',
     fields: fieldIds(SEO_QUALITY_CHECK_FIELDS),
   }),
