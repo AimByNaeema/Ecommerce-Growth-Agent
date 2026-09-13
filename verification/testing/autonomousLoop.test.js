@@ -116,7 +116,7 @@ function policyFor(businessId, overrides = {}) {
     ok: true,
     business_id: businessId,
     enabled_platforms: ['shopify'],
-    autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null },
+    autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null, approval_ttl_hours: 87600 },
     ...overrides,
   };
 }
@@ -578,7 +578,10 @@ const stepFor = (cycle, jobId) => cycle.steps.find((step) => step.job_id === job
         assert.ok(next.steps.some((step) => step.job_id === 'watch-catalogue--follow-up-1' && step.outcome === 'executed'));
         const memory = calls[0].research_params.relevant_memory;
         assert.ok(Array.isArray(memory) && memory.some((entry) => entry.summary.includes(approvalId)), 'the next cycle must see the verified outcome');
-        assert.strictEqual(listPendingAutonomousApprovals({ businessId: business, storeDir: roots.approvals }).length, 1, 'a new occurrence queues its own approval');
+        // The new occurrence asks for the vendor change that was just applied and verified, so it is
+        // not queued again - an approval for it could never execute.
+        assert.ok(next.steps.some((step) => step.job_id === 'watch-catalogue--follow-up-2' && step.outcome === 'blocked' && step.reason_code === 'already_completed'));
+        assert.strictEqual(listPendingAutonomousApprovals({ businessId: business, storeDir: roots.approvals }).length, 0, 'an already-applied change is not queued again');
 
         // 9. The day's spend stays measurable across every autonomous run.
         assert.strictEqual(readDailyUsage({ businessId: business, now: T2 }).coverage_complete, true);

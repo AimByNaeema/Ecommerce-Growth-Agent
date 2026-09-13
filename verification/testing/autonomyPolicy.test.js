@@ -162,7 +162,7 @@ const PASSING_POLICY = {
   ok: true,
   business_id: null,
   enabled_platforms: ['shopify', 'etsy'],
-  autonomy: { enabled: true, daily_token_budget: 10000, daily_run_budget: null },
+  autonomy: { enabled: true, daily_token_budget: 10000, daily_run_budget: null, approval_ttl_hours: 87600 },
 };
 const PASSING_DAILY = { available: true, day: '2026-01-01', tokens_total: 10, runs_counted: 1, runs_missing_usage: 0, coverage_complete: true };
 
@@ -314,7 +314,7 @@ test('autonomy permission can never manufacture or satisfy a human approval', ()
     const result = evaluateAutonomyPolicy(request({
       toolId: 'shopify_inventory_correction',
       specialistId: 'product',
-      businessPolicy: { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 10000, daily_run_budget: null } },
+      businessPolicy: { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 10000, daily_run_budget: null, approval_ttl_hours: 87600 } },
     }));
     assert.strictEqual(result.decision, 'APPROVAL_REQUIRED');
     assert.strictEqual(result.human_approval_present, false);
@@ -501,13 +501,13 @@ test('daily token budget blocks when exceeded, summed from real saved runs', () 
     assert.strictEqual(daily.tokens_total, 1100);
 
     withKillSwitch('true', () => {
-      const overBudget = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 1000, daily_run_budget: null } };
+      const overBudget = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 1000, daily_run_budget: null, approval_ttl_hours: 87600 } };
       const result = evaluateAutonomyPolicy(request({ businessPolicy: overBudget, dailyUsage: daily }));
       assert.strictEqual(result.decision, 'BLOCK');
       assert.strictEqual(result.reason_code, 'daily_budget_exhausted');
 
       // Same day's spend, a budget that accommodates it: allowed.
-      const withinBudget = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 5000, daily_run_budget: null } };
+      const withinBudget = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 5000, daily_run_budget: null, approval_ttl_hours: 87600 } };
       assert.strictEqual(evaluateAutonomyPolicy(request({ businessPolicy: withinBudget, dailyUsage: daily })).decision, 'ALLOW');
     });
   });
@@ -516,12 +516,12 @@ test('daily token budget blocks when exceeded, summed from real saved runs', () 
 test('daily RUN budget blocks when exceeded, and is enforced only when configured', () => {
   const daily = { available: true, day: '2026-03-04', tokens_total: 5, runs_counted: 4, runs_missing_usage: 0, coverage_complete: true };
   withKillSwitch('true', () => {
-    const capped = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 10000, daily_run_budget: 4 } };
+    const capped = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 10000, daily_run_budget: 4, approval_ttl_hours: 87600 } };
     const blocked = evaluateAutonomyPolicy(request({ businessPolicy: capped, dailyUsage: daily }));
     assert.strictEqual(blocked.reason_code, 'daily_budget_exhausted');
 
     // No run ceiling configured: no invented default takes its place.
-    const uncapped = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 10000, daily_run_budget: null } };
+    const uncapped = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 10000, daily_run_budget: null, approval_ttl_hours: 87600 } };
     assert.strictEqual(evaluateAutonomyPolicy(request({ businessPolicy: uncapped, dailyUsage: daily })).decision, 'ALLOW');
   });
 });
@@ -529,7 +529,7 @@ test('daily RUN budget blocks when exceeded, and is enforced only when configure
 test('the default daily token ceiling is derived from the per-run budget, never invented', () => {
   assert.strictEqual(getDefaultDailyTokenBudget(), getMaxTokensPerRun() * autonomyPolicy.DEFAULT_DAILY_RUN_ALLOWANCE);
   withKillSwitch('true', () => {
-    const noBudgetStated = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: null, daily_run_budget: null } };
+    const noBudgetStated = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: null, daily_run_budget: null, approval_ttl_hours: 87600 } };
     const atCeiling = { available: true, day: '2026-03-04', tokens_total: getDefaultDailyTokenBudget(), runs_counted: 1, runs_missing_usage: 0, coverage_complete: true };
     const result = evaluateAutonomyPolicy(request({ businessPolicy: noBudgetStated, dailyUsage: atCeiling }));
     assert.strictEqual(result.reason_code, 'daily_budget_exhausted');
@@ -567,7 +567,7 @@ test('one business cannot consume another business\'s budget', () => {
     assert.strictEqual(beta.runs_counted, 0);
 
     withKillSwitch('true', () => {
-      const policy = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 1000, daily_run_budget: null } };
+      const policy = { ...PASSING_POLICY, autonomy: { enabled: true, daily_token_budget: 1000, daily_run_budget: null, approval_ttl_hours: 87600 } };
       assert.strictEqual(evaluateAutonomyPolicy(request({ businessId: 'alpha-co', businessPolicy: policy, dailyUsage: alpha })).reason_code, 'daily_budget_exhausted');
       assert.strictEqual(evaluateAutonomyPolicy(request({ businessId: 'beta-co', businessPolicy: policy, dailyUsage: beta })).decision, 'ALLOW');
     });

@@ -27,6 +27,7 @@ const { signPayloadString } = require('./approvalSigningTestKey');
 
 process.env.APPROVAL_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-id-store-'));
 process.env.RUN_HISTORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-id-runs-'));
+process.env.VERIFICATION_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-id-verifications-'));
 const TEST_API_KEY = 'test-agent-api-key-do-not-use-in-production';
 process.env.AGENT_API_KEY = TEST_API_KEY;
 process.env.RATE_LIMIT_MAX_REQUESTS = '10000';

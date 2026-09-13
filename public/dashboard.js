@@ -3428,7 +3428,14 @@
       '<h3>Schedules</h3>' +
       list(data.schedules, (job) => job.job_id + ' — ' + (job.enabled ? 'enabled' : 'disabled') + ' — ' + ((job.task && job.task.tool_id) || '') + (job.last_status ? ' — last: ' + job.last_status : ''), 'No schedules have been created for this business.') +
       '<h3>Waiting for your approval</h3>' +
-      list(data.pending_approvals, (item) => item.approval_id + ' — ' + item.tool_id + (item.compliance_status ? ' — compliance ' + item.compliance_status : '') + (item.reason ? ' — ' + item.reason : ''), 'Nothing from the autonomous cycle is waiting for your approval.') +
+      list(data.pending_approvals, (item) => item.approval_id + ' — ' + item.tool_id + (item.compliance_status ? ' — compliance ' + item.compliance_status : '') + (item.expires_at ? ' — expires ' + item.expires_at : '') + (item.reason ? ' — ' + item.reason : ''), 'Nothing from the autonomous cycle is waiting for your approval.') +
+      // What the latest cycle actually did, step by step, as the server recorded it. Read-only:
+      // nothing here can re-run, decide or change a step.
+      '<h3>Latest cycle</h3>' +
+      (data.latest_cycle
+        ? '<div class="session-note">' + escapeHtml((data.latest_cycle.created_at ? data.latest_cycle.created_at + ' — ' : '') + 'status ' + (data.latest_cycle.status || 'unknown')) + '</div>' +
+          list(data.latest_cycle.steps, (step) => (step.parent_job_id ? step.parent_job_id + ' → ' : '') + step.job_id + ' — ' + (step.outcome || '') + (step.reason_code ? ' — why: ' + step.reason_code : '') + (step.verification_status ? ' — verification: ' + step.verification_status : '') + (step.approval_request_id ? ' — approval ' + step.approval_request_id : ''), 'The latest cycle had no due jobs.')
+        : '<div class="session-note">No autonomous cycle has run for this business yet.</div>') +
       '<h3>Recent autonomous runs</h3>' +
       list(data.recent_runs, (run) => (run.created_at ? run.created_at + ' — ' : '') + (run.kind || '') + ' — ' + (run.status || '') + (run.summary ? ' — ' + run.summary : ''), 'No autonomous cycle has run for this business yet.');
   }

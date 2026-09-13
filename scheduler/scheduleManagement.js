@@ -28,6 +28,7 @@ const { buildScheduledExecutionRequest } = require('./scheduleRunner');
 const { resolveBusinessPolicy } = require('../agent/core/autonomyPolicy');
 const { checkToolAccess } = require('../agent/core/toolPermissions');
 const { getToolById } = require('../tools/toolRegistry');
+const { isObservationTool, isObservationToolFor } = require('../integrations/adapters/adapterRegistry');
 
 function normalizeBusinessId(businessId) {
   return typeof businessId === 'string' && businessId.trim() !== '' ? businessId.trim() : null;
@@ -59,6 +60,15 @@ function capabilityRefusal({ toolId, objective, platform, businessId, policy, la
   }
   if (platform !== null && platform !== undefined && !policy.enabled_platforms.includes(platform)) {
     return refuse('platform_not_enabled', `${label} targets '${platform}', which this business has not enabled.`);
+  }
+  // An observation capability reads only the platform its registration declares. The cycle
+  // already refuses a mismatched one at run time (autonomy/autonomousCycle.js); refusing it
+  // here means it can never be saved at all.
+  if (isObservationTool(toolId) && !isObservationToolFor(toolId, platform)) {
+    return refuse(
+      'observation_platform_mismatch',
+      `${label} names observation capability '${toolId}', which is not declared to observe ${platform === null || platform === undefined ? 'a schedule with no platform' : `'${platform}'`}.`
+    );
   }
   const request = buildScheduledExecutionRequest({ business_id: businessId, task: { tool_id: toolId, objective, platform, params: null } });
   if (!request) {

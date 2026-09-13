@@ -67,6 +67,7 @@ function writeBusiness(id) {
       'autonomy:',
       '  enabled: true',
       '  daily_token_budget: 100000',
+      '  approval_ttl_hours: 87600',
       '',
     ].join('\n')
   );

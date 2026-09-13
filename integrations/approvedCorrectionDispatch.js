@@ -44,9 +44,19 @@
 // authorization for itself before touching Shopify.
 
 const approvalStore = require('../approvals/approvalStore');
+const { verifyRecordedProvenance } = require('../approvals/approvalArchitecture');
+const executionVerification = require('../reliability/executionVerification');
 const { correctProductVendor } = require('./shopifyVendorCorrection');
 const { correctInventoryDeficit } = require('./shopifyInventoryCorrection');
 const { addProductToFreeDesignsCollection } = require('./shopifyCollectionMembership');
+
+// Every correction here writes to Shopify, so this is the platform each one is verified on and
+// bound to. Not a guess: the three integration modules each state PLATFORM 'shopify'.
+const CORRECTION_PLATFORM = 'shopify';
+
+// How many entities the shared verification read asks for - the same ceiling the integration
+// modules' own re-reads use, so the verification never looks at fewer entities than they did.
+const VERIFICATION_READ_LIMIT = 250;
 
 // The three registry ids this module can dispatch, each mapped to the existing integration
 // function that already owns the mutation and its gates. Hand-written on purpose, exactly
@@ -68,6 +78,14 @@ const CORRECTION_DISPATCH = {
       content_type: 'shopify product vendor field value',
       content_reference: String(params.productId),
     }),
+    // WHAT THE SHARED VERIFIER CHECKS AFTERWARDS (reliability/executionVerification.js). The
+    // product the vendor was written to must now show exactly that vendor.
+    verification_target: (params) => ({
+      entity_kind: 'product',
+      entity_id: String(params.productId),
+      expected: { vendor: params.newVendor },
+      select: null,
+    }),
     run: (params, common) =>
       correctProductVendor({ ...common, productId: params.productId, newVendor: params.newVendor }),
   },
@@ -79,6 +97,33 @@ const CORRECTION_DISPATCH = {
       content_type: 'shopify inventory quantity adjustment',
       content_reference: String(params.inventoryItemId),
     }),
+    // The quantity a location should show is only KNOWN when the plan stated the quantity it
+    // started from. Without changeFromQuantity there is no honest expected value - the result
+    // is reported unverifiable rather than compared against an invented baseline.
+    verification_target: (params) => {
+      if (!Number.isInteger(params.changeFromQuantity) || !Number.isInteger(params.delta)) {
+        return {
+          unverifiable: {
+            reason_code: 'baseline_unknown',
+            reason: 'The approved request states no starting quantity (changeFromQuantity), so the quantity this location should now show is not known and the change cannot be independently verified.',
+          },
+        };
+      }
+      const locationId = params.locationId;
+      return {
+        entity_kind: 'inventory_item',
+        entity_id: String(params.inventoryItemId),
+        expected: { location_id: locationId, available: params.changeFromQuantity + params.delta },
+        // getInventoryLevels nests quantities per location; only the corrected location is read.
+        select: (item) => {
+          const level = Array.isArray(item.levels) ? item.levels.find((entry) => entry.locationId === locationId) : null;
+          return {
+            location_id: level ? level.locationId : null,
+            available: level && Number.isInteger(level.available) ? level.available : null,
+          };
+        },
+      };
+    },
     run: (params, common) =>
       correctInventoryDeficit({
         ...common,
@@ -97,6 +142,20 @@ const CORRECTION_DISPATCH = {
       content: `Add product ${params.productId} to collection ${params.collectionId}.`,
       content_type: 'shopify collection membership change',
       content_reference: String(params.productId),
+    }),
+    // VERIFIED ON THE PRODUCT, NOT THE COLLECTION. The collection read (getCollections) returns
+    // a title, handle and product COUNT - no membership - so it cannot observe this change. The
+    // product read returns the product's own collections, which is where membership is visible.
+    verification_target: (params) => ({
+      entity_kind: 'product',
+      entity_id: String(params.productId),
+      expected: { collection_membership: params.collectionId },
+      select: (product) => ({
+        collection_membership:
+          Array.isArray(product.collections) && product.collections.some((collection) => collection.id === params.collectionId)
+            ? params.collectionId
+            : null,
+      }),
     }),
     run: (params, common) =>
       addProductToFreeDesignsCollection({ ...common, collectionId: params.collectionId, productId: params.productId }),
@@ -176,7 +235,10 @@ const DISPATCH_REFUSAL_REASONS = [
   'approval_not_approved',
   'approval_provenance_missing',
   'approval_identity_mismatch',
+  'approval_provenance_invalid',
+  'approval_expired',
   'already_executed',
+  'already_completed',
   'missing_parameters',
 ];
 
@@ -192,13 +254,126 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim() !== '';
 }
 
+function normalizeBusinessId(businessId) {
+  return isNonEmptyString(businessId) ? businessId.trim() : null;
+}
+
+function missingParameters(entry, params) {
+  return entry.required_params.filter((name) => params[name] === undefined || params[name] === null || params[name] === '');
+}
+
+// The idempotency key of one intended entity change, in the shared verification store's own
+// format - the same key reliability/executionVerification.js's verifyExecution computes, so a
+// check before execution and the record written after it are the same entry.
+function correctionIdempotencyKey(toolId, businessId, target) {
+  return executionVerification.computeIdempotencyKey({
+    businessId: normalizeBusinessId(businessId),
+    platform: CORRECTION_PLATFORM,
+    action: toolId,
+    entityKind: target.entity_kind,
+    entityId: target.entity_id,
+    expected: target.expected,
+  });
+}
+
+// HAS THIS EXACT ENTITY CHANGE ALREADY BEEN APPLIED AND VERIFIED - by any approval, on any path?
+// Read-only. `applicable: false` means the change has no verifiable target (a missing parameter,
+// or an inventory change with no known baseline); those are never reported as duplicates.
+function checkCorrectionAlreadyVerified(toolId, executionRequest, { verificationRootDir = undefined } = {}) {
+  const entry = CORRECTION_DISPATCH[toolId];
+  const notApplicable = { applicable: false, allowed: true, idempotency_key: null, reason_code: null, reason: null };
+  if (!entry) return notApplicable;
+  const params = (executionRequest && executionRequest.research_params) || {};
+  if (missingParameters(entry, params).length > 0) return notApplicable;
+  const target = entry.verification_target(params);
+  if (!target || target.unverifiable) return notApplicable;
+  const businessId = normalizeBusinessId(executionRequest && executionRequest.business_id);
+  const idempotencyKey = correctionIdempotencyKey(toolId, businessId, target);
+  const check = executionVerification.checkIdempotency(idempotencyKey, { businessId, rootDir: verificationRootDir });
+  return { applicable: true, allowed: check.allowed, idempotency_key: idempotencyKey, reason_code: check.reason_code, reason: check.reason };
+}
+
+// The shared verifier's verdict on what a correction actually left on the platform.
+//
+// Runs ONLY when a mutation was attempted. It records 'verified' only when the integration's
+// own re-read agreed (outcome.succeeded) AND the independent verifyExecution read agrees; the
+// verifier is run with persist:false so its verdict can never be stored as verified on its own
+// while the integration disagrees. Every other outcome is recorded as what it is.
+async function verifyCorrectionEntity({ toolId, businessId, target, outcome, enabledPlatforms, verificationRootDir, now }) {
+  const mutationAttempted = Boolean(outcome && (outcome.succeeded || outcome.status === 'unconfirmed'));
+  if (!mutationAttempted) return null;
+
+  if (!target || target.unverifiable) {
+    const detail = (target && target.unverifiable) || {
+      reason_code: 'no_verification_target',
+      reason: 'This correction declares no entity the shared verifier can observe.',
+    };
+    return { status: 'unverifiable', verified: false, reason_code: detail.reason_code, reason: detail.reason, idempotency_key: null, entity_kind: null, entity_id: null, findings: [] };
+  }
+
+  const normalized = normalizeBusinessId(businessId);
+  let record;
+  if (outcome.succeeded) {
+    record = await executionVerification.verifyExecution({
+      businessId: normalized,
+      platform: CORRECTION_PLATFORM,
+      action: toolId,
+      entityKind: target.entity_kind,
+      entityId: target.entity_id,
+      expected: target.expected,
+      select: target.select,
+      enabledPlatforms,
+      limit: VERIFICATION_READ_LIMIT,
+      now,
+      rootDir: verificationRootDir,
+      persist: false,
+    });
+  } else {
+    // The mutation was accepted but the integration's own re-read did not confirm it. The two
+    // reads cannot agree, so this is never verified - recorded as a failure under the same key.
+    record = {
+      verification_version: executionVerification.VERIFICATION_VERSION,
+      idempotency_key: correctionIdempotencyKey(toolId, normalized, target),
+      business_id: normalized,
+      platform: CORRECTION_PLATFORM,
+      action: toolId,
+      entity_kind: target.entity_kind,
+      entity_id: target.entity_id,
+      status: 'failed',
+      verified: false,
+      reason_code: 'integration_reread_unconfirmed',
+      reason: "The platform accepted the change, but the integration's own re-read did not confirm it, so it is not verified.",
+      findings: [],
+      unintended_mutations: [],
+      verified_at: now instanceof Date ? now.toISOString() : new Date(now).toISOString(),
+    };
+  }
+
+  try {
+    executionVerification.saveVerificationRecord(record, { rootDir: verificationRootDir });
+  } catch (err) {
+    // The verdict is still returned and audited; a store failure never invents success.
+  }
+
+  return {
+    status: record.status,
+    verified: record.status === 'verified',
+    reason_code: record.reason_code,
+    reason: record.reason,
+    idempotency_key: record.idempotency_key,
+    entity_kind: record.entity_kind,
+    entity_id: record.entity_id,
+    findings: record.findings,
+  };
+}
+
 // Executes one approved correction.
 //
 // `decidedApprovalRequest` is used ONLY for its id, tool and business - never as evidence
 // that a decision happened. That evidence comes from the durable record loaded below.
 async function executeApprovedCorrection(
   decidedApprovalRequest,
-  { storeDir = undefined, auditTracker = null, now = new Date() } = {}
+  { storeDir = undefined, auditTracker = null, now = new Date(), enabledPlatforms = null, verificationRootDir = undefined } = {}
 ) {
   const toolId = decidedApprovalRequest && decidedApprovalRequest.tool_id;
   const entry = CORRECTION_DISPATCH[toolId];
@@ -233,15 +408,46 @@ async function executeApprovedCorrection(
   }
   // The record the caller is acting on must BE the stored one. A caller naming a real
   // approval id while passing a different tool or business is refused here.
-  if (stored.id !== requestId || stored.tool_id !== toolId) {
+  if (
+    stored.id !== requestId ||
+    stored.tool_id !== toolId ||
+    normalizeBusinessId(stored.execution_request && stored.execution_request.business_id) !== normalizeBusinessId(businessId)
+  ) {
     return refuse('approval_identity_mismatch', `Approval '${requestId}' does not match the action being executed. Nothing was executed.`);
+  }
+
+  // --- The stored proof is re-verified NOW, immediately before any mutation ----------
+  // A `method` string in a file proves nothing. The signature is checked again, from the
+  // stored record alone, against the configured public key - and bound to this business,
+  // this tool and this platform.
+  const proof = verifyRecordedProvenance(stored, { businessId, toolId, platform: CORRECTION_PLATFORM });
+  if (!proof.valid) {
+    return refuse(
+      'approval_provenance_invalid',
+      `Approval '${requestId}' failed re-verification of its stored proof (${proof.failed_check}): ${proof.reason} Nothing was executed.`
+    );
+  }
+
+  const params = (stored.execution_request && stored.execution_request.research_params) || {};
+  const missing = missingParameters(entry, params);
+
+  // --- The same entity change is never applied twice, through any approval ----------
+  // Checked BEFORE the claim, so a duplicate consumes nothing and writes nothing.
+  const target = missing.length === 0 ? entry.verification_target(params) : null;
+  if (target && !target.unverifiable) {
+    const key = correctionIdempotencyKey(toolId, businessId, target);
+    const check = executionVerification.checkIdempotency(key, { businessId: normalizeBusinessId(businessId), rootDir: verificationRootDir });
+    if (!check.allowed) {
+      return refuse('already_completed', `This exact change has already been applied and verified. Approval '${requestId}' was not executed.`);
+    }
   }
 
   // --- Execute-once, across restarts and across concurrent callers -----------------
   const claim = approvalStore.claimApprovalForExecution(requestId, { expectedBusinessId: businessId, now, ...storeOptions });
   if (!claim.ok) {
+    const reasonCode = claim.reason === 'already_executed' ? 'already_executed' : claim.reason === 'expired' ? 'approval_expired' : 'approval_not_durable';
     return refuse(
-      claim.reason === 'already_executed' ? 'already_executed' : 'approval_not_durable',
+      reasonCode,
       `Approval '${requestId}' could not be claimed for execution (${claim.reason}): ${claim.message} Nothing was executed.`
     );
   }
@@ -250,8 +456,6 @@ async function executeApprovedCorrection(
   // They are part of what the human signed: agent/core/autonomyPolicy.js's execution
   // fingerprint covers the whole execution request, so changing a parameter after approval
   // invalidates the signature rather than quietly executing something else.
-  const params = (stored.execution_request && stored.execution_request.research_params) || {};
-  const missing = entry.required_params.filter((name) => params[name] === undefined || params[name] === null || params[name] === '');
   if (missing.length > 0) {
     return refuse(
       'missing_parameters',
@@ -281,6 +485,17 @@ async function executeApprovedCorrection(
   });
 
   const succeeded = Boolean(outcome && outcome.succeeded);
+
+  // INDEPENDENT ENTITY VERIFICATION, through the shared verifier.
+  const entityVerification = await verifyCorrectionEntity({
+    toolId,
+    businessId,
+    target,
+    outcome,
+    enabledPlatforms,
+    verificationRootDir,
+    now,
+  });
   if (succeeded) {
     // Only a genuine success marks the durable record executed. A refusal or failure leaves
     // it claimed-but-not-executed, which is the honest state and does not silently permit a
@@ -300,15 +515,18 @@ async function executeApprovedCorrection(
     reason_code: null,
     classification: stored.classification || null,
     correction_status: (outcome && outcome.status) || null,
+    entity_verification: entityVerification,
   };
 }
 
 module.exports = {
   CORRECTION_DISPATCH,
   CORRECTION_TOOL_IDS,
+  CORRECTION_PLATFORM,
   DISPATCH_REFUSAL_REASONS,
   isCorrectionTool,
   buildCorrectionComplianceInput,
+  checkCorrectionAlreadyVerified,
   executeApprovedCorrection,
 };
 

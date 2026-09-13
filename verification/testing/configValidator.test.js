@@ -188,7 +188,7 @@ test('an absent autonomy block is valid, and means autonomy is off', () => {
   assert.strictEqual(validateAutonomyConfig(completeFixture).valid, true);
   assert.strictEqual(validateAutonomyConfig({}).valid, true);
   for (const config of [completeFixture, {}, null, undefined]) {
-    assert.deepStrictEqual(readAutonomyConfig(config), { enabled: false, daily_token_budget: null, daily_run_budget: null });
+    assert.deepStrictEqual(readAutonomyConfig(config), { enabled: false, daily_token_budget: null, daily_run_budget: null, approval_ttl_hours: null });
   }
 });
 
@@ -216,11 +216,11 @@ test('an autonomy block of the wrong shape is rejected', () => {
 });
 
 test('the daily budgets are optional whole numbers, and blank means "project default"', () => {
-  const stated = readAutonomyConfig({ autonomy: { enabled: true, daily_token_budget: 5000, daily_run_budget: '12' } });
+  const stated = readAutonomyConfig({ autonomy: { enabled: true, daily_token_budget: 5000, daily_run_budget: '12', approval_ttl_hours: 87600 } });
   assert.strictEqual(stated.daily_token_budget, 5000);
   assert.strictEqual(stated.daily_run_budget, 12);
 
-  const blank = readAutonomyConfig({ autonomy: { enabled: true, daily_token_budget: null, daily_run_budget: '' } });
+  const blank = readAutonomyConfig({ autonomy: { enabled: true, daily_token_budget: null, daily_run_budget: '', approval_ttl_hours: 87600 } });
   assert.strictEqual(blank.daily_token_budget, null);
   assert.strictEqual(blank.daily_run_budget, null);
   assert.strictEqual(validateAutonomyConfig({ autonomy: { enabled: true, daily_token_budget: null } }).valid, true);
@@ -246,7 +246,7 @@ test('the shipped template documents autonomy and ships it off', () => {
   const config = loadBusinessConfig(templatePath);
   assert.ok(AUTONOMY_FIELD in config, 'the template must document the field');
   assert.strictEqual(validateAutonomyConfig(config).valid, true);
-  assert.deepStrictEqual(readAutonomyConfig(config), { enabled: false, daily_token_budget: null, daily_run_budget: null });
+  assert.deepStrictEqual(readAutonomyConfig(config), { enabled: false, daily_token_budget: null, daily_run_budget: null, approval_ttl_hours: null });
 });
 
 test('autonomy and enabled_platforms are independent - neither implies the other', () => {

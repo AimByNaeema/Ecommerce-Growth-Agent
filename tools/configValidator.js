@@ -175,6 +175,12 @@ function readAutonomyConfig(config) {
     enabled: block.enabled === true,
     daily_token_budget: readPositiveIntegerBudget(block.daily_token_budget),
     daily_run_budget: readPositiveIntegerBudget(block.daily_run_budget),
+    // How long an approval the autonomous cycle queues stays decidable, in whole hours. NO
+    // DEFAULT: null means the owner has not stated one, and agent/core/autonomyPolicy.js then
+    // refuses every autonomous action for the business rather than inventing an expiry.
+    // Distinct from APPROVAL_CHALLENGE_TTL_MS, which is the minutes-long window for signing
+    // one challenge.
+    approval_ttl_hours: readPositiveIntegerBudget(block.approval_ttl_hours),
   };
 }
 
@@ -211,6 +217,15 @@ function validateAutonomyConfig(config) {
     if (readPositiveIntegerBudget(raw) === null) {
       errors.push(
         `${AUTONOMY_FIELD}.${budgetField} must be a whole number greater than zero (got '${String(raw)}'). It counts ${budgetField === 'daily_token_budget' ? 'model output tokens' : 'runs'} per UTC day - never money.`
+      );
+    }
+  }
+
+  if ('approval_ttl_hours' in value) {
+    const raw = value.approval_ttl_hours;
+    if (raw !== undefined && raw !== null && raw !== '' && readPositiveIntegerBudget(raw) === null) {
+      errors.push(
+        `${AUTONOMY_FIELD}.approval_ttl_hours must be a whole number of hours greater than zero (got '${String(raw)}'). It is how long an approval the autonomous cycle queues may still be decided.`
       );
     }
   }
@@ -328,7 +343,8 @@ if (require.main === module) {
   } else {
     console.log(
       `${AUTONOMY_FIELD}: enabled (daily_token_budget: ${autonomy.daily_token_budget === null ? 'project default' : autonomy.daily_token_budget}, ` +
-      `daily_run_budget: ${autonomy.daily_run_budget === null ? 'project default' : autonomy.daily_run_budget}). ` +
+      `daily_run_budget: ${autonomy.daily_run_budget === null ? 'project default' : autonomy.daily_run_budget}, ` +
+      `approval_ttl_hours: ${autonomy.approval_ttl_hours === null ? 'NOT SET - every autonomous action is refused until it is' : autonomy.approval_ttl_hours}). ` +
       'The global AGENT_AUTONOMY_ENABLED kill switch can still withdraw this.'
     );
   }

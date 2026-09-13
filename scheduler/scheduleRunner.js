@@ -288,7 +288,7 @@ if (require.main === module) {
 
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schedule-runner-demo-'));
   const now = new Date('2026-03-04T09:07:00.000Z');
-  const businessPolicy = { ok: true, business_id: 'alpha-co', enabled_platforms: ['shopify'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null } };
+  const businessPolicy = { ok: true, business_id: 'alpha-co', enabled_platforms: ['shopify'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null, approval_ttl_hours: 72 } };
   const dailyUsage = { available: true, day: '2026-03-04', tokens_total: 0, runs_counted: 0, runs_missing_usage: 0, coverage_complete: true };
 
   const job = (jobId, toolId, objective, params = null) =>

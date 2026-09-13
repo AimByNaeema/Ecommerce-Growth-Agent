@@ -73,6 +73,9 @@ const { TOOL_CLASSIFICATIONS } = require('../agent/core/toolPermissions');
 const { requiresApproval, computeExecutionFingerprint } = require('../approvals/approvalArchitecture');
 const circuitBreaker = require('../reliability/circuitBreaker');
 const executionVerification = require('../reliability/executionVerification');
+const { resolveBusinessPolicy } = require('../agent/core/autonomyPolicy');
+const { isExpiredEnvelope } = require('./approvalResolution');
+const { checkCorrectionAlreadyVerified } = require('../integrations/approvedCorrectionDispatch');
 const { createAndPersistApprovalRequest } = require('../approvals/approvalWorkflow');
 const approvalStore = require('../approvals/approvalStore');
 const { createAuditTracker, appendAuditEvent } = require('../audit/auditTrail');
@@ -128,6 +131,47 @@ function durableApprovalId(jobId, occurrenceKey) {
   return `apr-${jobId}-${occurrence}`;
 }
 
+// How long an approval this cycle queues stays decidable, from the business's own
+// autonomy.approval_ttl_hours - or null when it states none. There is NO default: the policy
+// already refuses autonomy for a business without one, and a missing value here queues nothing.
+function approvalTtlHours(businessPolicy, businessId) {
+  let policy = businessPolicy;
+  if (!policy) {
+    try {
+      policy = resolveBusinessPolicy(businessId || null);
+    } catch (err) {
+      policy = null;
+    }
+  }
+  const hours = policy && policy.ok === true && policy.autonomy ? policy.autonomy.approval_ttl_hours : null;
+  return Number.isInteger(hours) && hours > 0 ? hours : null;
+}
+
+function approvalExpiresAt(now, ttlHours) {
+  const start = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  return new Date(start + ttlHours * 60 * 60 * 1000).toISOString();
+}
+
+// HONEST CYCLE STATUS, from what its steps actually did - never from the fact that the process
+// returned. A step counts as successful only when it observed, executed with a verified result,
+// or queued a pending approval (the correct outcome for a consequential action). A step whose
+// occurrence another process already claimed is neutral. All successful -> 'success'; none ->
+// 'error'; a mix -> 'partial'. A cycle with nothing due did nothing wrong -> 'success'.
+function isSuccessfulCycleStep(step) {
+  if (step.outcome === 'observed') return true;
+  if (step.outcome === 'executed') return step.verification === 'verified';
+  if (step.outcome === 'approval_required') return step.approval_state === 'pending';
+  return false;
+}
+
+function deriveCycleStatus(steps) {
+  const counted = steps.filter((step) => step.outcome !== 'not_claimed');
+  if (counted.length === 0) return 'success';
+  const successful = counted.filter(isSuccessfulCycleStep).length;
+  if (successful === counted.length) return 'success';
+  return successful === 0 ? 'error' : 'partial';
+}
+
 // THE SAME ACTION, WHICHEVER OCCURRENCE QUEUED IT. The approval fingerprint of the execution
 // request without the autonomy marker (cycle, job and occurrence differ every time) and
 // without provenance - so two occurrences asking for exactly the same change compare equal,
@@ -151,7 +195,7 @@ function actionFingerprint(executionRequest) {
 // A still-pending autonomous approval for exactly this business and exactly this action, or
 // null. Read from the existing durable approval store; the business match is exact, because
 // the store's own filter treats a null business as "any".
-function findPendingIdenticalApproval({ businessId, toolId, executionRequest, storeOptions }) {
+function findPendingIdenticalApproval({ businessId, toolId, executionRequest, storeOptions, now = new Date() }) {
   const expected = businessId || null;
   const fingerprint = actionFingerprint(executionRequest);
   return (
@@ -160,6 +204,8 @@ function findPendingIdenticalApproval({ businessId, toolId, executionRequest, st
       const origin = record && record.execution_request && record.execution_request.autonomy;
       return (
         (envelope.business_id || null) === expected &&
+        // An expired approval can no longer be decided, so it does not stand in for this one.
+        !isExpiredEnvelope(envelope, now) &&
         record.tool_id === toolId &&
         Boolean(origin) &&
         origin.origin === 'autonomous_cycle' &&
@@ -484,11 +530,29 @@ async function runAutonomousCycle({
               }));
               return;
             }
+            // AN ALREADY-APPLIED CHANGE IS NEVER ASKED FOR AGAIN. When this exact entity change has
+            // already been applied and independently verified (reliability/executionVerification.js),
+            // an approval for it could never execute - so none is queued, and the owner is not asked.
+            const alreadyVerified = checkCorrectionAlreadyVerified(toolId, prepared.executionRequest, { verificationRootDir });
+            if (!alreadyVerified.allowed) {
+              appendAuditEvent(audit, {
+                type: 'approval',
+                toolId,
+                status: 'blocked',
+                summary: `'${toolId}' was not queued: this exact change has already been applied and verified.`,
+              });
+              steps.push(cycleStep(jobResult.job_id, 'blocked', {
+                reason_code: 'already_completed',
+                reason: 'This exact change has already been applied and independently verified, so it is not asked for again.',
+                policy_decision: jobResult.decision,
+              }));
+              return;
+            }
             // NO REPEATED IDENTICAL ACTION WITHOUT REASON. An occurrence asking for exactly the
             // change an earlier occurrence is still waiting on queues nothing new: the owner is
             // pointed at the one already pending, so the same change can never be approved -
             // and executed - twice.
-            const duplicate = findPendingIdenticalApproval({ businessId, toolId, executionRequest: prepared.executionRequest, storeOptions });
+            const duplicate = findPendingIdenticalApproval({ businessId, toolId, executionRequest: prepared.executionRequest, storeOptions, now });
             if (duplicate) {
               appendAuditEvent(audit, {
                 type: 'approval',
@@ -505,6 +569,15 @@ async function runAutonomousCycle({
               }));
               return;
             }
+            // EVERY QUEUED APPROVAL EXPIRES, at the time this business configured. Without a
+            // configured expiry nothing is queued - no expiry is invented.
+            const ttlHours = approvalTtlHours(businessPolicy, businessId);
+            if (ttlHours === null) {
+              const reason = "This business states no autonomy.approval_ttl_hours, so an approval for this action could not be given an expiry and was not queued.";
+              appendAuditEvent(audit, { type: 'error', toolId, status: 'blocked', summary: reason });
+              steps.push(cycleStep(jobResult.job_id, 'blocked', { reason_code: 'approval_ttl_not_configured', reason, policy_decision: jobResult.decision }));
+              return;
+            }
             if (persist) {
               createAndPersistApprovalRequest(
                 {
@@ -515,7 +588,7 @@ async function runAutonomousCycle({
                   executionRequest: prepared.executionRequest,
                   reason: jobResult.reason,
                 },
-                storeOptions
+                { ...storeOptions, expiresAt: approvalExpiresAt(now, ttlHours) }
               );
               approvalState = 'pending';
             }
@@ -856,7 +929,7 @@ async function runAutonomousCycle({
     run_id: cycleId,
     kind: 'autonomous_cycle',
     business_id: businessId || null,
-    status: 'success',
+    status: deriveCycleStatus(steps),
     created_at: startedAt,
     summary: `Autonomous cycle: ${steps.filter((step) => step.outcome === 'observed').length} observed, ${steps.filter((step) => step.outcome === 'executed').length} executed, ${steps.filter((step) => step.outcome === 'approval_required').length} awaiting approval, ${steps.filter((step) => step.outcome === 'blocked').length} blocked, ${steps.filter((step) => step.parent_job_id).length} follow-up step(s).`,
     result: {
@@ -898,6 +971,7 @@ async function runAutonomousCycle({
 }
 
 module.exports = {
+  deriveCycleStatus,
   CYCLE_OUTCOMES,
   OBSERVATION_TOOL_IDS,
   isObservationJob,
@@ -954,7 +1028,7 @@ if (require.main === module) {
       businessId: 'alpha-co',
       now,
       enabledPlatforms: ['shopify'],
-      businessPolicy: { ok: true, business_id: 'alpha-co', enabled_platforms: ['shopify'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null } },
+      businessPolicy: { ok: true, business_id: 'alpha-co', enabled_platforms: ['shopify'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null, approval_ttl_hours: 72 } },
       dailyUsage: { available: true, day: '2026-03-04', tokens_total: 0, runs_counted: 0 },
       scheduleRootDir: roots.schedules,
       snapshotRootDir: roots.snapshots,

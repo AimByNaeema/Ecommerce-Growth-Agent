@@ -218,7 +218,7 @@ test('layer 4 - the autonomy policy blocks an unsupported platform', () => {
         toolId: 'market_research',
         platform,
         complianceVerdict: 'PASS',
-        businessPolicy: { ok: true, business_id: null, enabled_platforms: ['shopify', 'etsy'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null } },
+        businessPolicy: { ok: true, business_id: null, enabled_platforms: ['shopify', 'etsy'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null, approval_ttl_hours: 87600 } },
         dailyUsage: { available: true, day: '2026-03-04', tokens_total: 0, runs_counted: 0 },
       });
       assert.strictEqual(decision.decision, 'BLOCK');

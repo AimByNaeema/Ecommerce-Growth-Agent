@@ -91,6 +91,7 @@ const TEST_FILES = [
   'platformGenerality.test.js',
   'autonomySecurityAdversarial.test.js',
   'autonomyLearningLoop.test.js',
+  'autonomyCompletion.test.js',
   'orderModel.test.js',
   'networkRetry.test.js',
   'secretExposureAudit.test.js',

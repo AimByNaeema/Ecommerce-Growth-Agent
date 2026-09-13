@@ -20,6 +20,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+process.env.VERIFICATION_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'approved-correction-verifications-'));
 
 const shopifyClient = require('../../integrations/adapters/shopifyClient');
 const dispatch = require('../../integrations/approvedCorrectionDispatch');
@@ -406,7 +407,7 @@ test('the dispatch authorizes from durable state only - never from its caller', 
           now: T0,
           rootDir,
           enabledPlatforms: ['shopify'],
-          businessPolicy: { ok: true, business_id: 'alpha-co', enabled_platforms: ['shopify'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null } },
+          businessPolicy: { ok: true, business_id: 'alpha-co', enabled_platforms: ['shopify'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null, approval_ttl_hours: 87600 } },
           dailyUsage: { available: true, day: '2026-03-04', tokens_total: 0, runs_counted: 0, runs_missing_usage: 0, coverage_complete: true },
         });
         assert.strictEqual(result.results[0].outcome, 'approval_required');
@@ -439,7 +440,7 @@ test('the dispatch authorizes from durable state only - never from its caller', 
         businessId: 'alpha-co',
         now: T0,
         enabledPlatforms: ['shopify'],
-        businessPolicy: { ok: true, business_id: 'alpha-co', enabled_platforms: ['shopify'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null } },
+        businessPolicy: { ok: true, business_id: 'alpha-co', enabled_platforms: ['shopify'], autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null, approval_ttl_hours: 87600 } },
         dailyUsage: { available: true, day: '2026-03-04', tokens_total: 0, runs_counted: 0, runs_missing_usage: 0, coverage_complete: true },
         scheduleRootDir: roots.schedules,
         snapshotRootDir: roots.snapshots,

@@ -308,6 +308,12 @@ function compareExpectation(observed, expected) {
 // fields that must NOT have changed; each is compared against `baseline` and reported as an
 // unintended mutation when it differs - the "no unintended mutation where detectable" check,
 // applied only where a baseline genuinely exists, never asserted without one.
+//
+// `select` (optional) projects the observed entity onto the fields `expected` names, for a
+// change whose result is nested rather than a top-level field - one location's quantity on
+// an inventory item, or one membership in a product's collections. It only reshapes what
+// the platform actually returned; it is not part of the idempotency key, and a projection
+// that throws is a failed verification, never a pass.
 async function verifyExecution({
   businessId = null,
   platform,
@@ -323,6 +329,7 @@ async function verifyExecution({
   now = new Date(),
   rootDir = getDefaultVerificationStoreDir(),
   persist = true,
+  select = null,
 } = {}) {
   const idempotencyKey = computeIdempotencyKey({ businessId, platform, action, entityKind, entityId, expected });
   const normalizedBusinessId = typeof businessId === 'string' && businessId.trim() !== '' ? businessId.trim() : null;
@@ -385,7 +392,19 @@ async function verifyExecution({
     );
   }
 
-  const { matched, findings } = compareExpectation(observed, expected);
+  let comparable = observed;
+  if (typeof select === 'function') {
+    try {
+      comparable = select(observed);
+    } catch (err) {
+      return finish('failed', 'projection_failed', 'The platform\'s response could not be read in the shape this verification needs, so nothing was confirmed.');
+    }
+    if (!comparable || typeof comparable !== 'object') {
+      return finish('failed', 'projection_failed', 'The platform\'s response could not be read in the shape this verification needs, so nothing was confirmed.');
+    }
+  }
+
+  const { matched, findings } = compareExpectation(comparable, expected);
 
   // Unintended mutation, checked only where a baseline genuinely exists to compare against.
   const unintended = [];
@@ -393,7 +412,7 @@ async function verifyExecution({
     for (const field of unexpectedFields.slice().sort()) {
       if (!(field in baseline)) continue;
       const before = baseline[field];
-      const after = field in observed ? observed[field] : null;
+      const after = field in comparable ? comparable[field] : null;
       if (stableStringify(before) !== stableStringify(after)) {
         unintended.push({ field, before, after });
       }

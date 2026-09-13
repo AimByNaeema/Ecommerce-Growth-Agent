@@ -67,10 +67,18 @@ enabled_platforms: []
 # across one UTC day; `daily_run_budget` counts runs across the same day. Both are optional:
 # leave either blank to use the project's own conservative default ceiling (derived from the
 # per-run token budget - see agent/core/tokenControls.js), never an unlimited one.
+#
+# approval_ttl_hours - how many whole hours an approval the autonomous cycle queues may still
+# be decided. REQUIRED WHEN AUTONOMY IS ENABLED, AND DELIBERATELY BLANK HERE: there is no
+# default, and while it is unset every autonomous action for the business is refused. An
+# expired approval is refused (approval_expired), cannot execute, and disappears from the
+# pending list; a later occurrence may queue the action again. This is NOT the signing
+# challenge window (APPROVAL_CHALLENGE_TTL_MS, minutes), which stays separate.
 autonomy:
   enabled: false
   daily_token_budget:
   daily_run_budget:
+  approval_ttl_hours:
 
 # Live website/storefront URL. Optional.
 store_url: ""

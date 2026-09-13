@@ -1018,14 +1018,15 @@ async function resumeApprovedExecution(
     detail: { decided_by: decidedApprovalRequest.decided_by || null },
   });
 
+  // Re-checked at resume time exactly like availability and specialist permission are:
+  // an approval never outlives the business's own platform configuration.
+  const resumeEnabledPlatforms = resolveEnabledPlatformsForBusiness(
+    (decidedApprovalRequest.execution_request && decidedApprovalRequest.execution_request.business_id) || null
+  );
   const access = checkToolAccess({
     specialistId: decidedApprovalRequest.specialist_id,
     toolId: decidedApprovalRequest.tool_id,
-    // Re-checked at resume time exactly like availability and specialist permission are:
-    // an approval never outlives the business's own platform configuration.
-    enabledPlatforms: resolveEnabledPlatformsForBusiness(
-      (decidedApprovalRequest.execution_request && decidedApprovalRequest.execution_request.business_id) || null
-    ),
+    enabledPlatforms: resumeEnabledPlatforms,
   });
 
   if (access.decision === 'unavailable' || access.decision === 'denied') {
@@ -1052,6 +1053,12 @@ async function resumeApprovedExecution(
     const outcome = await executeApprovedCorrection(decidedApprovalRequest, {
       storeDir: approvalContext && approvalContext.storeDir,
       auditTracker: runAuditTracker,
+      // The same platform configuration just re-checked above: the independent verification
+      // read is only made on a platform this business still enables.
+      enabledPlatforms: resumeEnabledPlatforms,
+      // undefined (never null) when no context was supplied, so the verification store keeps its
+      // configured default location.
+      verificationRootDir: (approvalContext && approvalContext.verificationRootDir) || undefined,
     });
     appendAuditEvent(runAuditTracker, {
       type: outcome.status === 'success' ? 'execution' : 'error',
@@ -1068,6 +1075,8 @@ async function resumeApprovedExecution(
       data: outcome.data,
       error: outcome.error,
       classification: access.classification,
+      reason_code: outcome.reason_code || null,
+      entity_verification: outcome.entity_verification || null,
     };
   }
 

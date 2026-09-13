@@ -230,6 +230,8 @@ autonomy:
         enabled: true,
         daily_token_budget: 7500,
         daily_run_budget: null,
+        approval_ttl_hours: null,
+        approval_ttl_hours: null,
       });
     }
   );
@@ -243,6 +245,7 @@ test('getAutonomyConfig reports autonomy off for a config that states none', () 
       enabled: false,
       daily_token_budget: null,
       daily_run_budget: null,
+      approval_ttl_hours: null,
     });
   });
 });

@@ -100,7 +100,7 @@ const PASSING_POLICY = {
   ok: true,
   business_id: 'alpha-co',
   enabled_platforms: ['shopify'],
-  autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null },
+  autonomy: { enabled: true, daily_token_budget: 100000, daily_run_budget: null, approval_ttl_hours: 87600 },
 };
 const PASSING_DAILY = { available: true, day: '2026-03-04', tokens_total: 0, runs_counted: 0, runs_missing_usage: 0, coverage_complete: true };
 

@@ -79,11 +79,11 @@ const BETA = 'autonomy-e2e-beta-co';
 const OFF = 'autonomy-e2e-off-co';
 const ETSY = 'autonomy-e2e-etsy-co';
 const BUDGET = 'autonomy-e2e-budget-co';
-writeBusiness(ALPHA, { platforms: '[shopify]', autonomy: ['enabled: true', 'daily_token_budget: 100000'] });
-writeBusiness(BETA, { platforms: '[shopify]', autonomy: ['enabled: true', 'daily_token_budget: 100000'] });
+writeBusiness(ALPHA, { platforms: '[shopify]', autonomy: ['enabled: true', 'daily_token_budget: 100000', 'approval_ttl_hours: 87600'] });
+writeBusiness(BETA, { platforms: '[shopify]', autonomy: ['enabled: true', 'daily_token_budget: 100000', 'approval_ttl_hours: 87600'] });
 writeBusiness(OFF, { platforms: '[shopify]', autonomy: ['enabled: false'] });
-writeBusiness(ETSY, { platforms: '[etsy]', autonomy: ['enabled: true', 'daily_token_budget: 100000'] });
-writeBusiness(BUDGET, { platforms: '[shopify]', autonomy: ['enabled: true', 'daily_token_budget: 10'] });
+writeBusiness(ETSY, { platforms: '[etsy]', autonomy: ['enabled: true', 'daily_token_budget: 100000', 'approval_ttl_hours: 87600'] });
+writeBusiness(BUDGET, { platforms: '[shopify]', autonomy: ['enabled: true', 'daily_token_budget: 10', 'approval_ttl_hours: 87600'] });
 
 const shopifyClient = require('../../integrations/adapters/shopifyClient');
 const etsyReadAdapter = require('../../integrations/adapters/etsyReadAdapter');
@@ -129,6 +129,12 @@ global.fetch = () => {
 const PRODUCT_ID = 'gid://shopify/Product/1';
 const OWNER = 'owner@example.com';
 const REVIEW_VENDOR = 'Aurora Ceramics';
+// A different intended state for the same product - used where a scenario needs a change that
+// has NOT already been applied and verified (test 4 applies REVIEW_VENDOR, which can then never
+// be applied again).
+const DISTINCT_VENDOR = 'Aurora Ceramics Studio';
+const { prepareApprovalExecutionRequest } = require('../../agent/core/orchestratorExecutionContract');
+const { createAndPersistApprovalRequest } = require('../../approvals/approvalWorkflow');
 const BLOCKING_VENDOR = 'guaranteed copyright-free with no legal risk';
 
 const shop = { stock: { [ALPHA]: 5, [BETA]: 5, [BUDGET]: 5 }, vendor: 'Old Vendor', failProductsRead: false, failWrite: false, ignoreWrite: false, reads: [], writes: [] };
@@ -359,11 +365,38 @@ const lastOccurrence = (businessId, jobId) => scheduleStore.loadScheduledJob(job
       const cycle = await trigger(ALPHA, T2);
       assert.strictEqual(stepOf(cycle, 'watch--follow-up-1').outcome, 'executed');
       assert.ok(fieldsPassedTo(recordOf(cycle), 'business_configuration_retrieval').includes('relevant_memory'), 'memory from the verified action was passed on');
-      assert.strictEqual(listPendingAutonomousApprovals({ businessId: ALPHA }).length, 1, "the new occurrence queues its own approval");
+      // The follow-up asks for the vendor change test 4 already applied and verified. It is not
+      // queued again - an approval for it could never execute - and the owner is not asked.
+      const repeat = stepOf(cycle, 'watch--follow-up-5');
+      assert.strictEqual(repeat.outcome, 'blocked', JSON.stringify(repeat));
+      assert.strictEqual(repeat.reason_code, 'already_completed');
+      assert.strictEqual(listPendingAutonomousApprovals({ businessId: ALPHA }).length, 0, 'an already-applied change is never queued for approval again');
     });
 
     await testAsync('14 external failure: a refused platform write is recorded as failed, never verified, never remembered, never retried', async () => {
-      const approvalId = listPendingAutonomousApprovals({ businessId: ALPHA })[0].approval_id;
+      // A DISTINCT change (a different vendor value), queued exactly as the cycle queues one, so
+      // the refused write is exercised on a change that has not already been verified.
+      const approvalId = 'apr-matrix-refused-write';
+      const prepared = prepareApprovalExecutionRequest('shopify_vendor_correction', {
+        objective: 'Correct the vendor on the changed product.',
+        category: 'products',
+        tool_id: 'shopify_vendor_correction',
+        specialist_id: 'product',
+        is_shared_infrastructure: false,
+        business_id: ALPHA,
+        research_params: { content: DISTINCT_VENDOR, productId: PRODUCT_ID, newVendor: DISTINCT_VENDOR },
+        autonomy: { origin: 'autonomous_cycle', cycle_id: 'cycle-matrix-14', job_id: 'watch--follow-up-5', occurrence_key: T2.toISOString(), platform: 'shopify' },
+      });
+      assert.strictEqual(prepared.ok, true, prepared.reason);
+      createAndPersistApprovalRequest({
+        id: approvalId,
+        classification: 'externally_executable',
+        specialistId: 'product',
+        toolId: 'shopify_vendor_correction',
+        executionRequest: prepared.executionRequest,
+        reason: 'Changes a real product record in the connected store.',
+      });
+      assert.ok(listPendingAutonomousApprovals({ businessId: ALPHA }).some((item) => item.approval_id === approvalId), 'a different intended state is not a duplicate');
       const record = storedRecord(approvalId, ALPHA);
       shop.failWrite = true;
       try {

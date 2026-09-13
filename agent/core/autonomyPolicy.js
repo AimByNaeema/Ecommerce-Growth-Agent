@@ -104,6 +104,7 @@ const POLICY_REASON_CODES = [
   'kill_switch_off',
   'kill_switch_malformed',
   'business_autonomy_disabled',
+  'approval_ttl_not_configured',
   'policy_evaluation_error',
 ];
 
@@ -496,6 +497,16 @@ function evaluateAutonomyPolicy({
           'autonomy_permission',
           'business_autonomy_disabled',
           "This business has not enabled autonomy in its own configuration, so the agent may not start an action for it. The global kill switch cannot grant what the business has not."
+        );
+      }
+      // An autonomous business must state how long an approval it queues stays decidable.
+      // Without one, a queued approval could be decided and executed arbitrarily late against a
+      // store that has since changed - and no expiry is invented in its place.
+      if (!Number.isInteger(resolved.autonomy.approval_ttl_hours) || resolved.autonomy.approval_ttl_hours <= 0) {
+        return fail(
+          'autonomy_permission',
+          'approval_ttl_not_configured',
+          'This business enables autonomy but states no autonomy.approval_ttl_hours, so no approval it queues could be given an expiry. The agent may not start an action for it until the owner sets one - no default is assumed.'
         );
       }
       pass('autonomy_permission', 'global kill switch on and business autonomy enabled');

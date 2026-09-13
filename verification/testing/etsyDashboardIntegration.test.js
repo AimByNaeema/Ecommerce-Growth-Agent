@@ -859,6 +859,55 @@ async function main() {
     );
   });
 
+  await testAsync('TRIGGER: the saved run record carries the REAL usage ledger summary, so the day stays measurable', async () => {
+    const runHistoryStore = require('../../agent/core/runHistoryStore');
+    const { readDailyUsage } = require('../../agent/core/dailyUsageAccounting');
+    // A fresh store, so the day's coverage reflects only what this test writes.
+    const runsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'etsy-analyze-usage-'));
+    const savedRunsDir = process.env.RUN_HISTORY_STORE_DIR;
+    process.env.RUN_HISTORY_STORE_DIR = runsDir;
+    try {
+      await withEtsyConnected({}, () =>
+        withServer(async (port) => {
+          const res = await authedPost(port, '/etsy/analyze', { listing_id: ETSY_LISTING_ID, analysis: 'seo' });
+          assert.strictEqual(res.status, 200, res.raw.slice(0, 300));
+          const data = JSON.parse(res.raw);
+          const usage = data.usage_summary;
+          assert.ok(usage && usage.by_category, 'the response carries a usage summary');
+          assert.strictEqual(usage.run_id, data.run_id, 'the ledger belongs to exactly this run');
+          // What the ledger recorded is what actually ran: one entry per real tool dispatch.
+          assert.strictEqual(usage.by_category.tool_call.count, data.tool_calls.length);
+          assert.strictEqual(usage.total_events >= data.tool_calls.length, true);
+
+          const saved = runHistoryStore.getRunRecordById(data.run_id);
+          assert.deepStrictEqual(saved.result.usage_summary, usage, 'the saved record carries the same, real usage');
+        })
+      );
+
+      const complete = readDailyUsage({ businessId: null, now: new Date(), storeDir: runsDir });
+      assert.strictEqual(complete.runs_counted, 1);
+      assert.strictEqual(complete.runs_missing_usage, 0);
+      assert.strictEqual(complete.coverage_complete, true, 'an Etsy analysis no longer makes the day unmeasurable');
+
+      // A record whose usage is present but malformed still fails closed.
+      runHistoryStore.saveRunRecord({
+        run_id: 'etsy-malformed-usage',
+        kind: 'run',
+        channel: 'etsy',
+        status: 'success',
+        summary: 'malformed usage',
+        created_at: new Date().toISOString(),
+        result: { usage_summary: { run_id: 'etsy-malformed-usage' } },
+      });
+      const incomplete = readDailyUsage({ businessId: null, now: new Date(), storeDir: runsDir });
+      assert.strictEqual(incomplete.coverage_complete, false);
+      assert.strictEqual(incomplete.runs_missing_usage, 1);
+    } finally {
+      process.env.RUN_HISTORY_STORE_DIR = savedRunsDir;
+      fs.rmSync(runsDir, { recursive: true, force: true });
+    }
+  });
+
   test('ACTIVITY: a run with no channel keeps its existing shape - channel is never inferred', () => {
     const runHistoryStore = require('../../agent/core/runHistoryStore');
     const runId = 'run-no-channel-' + Math.random().toString(36).slice(2, 8);

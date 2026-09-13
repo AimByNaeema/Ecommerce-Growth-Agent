@@ -100,7 +100,7 @@ const {
 // path (see /ask below). Reused unchanged from the shared infrastructure - never
 // reimplemented here.
 const { createAuditTracker } = require('./audit/auditTrail');
-const { createUsageLedger } = require('./usage/usageTracker');
+const { createUsageLedger, summarizeUsage } = require('./usage/usageTracker');
 const { createToolResultCache } = require('./agent/core/toolResultCache');
 const { createUsageTracker } = require('./agent/core/usageLimits');
 // The existing platform adapters, required ONLY for their credential-presence checks,
@@ -1552,16 +1552,29 @@ function createApp() {
     try {
       const target = orchestratorExecutionContract.buildSpecialistTarget(internalSpecialistId);
       const trimmedObjective = objective.trim();
-      // 4th positional argument (runTokenTracker) is deliberately left `undefined` so
-      // buildPlanStep's own default (`{ tokensUsedThisRun: 0 }`) still applies exactly
-      // as it did before this endpoint knew about research_params - only the 5th
-      // (researchParams) argument is new here.
+      // The run id is created before the step so the usage ledger can carry it. The ledger
+      // records what this step actually dispatched (model/tool calls, tokens) - the same
+      // ledger /orchestrate threads through - because agent/core/dailyUsageAccounting.js
+      // treats a saved run with no usage_summary as UNKNOWN spend, which would otherwise
+      // pause every autonomous action for the rest of the day after one manual run.
+      const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const runUsageLedger = createUsageLedger(runId, null);
+      // Positional arguments 4 and 6-11 are deliberately left `undefined` so buildPlanStep's
+      // own defaults still apply exactly as before; only researchParams (5th) and the usage
+      // ledger (12th) are supplied.
       const step = await orchestratorExecutionContract.buildPlanStep(
         target,
         trimmedObjective,
         trimmedObjective,
         undefined,
-        researchParamsCheck.value
+        researchParamsCheck.value,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        runUsageLedger
       );
       // 'complete' -> success, 'failed' -> error (a real failure, not just "not done
       // yet"), everything else ('blocked'/'not_started') -> partial. Previously any
@@ -1570,13 +1583,12 @@ function createApp() {
       const status =
         step.completion_state === 'complete' ? 'success' : step.completion_state === 'failed' ? 'error' : 'partial';
       const summary = summarizeExecutionState(step);
-      const responseBody = { ...step, status, summary };
+      const responseBody = { ...step, status, summary, usage_summary: summarizeUsage(runUsageLedger) };
 
       // Persist this result so it survives a page refresh/server restart (see
       // agent/core/runHistoryStore.js) - a save failure is logged, never allowed to
       // fail the actual response the user is waiting on; the real result already
       // succeeded or failed on its own merits before this line ever runs.
-      const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       try {
         runHistoryStore.saveRunRecord({
           run_id: runId,
@@ -1814,6 +1826,10 @@ function createApp() {
         ...step,
         status,
         summary,
+        // What this analysis actually spent, from the ledger threaded through buildPlanStep
+        // above - so the saved record participates in daily usage accounting like every
+        // other run instead of reading as unknown spend.
+        usage_summary: summarizeUsage(runUsageLedger),
         channel: etsyReadClient.ETSY_CHANNEL,
         analysis: analysis.specialistId,
         // Draft/analysis only, stated in the payload itself so no consumer can read this
@@ -2864,6 +2880,28 @@ function createApp() {
 
   const AUTONOMY_RUN_KINDS = ['autonomous_cycle', 'autonomous_approval_resolution'];
 
+  // The latest cycle's steps, reduced to what the owner needs to see: which job, what happened,
+  // why, and what verification found. Fields are copied from an allow-list, so nothing else a
+  // run record holds (audit detail, policy traces, parameters) can reach this response.
+  function describeLatestCycle(record, businessId) {
+    if (!record || record.kind !== 'autonomous_cycle' || (record.business_id || null) !== businessId) return null;
+    const steps = record.result && Array.isArray(record.result.steps) ? record.result.steps : [];
+    return {
+      run_id: record.run_id,
+      created_at: record.created_at || null,
+      status: record.status || null,
+      summary: record.summary || null,
+      steps: steps.map((step) => ({
+        job_id: step.job_id || null,
+        parent_job_id: step.parent_job_id || null,
+        outcome: step.outcome || null,
+        reason_code: step.reason_code || null,
+        verification_status: typeof step.verification === 'string' ? step.verification : null,
+        approval_request_id: step.approval_request_id || null,
+      })),
+    };
+  }
+
   // Read-only: what the owner needs to see about autonomy for one business.
   app.get('/autonomy/state', protect, (req, res) => {
     const businessId = autonomyBusinessId(req.query && req.query.business_id);
@@ -2873,6 +2911,10 @@ function createApp() {
         .listRunRecordSummaries({ limit: HISTORY_SCAN_LIMIT, businessId })
         .filter((run) => run && AUTONOMY_RUN_KINDS.includes(run.kind) && (run.business_id || null) === businessId)
         .slice(0, 20);
+      const latestCycleSummary = recentRuns.find((run) => run.kind === 'autonomous_cycle') || null;
+      const latestCycle = latestCycleSummary
+        ? describeLatestCycle(runHistoryStore.getRunRecordById(latestCycleSummary.run_id), businessId)
+        : null;
       res.json({
         business_id: businessId,
         kill_switch: readKillSwitch().state,
@@ -2888,6 +2930,7 @@ function createApp() {
         enabled_platforms: policy.ok ? policy.enabled_platforms : [],
         schedules: listBusinessSchedules({ businessId }),
         recent_runs: recentRuns,
+        latest_cycle: latestCycle,
         pending_approvals: autonomyApprovals.listPendingAutonomousApprovals({ businessId }),
       });
     } catch (err) {
@@ -2952,6 +2995,7 @@ function createApp() {
     invalid_request: 400,
     approval_not_found: 404,
     approval_not_pending: 409,
+    approval_expired: 410,
     already_completed: 409,
     circuit_open: 503,
     approval_verification_failed: 400,

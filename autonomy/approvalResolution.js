@@ -39,6 +39,7 @@
 const approvalStore = require('../approvals/approvalStore');
 const { decideAndPersistApprovalRequest, loadPendingApprovalRequests } = require('../approvals/approvalWorkflow');
 const { resumeApprovedExecution } = require('../agent/core/orchestratorExecutionContract');
+const { checkCorrectionAlreadyVerified } = require('../integrations/approvedCorrectionDispatch');
 const executionVerification = require('../reliability/executionVerification');
 const circuitBreaker = require('../reliability/circuitBreaker');
 const { persistVerifiedFinding } = require('../agent/core/memoryContextRetrieval');
@@ -58,6 +59,7 @@ const RESOLUTION_REFUSALS = {
   invalid_request: 'The decision request is incomplete.',
   approval_not_found: 'No autonomous approval with that id is held for this business.',
   approval_not_pending: 'That approval is no longer pending, so it cannot be decided again.',
+  approval_expired: 'That approval has passed the expiry its business configured, so it can no longer be decided or executed. A later cycle may queue the action again.',
   already_completed: 'That approved action has already been executed and verified. It is never applied twice.',
   circuit_open: 'This integration is currently failing, so the approved action was not attempted. The approval is still pending and can be decided once the circuit recovers.',
   approval_verification_failed: 'The signed decision could not be verified, so nothing was recorded or executed.',
@@ -80,6 +82,19 @@ function recordBusinessId(record) {
   return normalizeBusinessId(record && record.execution_request ? record.execution_request.business_id : null);
 }
 
+function nowMs(now) {
+  return now instanceof Date ? now.getTime() : new Date(now).getTime();
+}
+
+// Whether a stored approval has passed the expiry the autonomous cycle gave it. An envelope
+// with no expiry is not expired (approvals created on paths that set none); an unreadable
+// expiry is treated as expired - it fails closed.
+function isExpiredEnvelope(envelope, now = new Date()) {
+  if (!envelope || envelope.expires_at === null || envelope.expires_at === undefined) return false;
+  const expiresAt = new Date(envelope.expires_at).getTime();
+  return !Number.isFinite(expiresAt) || expiresAt <= nowMs(now);
+}
+
 // The durable envelope for one autonomous approval, scoped to EXACTLY this business.
 // approvalStore's own business filter treats a null expectation as "any business", so the
 // exact match is enforced here: the default business never reaches a named one's record.
@@ -95,19 +110,24 @@ function loadAutonomousApproval(approvalId, { businessId = null, storeDir = unde
 }
 
 // The pending record a challenge may be issued for, or null.
-function findPendingAutonomousApproval(approvalId, { businessId = null, storeDir = undefined } = {}) {
+// An expired approval is not pending: no challenge is issued for it.
+function findPendingAutonomousApproval(approvalId, { businessId = null, storeDir = undefined, now = new Date() } = {}) {
   const envelope = loadAutonomousApproval(approvalId, { businessId, storeDir });
   if (!envelope) return null;
   if (envelope.execution_state !== 'awaiting_decision' || envelope.approval_request.status !== 'pending') return null;
+  if (isExpiredEnvelope(envelope, now)) return null;
   return envelope.approval_request;
 }
 
 // A read-only view of this business's pending autonomous approvals: what the owner is being
 // asked to sign. research_params is included because it is part of the signed request.
-function listPendingAutonomousApprovals({ businessId = null, storeDir = undefined } = {}) {
+// Expired approvals are omitted: they can no longer be decided, so they are not asked of the owner.
+function listPendingAutonomousApprovals({ businessId = null, storeDir = undefined, now = new Date() } = {}) {
   const expected = normalizeBusinessId(businessId);
+  const envelopes = new Map(approvalStore.listPendingApprovals({ storeDir }).map((envelope) => [envelope.approval_id, envelope]));
   return loadPendingApprovalRequests({ storeDir })
     .filter((record) => isAutonomousApprovalRecord(record) && recordBusinessId(record) === expected)
+    .filter((record) => envelopes.has(record.id) && !isExpiredEnvelope(envelopes.get(record.id), now))
     .map((record) => ({
       approval_id: record.id,
       tool_id: record.tool_id,
@@ -121,6 +141,7 @@ function listPendingAutonomousApprovals({ businessId = null, storeDir = undefine
       platform: record.execution_request.autonomy.platform || null,
       job_id: record.execution_request.autonomy.job_id || null,
       occurrence_key: record.execution_request.autonomy.occurrence_key || null,
+      expires_at: envelopes.get(record.id).expires_at || null,
     }));
 }
 
@@ -132,12 +153,23 @@ function refuse(reasonCode, detail = null) {
   };
 }
 
-// Which verification verdict an approved execution earned. Only an integration-reported,
-// independently re-read 'corrected' is verified.
+// Which verification verdict an approved execution earned. Verified ONLY when both independent
+// reads agree: the integration's own re-read (outcome.data.succeeded) AND the shared entity
+// verification (reliability/executionVerification.js, via integrations/approvedCorrectionDispatch.js).
+// A shared verdict that is anything else is carried through as exactly that.
 function verificationVerdict(outcome) {
   if (outcome && outcome.status === 'success') {
-    if (outcome.data && outcome.data.status === 'corrected') {
+    const entity = outcome.entity_verification;
+    const integrationConfirmed = Boolean(outcome.data && outcome.data.succeeded === true);
+    if (integrationConfirmed && entity && entity.status === 'verified') {
       return { status: 'verified', reason_code: null, reason: null };
+    }
+    if (entity && entity.status !== 'verified') {
+      return {
+        status: entity.status,
+        reason_code: entity.reason_code || 'entity_not_verified',
+        reason: entity.reason || 'The independent entity verification did not confirm the change, so it is not treated as verified.',
+      };
     }
     return {
       status: 'unverifiable',
@@ -187,6 +219,8 @@ async function resolveAutonomousApproval({
   if (envelope.execution_state !== 'awaiting_decision' || record.status !== 'pending') {
     return refuse('approval_not_pending');
   }
+  // Checked BEFORE the signature is consumed or anything is written.
+  if (isExpiredEnvelope(envelope, now)) return refuse('approval_expired');
 
   // The platform the cycle recorded inside the signed request, never guessed from a registry.
   const platform = record.execution_request.autonomy.platform || envelope.platform || null;
@@ -201,6 +235,10 @@ async function resolveAutonomousApproval({
   });
   const idempotency = executionVerification.checkIdempotency(idempotencyKey, { businessId: expected, rootDir: verificationRootDir });
   if (!idempotency.allowed) return refuse('already_completed');
+  // The same ENTITY change already applied and verified through a different approval (another
+  // occurrence, or the /orchestrate path) is refused before deciding - nothing is written.
+  const entityCheck = checkCorrectionAlreadyVerified(toolId, record.execution_request, { verificationRootDir });
+  if (!entityCheck.allowed) return refuse('already_completed');
 
   // Checked BEFORE deciding, so an open circuit leaves the approval pending rather than
   // approved-but-unexecuted.
@@ -246,6 +284,7 @@ async function resolveAutonomousApproval({
 
   let execution = null;
   let verification = null;
+  let entityVerificationSummary = null;
 
   if (decided.status === 'approved') {
     let outcome;
@@ -257,12 +296,15 @@ async function resolveAutonomousApproval({
         null,
         createUsageTracker(),
         usageLedger,
-        { storeDir: approvalStoreDir }
+        { storeDir: approvalStoreDir, verificationRootDir }
       );
     } catch (err) {
       outcome = { status: 'error', data: null, error: 'The approved action could not be executed.' };
     }
     execution = { status: outcome.status, error: outcome.status === 'success' ? null : outcome.error || null };
+    entityVerificationSummary = outcome.entity_verification
+      ? { status: outcome.entity_verification.status, reason_code: outcome.entity_verification.reason_code, entity_kind: outcome.entity_verification.entity_kind }
+      : null;
 
     const verdict = verificationVerdict(outcome);
     verification = {
@@ -338,6 +380,7 @@ async function resolveAutonomousApproval({
           autonomy: record.execution_request.autonomy,
           execution,
           verification: verification ? { status: verification.status, reason_code: verification.reason_code } : null,
+          entity_verification: entityVerificationSummary,
           usage_summary: summarizeUsage(usageLedger),
           audit_trail: audit.events,
         },
@@ -364,6 +407,7 @@ module.exports = {
   APPROVED_ACTION_ENTITY_KIND,
   RESOLUTION_REFUSALS,
   isAutonomousApprovalRecord,
+  isExpiredEnvelope,
   loadAutonomousApproval,
   findPendingAutonomousApproval,
   listPendingAutonomousApprovals,

@@ -424,6 +424,101 @@ function verifyApprovalAuthorization({ request, decision, decidedBy, authorizati
   };
 }
 
+// RE-VERIFIES A STORED APPROVAL FROM ITS OWN CONTENTS, immediately before the action it gates.
+//
+// verifyApprovalAuthorization() above decides whether a decision may be RECORDED. This answers
+// a different question, later: is the record now being executed still the one a human signed?
+// A durable record could have been edited, planted, or copied between businesses after it was
+// written, and a stored `method: 'ed25519_signature'` string proves nothing by itself.
+//
+// So nothing in the record is taken on trust. The fingerprint is recomputed from the stored
+// execution request, the exact signed payload is rebuilt from the stored provenance, and the
+// stored signature is verified again under the configured public key. The nonce is NOT
+// consumed or looked up - the challenge was already spent when the decision was recorded, and
+// this check needs only the public key, so it survives a restart.
+//
+// `expected` binds the record to the action about to run: the business it is running for, the
+// tool being executed and the platform it will touch. Any stated field that disagrees refuses.
+//
+// Pure apart from reading the configured public key. Never throws for a refusal.
+function verifyRecordedProvenance(record, expected = {}) {
+  const refuse = (failedCheck, reason) => ({ valid: false, failed_check: failedCheck, reason });
+  const isText = (value) => typeof value === 'string' && value.trim() !== '';
+
+  if (!record || typeof record !== 'object' || record.status !== 'approved') {
+    return refuse('record_approved', 'The stored record is not an approved approval request.');
+  }
+  const request = record.execution_request;
+  const provenance = request && typeof request === 'object' ? request.approval_provenance : null;
+  if (!provenance || typeof provenance !== 'object') {
+    return refuse('provenance_present', 'The stored record carries no approval provenance.');
+  }
+  if (
+    provenance.method !== 'ed25519_signature' ||
+    provenance.payload_version !== APPROVAL_PAYLOAD_VERSION ||
+    !['request_id', 'decision', 'decided_by', 'execution_fingerprint', 'nonce', 'issued_at', 'signature'].every((field) => isText(provenance[field]))
+  ) {
+    return refuse('provenance_complete', 'The stored approval provenance is incomplete or not an Ed25519 signature record.');
+  }
+  if (provenance.request_id !== record.id || provenance.decision !== 'approved' || provenance.decided_by !== record.decided_by) {
+    return refuse('provenance_matches_record', 'The stored provenance was not produced for this record, this decision and this approver.');
+  }
+
+  const fingerprint = computeExecutionFingerprint(request);
+  if (fingerprint !== provenance.execution_fingerprint) {
+    return refuse('fingerprint_matches_request', 'The stored execution request no longer matches what was signed.');
+  }
+
+  let publicKey;
+  try {
+    publicKey = getConfiguredApprovalPublicKey();
+  } catch (err) {
+    return refuse('public_key_configured', err.message);
+  }
+  if (!publicKey) {
+    return refuse('public_key_configured', `No ${APPROVAL_PUBLIC_KEY_ENV} is configured, so a stored approval cannot be re-verified and is not trusted.`);
+  }
+
+  const payload = buildApprovalPayload({
+    requestId: record.id,
+    decision: provenance.decision,
+    decidedBy: provenance.decided_by,
+    executionFingerprint: fingerprint,
+    nonce: provenance.nonce,
+    issuedAt: provenance.issued_at,
+  });
+  let signatureValid = false;
+  try {
+    signatureValid = crypto.verify(null, Buffer.from(payload, 'utf8'), publicKey, Buffer.from(provenance.signature, 'base64'));
+  } catch (err) {
+    signatureValid = false;
+  }
+  if (!signatureValid) {
+    return refuse('signature_verifies_under_public_key', 'The stored approval signature does not verify under the configured approval public key.');
+  }
+
+  // Binding to the action about to run.
+  const normalize = (value) => (isText(value) ? value.trim() : null);
+  if ('businessId' in expected && normalize(request.business_id) !== normalize(expected.businessId)) {
+    return refuse('business_binding', 'The stored approval belongs to a different business than the one this action is running for.');
+  }
+  if (isText(expected.toolId) && (record.tool_id !== expected.toolId || (isText(request.tool_id) && request.tool_id !== expected.toolId))) {
+    return refuse('action_binding', 'The stored approval authorizes a different action than the one being executed.');
+  }
+  if (isText(expected.platform)) {
+    const stated = [
+      request.platform,
+      request.research_params && typeof request.research_params === 'object' ? request.research_params.platform : null,
+      request.autonomy && typeof request.autonomy === 'object' ? request.autonomy.platform : null,
+    ].filter(isText);
+    if (stated.some((platform) => platform !== expected.platform)) {
+      return refuse('platform_binding', 'The stored approval targets a different platform than the one this action will touch.');
+    }
+  }
+
+  return { valid: true, failed_check: null, reason: null };
+}
+
 // Test/operational helper: forgets every outstanding challenge. Exported so a suite can
 // isolate itself; it can only ever make verification FAIL (an unknown nonce), never pass.
 function clearIssuedApprovalChallenges() {
@@ -447,6 +542,7 @@ module.exports = {
   getConfiguredApprovalPublicKey,
   issueApprovalChallenge,
   verifyApprovalAuthorization,
+  verifyRecordedProvenance,
   clearIssuedApprovalChallenges,
 };
 
