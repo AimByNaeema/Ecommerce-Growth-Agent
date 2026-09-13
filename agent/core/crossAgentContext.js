@@ -734,6 +734,31 @@ function deriveLiveListingContextForSeo({ completedSteps, toCapabilityId, existi
   return context;
 }
 
+// WHICH LIVE READ SUPPLIES WHICH CAPABILITY'S EVIDENCE - the planning-side declaration of
+// the live flows in this module. The Chief (orchestratorExecutionContract.js's
+// runOrchestratorContract) reads it when a step stops for missing evidence and the plan has
+// no step that could have supplied it - e.g. "Review the SEO findings from my Shopify
+// products" routes to SEO alone, but seo_quality_check's listing data only exists after the
+// Product specialist's live read. One entry per flow that genuinely exists above; adding an
+// entry here without the matching extractor would promise data nothing relays.
+const LIVE_EVIDENCE_PROVIDERS = [
+  {
+    toSpecialistId: 'seo',
+    toCapabilityId: 'seo_quality_check',
+    fromSpecialistId: 'product',
+    fromCapabilityId: 'product_discovery',
+    fromToolId: 'product_data_retrieval',
+  },
+];
+
+function findLiveEvidenceProvider(toSpecialistId, toCapabilityId) {
+  return (
+    LIVE_EVIDENCE_PROVIDERS.find(
+      (entry) => entry.toSpecialistId === toSpecialistId && entry.toCapabilityId === toCapabilityId
+    ) || null
+  );
+}
+
 function deriveLiveEvidenceContext({ completedSteps = [], toSpecialistId, toCapabilityId, existingResearchParams = null }) {
   if (toSpecialistId === 'seo') {
     return deriveLiveListingContextForSeo({ completedSteps, toCapabilityId, existingResearchParams });
@@ -778,6 +803,8 @@ module.exports = {
   gatherSalesGrowthPlanEvidence,
   PLAN_DOMAINS_WITH_NO_WORKFLOW_SOURCE,
   deriveLiveEvidenceContext,
+  LIVE_EVIDENCE_PROVIDERS,
+  findLiveEvidenceProvider,
   mergeContext,
   filterToDeclaredFields,
   dedupeArray,

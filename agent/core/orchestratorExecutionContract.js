@@ -64,6 +64,7 @@ const {
   deriveCrossAgentContext,
   deriveAllToAnalyticsContext,
   deriveLiveEvidenceContext,
+  findLiveEvidenceProvider,
   gatherGrowthOpportunityDrafts,
   mergeContext,
   dedupeArray,
@@ -103,6 +104,7 @@ const {
   filterToolCandidatesByIntent,
   maySelectMutationTool,
   classifyRequestIntent,
+  hasExplicitMutationIntent,
   mutationIntentRefusalReason,
 } = require('./mutationIntent');
 // The Memory layer's own connection into this run flow (agent/core/memoryStore.js's
@@ -1547,67 +1549,198 @@ function attemptClauseRecovery(routedClauses) {
   return routedClauses;
 }
 
-// OBJECTIVE FRAMING (real production regression from the Chief dashboard): an owner
-// writes ONE business objective in plain sentences, e.g.
+// OBJECTIVE INSTRUCTION PARSING - one objective, four kinds of language.
 //
-//   "Analyse my Shopify store using real Shopify data. Check products, inventory,
-//    orders, SEO/listing quality, and sales opportunities. Identify the 10
-//    highest-priority opportunities and recommend what should be done first. Do not
-//    make any changes."
+// An owner writes ONE business objective in plain sentences:
 //
-// CLAUSE_SPLIT_REGEX tears that into fragments, and "recommend what should be done
-// first. Do not make any changes." has no capability vocabulary at all - so the whole
-// request stopped with `No known capability matches "..."`, treating the owner's own
-// words as if they had to name a capability. That fragment is not a separate task: it
-// says HOW to present the answer (prioritise, rank, recommend, top N) or a constraint
-// on the WHOLE objective (read-only). It belongs to the objective, which every plan
-// step already receives in full (see buildPlanStep's `objective` argument).
+//   "Review the SEO findings from my Shopify products. Show me the 10 products with the
+//    highest-priority SEO issues, explain each issue and recommend the exact improvement.
+//    Do not make any changes."
 //
-// DELIBERATELY CLOSED AND CONSERVATIVE:
-// - Only a clause made ENTIRELY of the framing vocabulary below (plus numbers) and/or an
-//   explicit "do not change" constraint is absorbed. One unknown word - "flibbertigibbet",
-//   "dance", "fix", "make changes" - leaves the clause unmatched, so a real second
-//   instruction is still surfaced for clarification exactly as before.
-// - Only absorbed when at least one other clause matched a real capability, so a
-//   request made only of framing ("Do not make any changes.") still asks what to do.
-// - Never absorbs a clause mutationIntent classifies as a mutation, and never selects
-//   a capability: it only stops a presentation phrase from dead-ending the plan. Tool
-//   selection, the mutation-intent gate, approvals, compliance, budgets and audit all
-//   run unchanged on the whole objective.
-const OBJECTIVE_FRAMING_WORDS = new Set([
-  'identify', 'recommend', 'recommended', 'recommendation', 'recommendations', 'suggest',
-  'suggestions', 'prioritise', 'prioritize', 'prioritised', 'prioritized', 'priority',
-  'priorities', 'rank', 'ranked', 'highest', 'top', 'biggest', 'most', 'important',
-  'first', 'next', 'steps', 'step', 'should', 'could', 'would', 'be', 'done', 'do',
-  'tell', 'show', 'explain', 'summarise', 'summarize', 'summary', 'list', 'opportunities',
-  'opportunity', 'which', 'where', 'how', 'we', 'us', 'our', 'your', 'with', 'by', 'from',
-  'all', 'them', 'these', 'those', 'this', 'that', 'it', 'order', 'using', 'real', 'actual',
-  'live', 'only',
+// CLAUSE_SPLIT_REGEX splits on commas/"and", and word-overlap routing then asked every
+// fragment to name a capability - so "explain each issue" was reported as an unknown
+// capability. A first fix recognised a fixed list of framing words; ordinary answer words
+// outside it ("each", "exact", "improvement") broke it again in production. Patching words
+// does not scale, so a fragment that did not route is now PARSED for what kind of language
+// it is:
+//
+//   A. TASK        - what to work on. Routed by the existing scorer (routeClause).
+//   B. FRAMING     - how to present the answer: an output directive (explain, describe,
+//                    show, list, identify, recommend, prioritise, compare, summarise, tell
+//                    me, give me, ...) whose object refers only to the objective's own
+//                    subject matter or to generic parts of an answer.
+//   C. SAFETY      - a constraint on the whole run ("do not make any changes", "read-only").
+//   D. NEW ACTION  - anything else that did not route: a genuine additional or unsupported
+//                    request. It still stops the plan for clarification, exactly as before.
+//
+// B and C never select or add a capability; they stay attached to the objective, which
+// every plan step already receives in full (buildPlanStep's `objective`).
+//
+// WHY B CANNOT SWALLOW A REAL SECOND REQUEST. A fragment is framing only when ALL hold:
+//   1. it opens with an output directive - "do the dance", "launch ads", "we need help"
+//      do not;
+//   2. it carries no mutation intent (mutationIntent.js) - "show me how to fix each issue"
+//      is not framing;
+//   3. every remaining word is GROUNDED: a function word, a number, a generic
+//      answer-structure word (each, top, exact, issue, improvement, reason ...), or a word
+//      the objective's own routed task clauses already use. An object that introduces new
+//      subject matter - "compare prices with Amazon", "explain the flibbertigibbet
+//      dance", "recommend and apply the improvement" - is not grounded and stays D.
+// The word classes below are closed GRAMMATICAL classes (communication verbs, function
+// words, parts of an answer), not phrases or synonyms; subject matter is never listed - it
+// can only be grounded by the objective itself.
+//
+// And only when at least one clause routed to a real capability: a message made only of
+// framing or constraints ("Do not make any changes.") still asks what to work on.
+
+// C. Safety constraints. Stripped before B is parsed; they only ever narrow a run.
+const SAFETY_CONSTRAINT_REGEX =
+  /\b(?:do\s+not|don['’]?t|never|without)\s+(?:make|making|change|changing|modify|modifying|edit|editing|update|updating|touch|touching|alter|altering|write|writing)(?:\s+(?:any|anything|a|the))?(?:\s+(?:changes?|anything|edits?|updates?|modifications?|writes?))?\b|\bno\s+changes?\b|\bread[\s-]?only\b/gi;
+
+// B. Communication/presentation verbs - the verb of an instruction about the answer.
+const OUTPUT_DIRECTIVE_VERBS = new Set([
+  'explain', 'describe', 'show', 'list', 'identify', 'recommend', 'suggest', 'prioritise',
+  'prioritize', 'rank', 'sort', 'order', 'compare', 'summarise', 'summarize', 'outline',
+  'detail', 'highlight', 'include', 'provide', 'present', 'clarify', 'justify', 'specify',
+  'note', 'flag', 'tell', 'give', 'point', 'break', 'walk', 'mention', 'share', 'return',
 ]);
 
-// An explicit read-only constraint ("do not make any changes", "don't change anything",
-// "without making changes", "read-only"). Stripped before the vocabulary check; it can
-// only ever narrow what the run may do, never widen it.
-const READ_ONLY_CONSTRAINT_REGEX =
-  /\b(?:do\s+not|don['’]?t|never|without)\s+(?:make|making|change|changing|modify|modifying|edit|editing|update|updating|touch|touching|alter|altering|write|writing)(?:\s+(?:any|anything|a|the))?(?:\s+(?:changes?|anything|edits?|updates?|modifications?|writes?))?\b|\bread[\s-]?only\b/gi;
+// Words that open a fragment without being its verb ("and explain", "please list").
+const FRAGMENT_OPENERS = new Set(['and', 'also', 'then', 'please', 'finally', 'plus', 'so', 'next', 'lastly']);
 
-function isObjectiveFramingClause(text) {
-  if (typeof text !== 'string' || text.trim() === '') return false;
-  if (classifyRequestIntent(text) === 'mutation') return false;
-  const words = tokenize(text.replace(READ_ONLY_CONSTRAINT_REGEX, ' '));
-  return words.every((word) => OBJECTIVE_FRAMING_WORDS.has(word) || /^\d+$/.test(word));
+// Function words: determiners, pronouns, prepositions, auxiliaries, quantifiers.
+const FUNCTION_WORDS = new Set([
+  'the', 'a', 'an', 'of', 'for', 'to', 'and', 'or', 'in', 'on', 'at', 'by', 'with', 'from',
+  'into', 'about', 'as', 'than', 'per', 'me', 'us', 'my', 'our', 'your', 'their', 'them',
+  'it', 'its', 'this', 'that', 'these', 'those', 'each', 'every', 'all', 'any', 'both',
+  'which', 'what', 'why', 'how', 'where', 'who', 'when', 'whether', 'should', 'could',
+  'would', 'can', 'will', 'must', 'be', 'is', 'are', 'was', 'were', 'been', 'do', 'does',
+  'done', 'i', 'we', 'you', 'they', 'so', 'then', 'also', 'please', 'just', 'only', 'there',
+  'here', 'more', 'most', 'less', 'least', 'up', 'out', 'down', 'through', 'one', 'if',
+  'own', 'same', 'other', 'others',
+]);
+
+// Parts and qualities of an answer - never a business subject in their own right.
+const ANSWER_STRUCTURE_WORDS = new Set([
+  'top', 'bottom', 'highest', 'lowest', 'high', 'low', 'biggest', 'smallest', 'largest',
+  'best', 'worst', 'main', 'key', 'major', 'minor', 'critical', 'important', 'urgent',
+  'exact', 'exactly', 'specific', 'concrete', 'detailed', 'brief', 'short', 'clear',
+  'simple', 'full', 'complete', 'quick', 'first', 'next', 'last', 'ranked', 'priority',
+  'level', 'issue', 'problem', 'finding', 'result', 'reason', 'cause', 'impact', 'effect',
+  'improvement', 'recommendation', 'suggestion', 'step', 'action', 'option', 'alternative',
+  'opportunity', 'example', 'detail', 'summary', 'explanation', 'overview', 'breakdown',
+  'list', 'table', 'bullet', 'point', 'number', 'count', 'score', 'comparison', 'difference',
+  'risk', 'benefit', 'way', 'order', 'item', 'entry',
+]);
+
+function rawWords(text) {
+  return String(text || '').toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 0);
 }
 
+// Singular form for grounding only ("issues" grounds "issue", "priorities" grounds
+// "priority"). Never used for routing scores.
+function singularForm(word) {
+  if (word.length > 4 && word.endsWith('ies')) return `${word.slice(0, -3)}y`;
+  if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss')) return word.slice(0, -1);
+  return word;
+}
+
+function splitSentences(text) {
+  return String(text || '').split(/(?<=[.!?;:])\s+/).map((part) => part.trim()).filter((part) => part.length > 0);
+}
+
+// Classifies one fragment. groundingWords: singular forms of the words the objective's
+// routed task clauses use.
+function classifyInstructionFragment(fragment, groundingWords = new Set()) {
+  const safety = (fragment.match(SAFETY_CONSTRAINT_REGEX) || []).map((constraint) => constraint.trim());
+  const remaining = fragment.replace(SAFETY_CONSTRAINT_REGEX, ' ');
+  const words = rawWords(remaining);
+  while (words.length > 0 && FRAGMENT_OPENERS.has(words[0])) words.shift();
+
+  if (words.length === 0) {
+    return safety.length > 0 ? { kind: 'safety', safety } : { kind: 'empty', safety };
+  }
+  if (hasExplicitMutationIntent(remaining) || classifyRequestIntent(remaining) === 'mutation') {
+    return { kind: 'new_action', reason: 'mutation_intent', safety };
+  }
+  if (!OUTPUT_DIRECTIVE_VERBS.has(words[0])) {
+    return { kind: 'new_action', reason: 'no_output_directive', safety };
+  }
+  const ungrounded = words.slice(1).filter((word) => {
+    const singular = singularForm(word);
+    return !(
+      /^\d+$/.test(word) ||
+      FUNCTION_WORDS.has(word) ||
+      OUTPUT_DIRECTIVE_VERBS.has(word) ||
+      ANSWER_STRUCTURE_WORDS.has(word) ||
+      ANSWER_STRUCTURE_WORDS.has(singular) ||
+      groundingWords.has(singular)
+    );
+  });
+  if (ungrounded.length > 0) {
+    return { kind: 'new_action', reason: 'introduces_new_subject', ungrounded, safety };
+  }
+  return { kind: 'framing', directive: words[0], safety };
+}
+
+// Classifies a clause that did not route: 'instruction' (framing and/or safety only) when
+// EVERY sentence in it is B or C, otherwise 'new_action'. Exported so the distinction is
+// inspectable and tested directly, not buried inside routing.
+function classifyObjectiveClause(clauseText, groundingWords = new Set()) {
+  const fragments = splitSentences(clauseText).map((fragment) => ({
+    text: fragment,
+    ...classifyInstructionFragment(fragment, groundingWords),
+  }));
+  const isInstruction =
+    fragments.length > 0 &&
+    fragments.every((fragment) => fragment.kind === 'framing' || fragment.kind === 'safety' || fragment.kind === 'empty') &&
+    fragments.some((fragment) => fragment.kind !== 'empty');
+  return { kind: isInstruction ? 'instruction' : 'new_action', fragments };
+}
+
+// Grounding comes only from OTHER routed clauses, so a clause can never ground itself.
+function groundingWordsFor(routedClauses, excludeIndex) {
+  const words = new Set();
+  routedClauses.forEach((clause, index) => {
+    if (index === excludeIndex || clause.result.status !== 'matched') return;
+    for (const word of rawWords(clause.text)) {
+      if (!FUNCTION_WORDS.has(word)) words.add(singularForm(word));
+    }
+  });
+  return words;
+}
+
+// Whether a clause is re-examined by the parser: it did not route to one capability, or it
+// routed only to SHARED INFRASTRUCTURE. The second case exists because generic answer words
+// overlap infrastructure descriptions ("compare the results" scored for 'verification' on
+// "results") - infrastructure is a context provider, never the thing an owner asks for by
+// presentation wording. A clause routed to a SPECIALIST is never reinterpreted.
+function isParserCandidate(clause) {
+  if (clause.result.status === 'unmatched' || clause.result.status === 'ambiguous') return true;
+  return clause.result.status === 'matched' && clause.result.target && clause.result.target.type === 'shared_infrastructure';
+}
+
+// Separates B/C from A and D after every clause has been routed. A D clause is left as it
+// was, so planRouting still stops for clarification (or keeps its infrastructure route).
 function absorbObjectiveFramingClauses(routedClauses) {
-  if (!routedClauses.some((clause) => clause.result.status === 'matched')) return routedClauses;
-  return routedClauses.map((clause) =>
-    // 'ambiguous' too: a framing-only clause ("summarise them by priority") can tie two
-    // targets on incidental words, but it names no capability either way.
-    (clause.result.status === 'unmatched' || clause.result.status === 'ambiguous') &&
-    isObjectiveFramingClause(clause.text)
-      ? { text: clause.text, result: { status: 'absorbed' } }
-      : clause
-  );
+  const framing = [];
+  const nextClauses = routedClauses.map((clause, index) => {
+    if (!isParserCandidate(clause)) return clause;
+    const otherRouted = routedClauses.some((other, otherIndex) => otherIndex !== index && other.result.status === 'matched');
+    if (!otherRouted) return clause;
+    const parsed = classifyObjectiveClause(clause.text, groundingWordsFor(routedClauses, index));
+    if (parsed.kind !== 'instruction') return clause;
+    for (const fragment of parsed.fragments) {
+      if (fragment.kind === 'framing') framing.push(fragment.text);
+    }
+    return { text: clause.text, result: { status: 'absorbed' } };
+  });
+  return { routedClauses: nextClauses, framing };
+}
+
+// Every safety constraint the objective states, wherever it appears.
+function collectSafetyConstraints(objective) {
+  return (String(objective || '').match(SAFETY_CONSTRAINT_REGEX) || []).map((constraint) => constraint.trim());
 }
 
 // Routes a full objective into a controlled, ordered execution plan: splits into
@@ -1717,7 +1850,7 @@ function planRouting(objective) {
   // Route every clause independently first, then give attemptClauseRecovery() a
   // chance to fold a clause that matched nothing back into an adjacent one before any
   // clarification decision is made - see that function's own header above.
-  const routedClauses = absorbObjectiveFramingClauses(
+  const { routedClauses, framing } = absorbObjectiveFramingClauses(
     attemptClauseRecovery(clauses.map((clause) => ({ text: clause, result: routeClause(clause) })))
   );
 
@@ -1763,6 +1896,10 @@ function planRouting(objective) {
     // step's current_task can be the specific piece of the request it's handling
     // rather than the whole objective. See agent/core/executionState.js.
     segments: orderedEntries.map((entry) => entry.segment),
+    // What the parser recognised as how-to-answer framing and as run-wide safety
+    // constraints. Informational: neither adds a target, and every step still receives the
+    // whole objective.
+    instructions: { framing, safety: collectSafetyConstraints(objective) },
   };
 }
 
@@ -2363,6 +2500,66 @@ async function buildPlanStep(
     }
   }
 
+  // LIVE-EVIDENCE SIBLING CAPABILITY. Word overlap picks a capability from the clause's
+  // wording alone. For "Review the SEO findings from my Shopify products ..." it picked
+  // product_seo (one named product, needs productReference) although no source can name one,
+  // while the same specialist's seo_quality_check CAN audit the store's real listings once
+  // the Product specialist's live read is in the plan (see runOrchestratorContract's
+  // LIVE-EVIDENCE DEPENDENCY, which adds that read). Same principle as PREFER REAL DATA OVER
+  // NO DATA above, extended to evidence another step supplies. It switches only when ALL hold:
+  //   - the matched capability's required evidence is missing (it would otherwise stop), and
+  //     the caller supplied nothing and forced nothing;
+  //   - a sibling task declares a live provider (crossAgentContext.js LIVE_EVIDENCE_PROVIDERS)
+  //     and its tool is a real candidate for this specialist in the same category;
+  //   - this clause is relevant to the provider specialist by the EXISTING routing score, so
+  //     an unrelated SEO request ("keyword research for insulated jackets") is never pulled
+  //     onto store listings;
+  //   - the provider's REAL result is already in this plan and fully satisfies the sibling's
+  //     required fields. Nothing is ever assumed or filled in.
+  if (
+    target.type === 'specialist' &&
+    capabilityEntry &&
+    matchedCapability &&
+    toolMatch &&
+    !hasCallerResearchParams &&
+    !(forcedSelection && forcedSelection.toolId) &&
+    !(matchedCapability.live_data_tool_id && toolMatch.id === matchedCapability.live_data_tool_id) &&
+    !topLevelRequiredFieldsSatisfied(matchedCapability.input_contract, effectiveResearchParams)
+  ) {
+    for (const task of capabilityEntry.supported_tasks) {
+      if (task.id === matchedCapability.id) continue;
+      const provider = findLiveEvidenceProvider(target.id, task.id);
+      if (!provider || !clauseDistinctlyAbout(currentTask, provider.fromSpecialistId, target.id)) continue;
+      const siblingToolId = task.tool_ids.find((toolId) => candidateToolIds.includes(toolId));
+      const siblingTool = siblingToolId ? getToolById(siblingToolId) : null;
+      if (!siblingTool || siblingTool.category !== matchedCategory) continue;
+      const siblingContext = deriveLiveEvidenceContext({
+        completedSteps: priorSteps,
+        toSpecialistId: target.id,
+        toCapabilityId: task.id,
+        existingResearchParams: researchParams,
+      });
+      const siblingParams = {
+        ...deriveCapabilitySelectorContext(siblingTool.id, task.id),
+        ...siblingContext,
+        ...(researchParams || {}),
+      };
+      if (!topLevelRequiredFieldsSatisfied(task.input_contract, siblingParams)) continue;
+      appendAuditEvent(runAuditTracker, {
+        type: 'agent',
+        specialistId: target.id,
+        capabilityId: task.id,
+        summary:
+          `'${matchedCapability.id}' has no source for its required evidence; '${task.id}' does - ` +
+          `the '${provider.fromSpecialistId}' live read earlier in this plan - so this step runs '${task.id}'.`,
+      });
+      toolMatch = siblingTool;
+      matchedCapability = task;
+      effectiveResearchParams = siblingParams;
+      break;
+    }
+  }
+
   // SELF-SUFFICIENT LIVE DISPATCH: true when the matched capability's own declared
   // live_data_tool_id (see agent/core/specialistCapabilityRegistry.js) is the tool
   // about to be dispatched - that tool retrieves everything it needs itself (see
@@ -2429,7 +2626,7 @@ async function buildPlanStep(
       status: 'clarification_required',
       data: null,
       error:
-        `'${matchedCapability.title}' needs real, structured input this request did not supply and no ` +
+        `'${matchedCapability.title}' ${MISSING_EVIDENCE_MARKER} this request did not supply and no ` +
         `approved read-only source can currently retrieve: ${missingFields.join(', ')}. Provide ${missingFields.join(', ')} ` +
         'directly, or ask a specialist step that can produce it first.',
       classification: null,
@@ -2911,26 +3108,94 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   }
 
   const plan = [];
+  let providerStepsAdded = 0;
   for (let i = 0; i < routingResult.targets.length; i += 1) {
     // plan already holds every step completed so far (0..i-1) at this point - passed
     // as priorSteps so buildPlanStep can derive structured cross-agent context for
     // this step from them (see agent/core/crossAgentContext.js).
-    const step = await buildPlanStep(
-      routingResult.targets[i],
-      objective,
-      routingResult.segments[i],
-      runTokenTracker,
-      researchParams,
-      plan,
-      runApprovalTracker,
-      runAuditTracker,
-      runToolResultCache,
-      runUsageTracker,
-      businessId,
-      runUsageLedger,
-      null,
-      relevantMemoryContext
-    );
+    const buildRoutedStep = () =>
+      buildPlanStep(
+        routingResult.targets[i],
+        objective,
+        routingResult.segments[i],
+        runTokenTracker,
+        researchParams,
+        plan,
+        runApprovalTracker,
+        runAuditTracker,
+        runToolResultCache,
+        runUsageTracker,
+        businessId,
+        runUsageLedger,
+        null,
+        relevantMemoryContext
+      );
+    let step = await buildRoutedStep();
+
+    // LIVE-EVIDENCE DEPENDENCY. Routing decides WHICH specialists a request is about; it
+    // cannot know that one capability's required evidence only exists after another
+    // specialist's live read ("Review the SEO findings from my Shopify products" routes to
+    // SEO alone, but seo_quality_check audits listings that only the Product read supplies).
+    // So when a step stopped BEFORE dispatch for missing evidence, the capability declares a
+    // live provider (crossAgentContext.js's LIVE_EVIDENCE_PROVIDERS), and no step in this plan
+    // has already supplied it, the provider's own read-only live capability runs first -
+    // through buildPlanStep, so permissions, the mutation-intent gate, budgets, usage and
+    // audit apply exactly as for any step - and the stopped step is built again from the real
+    // result. It never fabricates: if the read fails or returns nothing, the retried step
+    // stops for the same honest reason. The run's plan-size ceiling still applies.
+    // The provider is the stopped capability's own declared one, or - when word overlap chose
+    // a sibling capability that has no source at all - one declared for another capability of
+    // the SAME specialist, provided this clause is relevant to the provider specialist by the
+    // existing routing score (buildPlanStep then switches to that sibling only if the real
+    // result satisfies it; see its LIVE-EVIDENCE SIBLING CAPABILITY block).
+    let provider = null;
+    if (step.selected_specialist && step.selected_specialist.type === 'specialist' && step.inputs) {
+      const specialistId = step.selected_specialist.id;
+      provider = findLiveEvidenceProvider(specialistId, step.inputs.capability_id);
+      if (!provider) {
+        const capabilityEntry = getSpecialistCapabilityById(specialistId);
+        for (const task of (capabilityEntry && capabilityEntry.supported_tasks) || []) {
+          const candidate = findLiveEvidenceProvider(specialistId, task.id);
+          if (candidate && clauseDistinctlyAbout(routingResult.segments[i], candidate.fromSpecialistId, specialistId)) {
+            provider = candidate;
+            break;
+          }
+        }
+      }
+    }
+    if (provider && stoppedForMissingEvidence(step) && !planHasProviderResult(plan, provider)) {
+      const bounds = checkPlanStepBounds(routingResult.targets.length + providerStepsAdded + 1);
+      if (bounds.allowed) {
+        appendAuditEvent(runAuditTracker, {
+          type: 'agent',
+          specialistId: provider.fromSpecialistId,
+          capabilityId: provider.fromCapabilityId,
+          summary:
+            `'${step.selected_specialist.id}' step '${step.inputs.capability_id}' stopped for missing evidence; ` +
+            `'${provider.toCapabilityId}' can use the '${provider.fromSpecialistId}' specialist's live read ` +
+            `(${provider.fromToolId}) - adding that read-only step first.`,
+        });
+        const providerStep = await buildPlanStep(
+          buildSpecialistTarget(provider.fromSpecialistId),
+          objective,
+          routingResult.segments[i],
+          runTokenTracker,
+          researchParams,
+          plan,
+          runApprovalTracker,
+          runAuditTracker,
+          runToolResultCache,
+          runUsageTracker,
+          businessId,
+          runUsageLedger,
+          { toolId: provider.fromToolId, capabilityId: provider.fromCapabilityId },
+          relevantMemoryContext
+        );
+        plan.push(providerStep);
+        providerStepsAdded += 1;
+        step = await buildRoutedStep();
+      }
+    }
     plan.push(step);
 
     // MEMORY LAYER - PERSISTENCE (agent/core/memoryContextRetrieval.js): after a
@@ -2989,7 +3254,52 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   });
 }
 
+// The phrase buildPlanStep's missing-evidence stop uses, shared so the dependency check in
+// runOrchestratorContract recognises exactly that stop and nothing else (a denied permission
+// or an unavailable tool also leaves outputs null, and must not trigger a provider read).
+const MISSING_EVIDENCE_MARKER = 'needs real, structured input';
+
+// Whether a clause is about the PROVIDER specialist's subject, not merely sharing words with
+// it. Only words distinctive to the provider count: words in its routing text that are NOT
+// in the dependent specialist's routing text and are not generic routing words. Measured:
+// "SEO keyword research for insulated hiking jackets" scores for Product only on "research",
+// which SEO's own text also contains - so it is not about the store's products and gets no
+// Product read, while "Review the SEO findings from my Shopify products" is, on "shopify" and
+// "products". Uses the existing ROUTING_TARGETS text only - no new vocabulary.
+function clauseDistinctlyAbout(clauseText, providerSpecialistId, dependentSpecialistId) {
+  const targetText = (id) => {
+    const target = ROUTING_TARGETS.find((entry) => entry.type === 'specialist' && entry.id === id);
+    return target ? target.text : '';
+  };
+  const dependentWords = new Set(tokenize(targetText(dependentSpecialistId)));
+  const distinctive = new Set(
+    tokenize(targetText(providerSpecialistId)).filter((word) => !dependentWords.has(word) && !GENERIC_ROUTING_WORDS.has(word))
+  );
+  return tokenize(clauseText).some((word) => distinctive.has(word));
+}
+
+function stoppedForMissingEvidence(step) {
+  return (
+    Boolean(step) &&
+    step.outputs === null &&
+    (step.errors || []).some((error) => String((error && error.message) || error).includes(MISSING_EVIDENCE_MARKER))
+  );
+}
+
+function planHasProviderResult(plan, provider) {
+  return plan.some(
+    (step) =>
+      step.selected_specialist &&
+      step.selected_specialist.id === provider.fromSpecialistId &&
+      step.inputs &&
+      step.inputs.capability_id === provider.fromCapabilityId &&
+      step.outputs &&
+      step.outputs.status === 'success'
+  );
+}
+
 module.exports = {
+  classifyObjectiveClause,
   CATEGORY_TO_SPECIALIST,
   SPECIALIST_TO_CATEGORIES,
   SHARED_INFRASTRUCTURE_CATEGORIES,

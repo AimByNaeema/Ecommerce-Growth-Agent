@@ -277,6 +277,7 @@ const TEST_FILES = [
   'chiefControlCenter.test.js',
   'chiefObjectiveRouting.test.js',
   'chiefSeoDataFlow.test.js',
+  'chiefInstructionParsing.test.js',
 ];
 
 function runAll() {
