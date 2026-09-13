@@ -31,6 +31,46 @@ function readStatus(result) {
   return result.quality_score.status;
 }
 
+// The one call into the checker, shared by the single and batch paths.
+function checkOne(params) {
+  try {
+    const result = checkSeoQuality(params);
+    return { status: readStatus(result), result, error: null };
+  } catch (err) {
+    return { status: 'failed', result: null, error: err.message };
+  }
+}
+
+// BATCH: listingRecords, one per real store product (agent/core/crossAgentContext.js's
+// Product -> SEO relay). Each record is audited by the same checker, independently - one
+// invalid record fails only itself. The overall status is honest about the mix: 'success'
+// only when every product fully succeeded, 'failed' only when every product failed.
+function aggregateStatus(checks) {
+  if (checks.every((check) => check.status === 'success')) return 'success';
+  if (checks.every((check) => check.status === 'failed')) return 'failed';
+  if (checks.every((check) => check.status === 'empty')) return 'empty';
+  return 'partial';
+}
+
+function runBatch(researchParams) {
+  const { listingRecords, listingFieldGaps = null, keywordRecords, factualAttributes, researchDate } = researchParams;
+  const checks = listingRecords.map((listingRecord) => {
+    const outcome = checkOne({ listingRecord, keywordRecords, factualAttributes, researchDate });
+    const subjectReference =
+      listingRecord && typeof listingRecord === 'object' && typeof listingRecord.product_reference === 'string'
+        ? listingRecord.product_reference
+        : null;
+    return { subject_reference: subjectReference, ...outcome };
+  });
+  const statusCounts = { success: 0, partial: 0, empty: 0, failed: 0 };
+  for (const check of checks) statusCounts[check.status] += 1;
+  return {
+    status: aggregateStatus(checks),
+    result: { products_checked: checks.length, status_counts: statusCounts, checks, field_gaps: listingFieldGaps },
+    error: null,
+  };
+}
+
 function runSeoQualityCheckTool(researchParams) {
   if (!researchParams || typeof researchParams !== 'object') {
     return {
@@ -41,12 +81,15 @@ function runSeoQualityCheckTool(researchParams) {
     };
   }
 
-  try {
-    const result = checkSeoQuality(researchParams);
-    return { status: readStatus(result), result, error: null };
-  } catch (err) {
-    return { status: 'failed', result: null, error: err.message };
+  // A single caller-supplied listingRecord keeps its existing behaviour exactly.
+  if (!researchParams.listingRecord && Array.isArray(researchParams.listingRecords)) {
+    if (researchParams.listingRecords.length === 0) {
+      return { status: 'failed', result: null, error: 'listingRecords was supplied but empty - there is no listing to check.' };
+    }
+    return runBatch(researchParams);
   }
+
+  return checkOne(researchParams);
 }
 
 module.exports = { runSeoQualityCheckTool };

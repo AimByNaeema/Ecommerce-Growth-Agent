@@ -276,6 +276,7 @@ const TEST_FILES = [
   'dashboardApiKeyRetry.test.js',
   'chiefControlCenter.test.js',
   'chiefObjectiveRouting.test.js',
+  'chiefSeoDataFlow.test.js',
 ];
 
 function runAll() {

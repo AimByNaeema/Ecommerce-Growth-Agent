@@ -951,7 +951,10 @@ const SEO_TASKS = [
       "Audit one already-built listing optimization record (an agent/core/listingOptimizationModel.js record, e.g. from product_seo/collection_seo/content_seo/on_page_seo) across 8 SEO quality dimensions - keyword usage, meta completeness, heading structure, readability, duplicate content risk, thin content, over-optimization, internal linking opportunities - via agent/core/seoQualityChecker.js's checkSeoQuality(). Tool-executed rather than seoAgent.js-composed, like market_question_discovery/seo_content_generation above: its output is an agent/core/seoQualityCheckModel.js result, not this specialist's shared envelope. It audits what the caller supplied - it never rewrites content or invents a missing dimension's evidence.",
     toolIds: ['seo_quality_check'],
     required: ['listingRecord'],
-    optional: ['keywordRecords', 'factualAttributes', 'researchDate'],
+    // listingRecords is the declared batch form of listingRecord (one record per real store
+    // product, relayed by agent/core/crossAgentContext.js from the Product step's live read);
+    // listingFieldGaps names the fields that relay could not supply.
+    optional: ['keywordRecords', 'factualAttributes', 'researchDate', 'listingRecords', 'listingFieldGaps'],
     model: 'agent/core/seoQualityCheckModel.js',
     fields: fieldIds(SEO_QUALITY_CHECK_FIELDS),
   }),

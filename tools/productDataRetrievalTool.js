@@ -76,6 +76,39 @@ function mapShopifyProductToCandidate(shopifyProduct) {
 // TOOL_EXECUTORS entry (see tools/analyticsDataTool.js) rather than the throw-through
 // convention retrieveProductData() above uses, since this is the function
 // agent/core/orchestratorExecutionContract.js's TOOL_EXECUTORS dispatches to.
+// LISTING SOURCES FOR THE SEO SPECIALIST. agent/core/productModel.js has no field for a
+// product's handle or its SEO title/description, so the Chief's SEO quality check had
+// nothing real to audit and stopped with "needs ... listingRecord". The same single read
+// already returns those fields, so they are relayed alongside the product records - never a
+// second Shopify call - as one plain entry per product (see agent/core/crossAgentContext.js's
+// Product -> SEO flow, which turns each into a listing record).
+//
+// NOTHING FILLED IN. A field the read did not return at all (undefined - e.g. an adapter that
+// does not read it) is listed in unavailable_fields rather than blanked silently. A field the
+// store genuinely has no value for (null/'' - e.g. no custom SEO title) is relayed as '',
+// which is what the store actually holds.
+const LISTING_SOURCE_READERS = {
+  title: (product) => product.title,
+  handle: (product) => product.handle,
+  description: (product) => product.description,
+  seo_title: (product) => (product.seo ? product.seo.title : undefined),
+  seo_description: (product) => (product.seo ? product.seo.description : undefined),
+};
+
+function buildListingSource(shopifyProduct) {
+  const source = {
+    product_reference: shopifyProduct.title || '',
+    shopify_product_id: shopifyProduct.id || '',
+    unavailable_fields: [],
+  };
+  for (const [field, read] of Object.entries(LISTING_SOURCE_READERS)) {
+    const value = read(shopifyProduct);
+    if (value === undefined) source.unavailable_fields.push(field);
+    source[field] = typeof value === 'string' ? value : '';
+  }
+  return source;
+}
+
 async function runProductDataRetrievalTool(researchParams) {
   const params = researchParams && typeof researchParams === 'object' ? researchParams : {};
   try {
@@ -85,7 +118,7 @@ async function runProductDataRetrievalTool(researchParams) {
     }
     const candidates = products.map(mapShopifyProductToCandidate);
     const result = discoverProducts(candidates);
-    return { status: 'success', result, error: null };
+    return { status: 'success', result, error: null, listing_sources: products.map(buildListingSource) };
   } catch (err) {
     return { status: 'failed', result: null, error: err.message };
   }

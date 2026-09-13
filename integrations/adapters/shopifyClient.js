@@ -403,9 +403,16 @@ async function getShopInfo({ businessId = null } = {}) {
 // field anywhere in this query. One round-trip is enough for every item this layer
 // currently exposes.
 //
-// Returns: an array of normalized product objects: { id, title, handle, status,
-// productType, vendor, tags, variants: [{id, title, sku, price, inventoryQuantity,
-// availableForSale}], collections: [{id, title}], metafields: [{namespace, key, value}] }
+// Returns: an array of normalized product objects: { id, title, handle, description,
+// seo: {title, description}, status, productType, vendor, tags, variants: [{id, title,
+// sku, price, inventoryQuantity, availableForSale}], collections: [{id, title}],
+// metafields: [{namespace, key, value}] }
+//
+// description (plain text) and seo {title, description} are read so the SEO specialist can
+// audit the store's REAL listing text (see tools/productDataRetrievalTool.js's
+// listing_sources). Still read-only: both are plain Product fields under read_products.
+// A null seo.title/seo.description is Shopify saying no custom SEO value is set - relayed
+// as null, never filled in.
 // Throws: same conditions as getShopInfo() (not configured / network failure /
 // non-success status / GraphQL errors / missing data). Never returns fabricated
 // product data.
@@ -416,6 +423,8 @@ async function getProducts({ limit = 50, businessId = null } = {}) {
         id
         title
         handle
+        description
+        seo { title description }
         status
         productType
         vendor
@@ -445,6 +454,8 @@ async function getProducts({ limit = 50, businessId = null } = {}) {
       id: node.id,
       title: node.title,
       handle: node.handle,
+      description: node.description,
+      seo: node.seo ? { title: node.seo.title, description: node.seo.description } : null,
       status: node.status,
       productType: node.productType,
       vendor: node.vendor,

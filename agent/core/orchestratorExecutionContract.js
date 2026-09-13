@@ -1870,15 +1870,27 @@ function deriveBusinessConfigContext({ toCapabilityId, configPath = BUSINESS_CON
 // deterministic pre-check, not a replacement for the tool's own validation - it exists
 // only to decide whether dispatching is even worth attempting, never to approve/deny a
 // value's actual correctness.
+// DECLARED BATCH FORM: when a contract lists a required field `x` AND an optional `xs`, a
+// non-empty `xs` array is the same real evidence for several subjects (seo_quality_check's
+// listingRecords - one record per real store product). Only a form the capability itself
+// declares counts; nothing is inferred for any other field.
+function requiredFieldPresent(field, inputContract, params) {
+  const isPresent = (value) =>
+    Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== '';
+  if (!params || typeof params !== 'object') return false;
+  if (isPresent(params[field])) return true;
+  const batchField = `${field}s`;
+  const optional = inputContract && Array.isArray(inputContract.optional) ? inputContract.optional : [];
+  return optional.includes(batchField) && Array.isArray(params[batchField]) && params[batchField].length > 0;
+}
+
 function topLevelRequiredFieldsSatisfied(inputContract, params) {
   const required = inputContract && Array.isArray(inputContract.required) ? inputContract.required : [];
   if (required.length === 0) return true;
   if (!params || typeof params !== 'object') return false;
   const topLevelFields = new Set(required.map((field) => field.split(/[.[]/)[0]));
   for (const field of topLevelFields) {
-    const value = params[field];
-    const present = Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== '';
-    if (!present) return false;
+    if (!requiredFieldPresent(field, inputContract, params)) return false;
   }
   return true;
 }
@@ -2412,10 +2424,7 @@ async function buildPlanStep(
     const missingFields = matchedCapability.input_contract.required
       .map((field) => field.split(/[.[]/)[0])
       .filter((field, index, all) => all.indexOf(field) === index)
-      .filter((field) => {
-        const value = effectiveResearchParams && effectiveResearchParams[field];
-        return Array.isArray(value) ? value.length === 0 : value === undefined || value === null || value === '';
-      });
+      .filter((field) => !requiredFieldPresent(field, matchedCapability.input_contract, effectiveResearchParams));
     outcome = {
       status: 'clarification_required',
       data: null,

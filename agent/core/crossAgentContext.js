@@ -54,6 +54,7 @@
 //     "avoid duplicate context".
 
 const { getSpecialistCapabilityById, getCapabilityTask } = require('./specialistCapabilityRegistry');
+const { createEmptyListingOptimizationRecord } = require('./listingOptimizationModel');
 
 // Every multi-capability tool this module cares about (tools/marketResearchTool.js,
 // tools/competitorResearchTool.js, tools/customerResearchTool.js,
@@ -630,7 +631,113 @@ function adaptSingleLiveProductForRelay(fromOutput) {
 // buildPlanStep. Only recognizes product_discovery steps feeding 'listing' or
 // 'marketing' (the two flows extractProductToListing/extractProductToMarketing already
 // support); every other pair returns {} - never a guessed flow.
+// ---------------------------------------------------------------------------------
+// 8. Product's live Shopify listing fields -> SEO quality check
+//
+// seo_quality_check audits a listingOptimizationModel.js record; a whole-store request
+// ("check SEO/listing quality") reached it with none, so it stopped for listingRecord.
+// The Product step's live read already carries each product's real listing fields
+// (tools/productDataRetrievalTool.js's listing_sources, wrapper-level beside the
+// productModel.js records). Each becomes ONE listing record - title, description, SEO
+// title/description and handle copied as the store holds them - so every real product is
+// audited, not one picked on the caller's behalf (the reason adaptSingleLiveProductForRelay
+// refuses to choose among several).
+//
+// FIELDS NO SHOPIFY PRODUCT CARRIES are named, not blanked into a false "missing" finding:
+// the rest of a listing optimization record (keywords, headings, internal links, ...) is
+// SEO suggestion data with no field on a store product. listingFieldGaps says so per field,
+// plus which fields a read did not return for which product.
+// ---------------------------------------------------------------------------------
+
+const LISTING_SOURCE_TO_RECORD_FIELD = {
+  title: 'product_title',
+  description: 'description',
+  seo_title: 'metadata.meta_title',
+  seo_description: 'metadata.meta_description',
+  handle: 'metadata.url_slug',
+};
+
+const NOT_ON_STORE_PRODUCT = [
+  { field: 'keywords', reason: 'Target keywords are SEO research, not a stored product field.' },
+  { field: 'keyword_usage', reason: 'Keyword placement guidance is not a stored product field.' },
+  { field: 'search_intent', reason: 'Search intent is an SEO judgment, not a stored product field.' },
+  { field: 'structure', reason: 'A recommended content structure is not a stored product field.' },
+  { field: 'headings', reason: 'The product read returns the description as plain text, so no heading structure is read.' },
+  { field: 'internal_links', reason: 'Suggested internal links are not a stored product field.' },
+  { field: 'supporting_content', reason: 'Supporting content ideas are not a stored product field.' },
+];
+
+const EMPTY_MEANS_NOT_SET = {
+  'metadata.meta_title': 'Empty when the product has no custom SEO title in Shopify (the storefront then uses the product title).',
+  'metadata.meta_description': 'Empty when the product has no custom SEO description in Shopify (the storefront then uses the description).',
+};
+
+function stringOrEmpty(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+function extractLiveListingSourcesToSeo(fromWrapper) {
+  const sources = fromWrapper && Array.isArray(fromWrapper.listing_sources) ? fromWrapper.listing_sources : [];
+  const listingRecords = [];
+  const notReturnedByRead = [];
+  for (const source of sources) {
+    if (!source || !isNonEmptyString(source.product_reference)) continue;
+    const record = createEmptyListingOptimizationRecord(source.product_reference);
+    record.product_title = stringOrEmpty(source.title);
+    record.description = stringOrEmpty(source.description);
+    record.metadata.meta_title = stringOrEmpty(source.seo_title);
+    record.metadata.meta_description = stringOrEmpty(source.seo_description);
+    record.metadata.url_slug = stringOrEmpty(source.handle);
+    listingRecords.push(record);
+    const unread = (Array.isArray(source.unavailable_fields) ? source.unavailable_fields : [])
+      .map((field) => LISTING_SOURCE_TO_RECORD_FIELD[field])
+      .filter(Boolean);
+    if (unread.length > 0) notReturnedByRead.push({ product_reference: source.product_reference, fields: unread });
+  }
+  if (listingRecords.length === 0) return {};
+  return {
+    listingRecords,
+    listingFieldGaps: {
+      not_on_store_product: NOT_ON_STORE_PRODUCT.map((entry) => ({ ...entry })),
+      not_returned_by_read: notReturnedByRead,
+      empty_means_not_set: { ...EMPTY_MEANS_NOT_SET },
+    },
+  };
+}
+
+function deriveLiveListingContextForSeo({ completedSteps, toCapabilityId, existingResearchParams }) {
+  if (toCapabilityId !== 'seo_quality_check') return {};
+  const toTask = getCapabilityTask('seo', toCapabilityId);
+  if (!toTask) return {};
+  // A caller-supplied record is the caller's explicit subject - never replaced or joined by
+  // the whole catalogue.
+  if (existingResearchParams && typeof existingResearchParams === 'object' && existingResearchParams.listingRecord) return {};
+
+  let context = {};
+  for (const step of completedSteps) {
+    const fromSpecialistId =
+      step.selected_specialist && step.selected_specialist.type === 'specialist' ? step.selected_specialist.id : null;
+    const fromCapabilityId = step.inputs && step.inputs.capability_id;
+    if (fromSpecialistId !== 'product' || fromCapabilityId !== 'product_discovery') continue;
+    // Only a read that actually succeeded is relayed - never a failed or empty one.
+    if (!step.outputs || step.outputs.status !== 'success') continue;
+    const extracted = extractLiveListingSourcesToSeo(step.outputs);
+    if (Object.keys(extracted).length > 0 && !('listingRecords' in context)) context = extracted;
+  }
+
+  context = filterToDeclaredFields(context, toTask.input_contract);
+  if (existingResearchParams && typeof existingResearchParams === 'object') {
+    for (const key of Object.keys(existingResearchParams)) {
+      delete context[key];
+    }
+  }
+  return context;
+}
+
 function deriveLiveEvidenceContext({ completedSteps = [], toSpecialistId, toCapabilityId, existingResearchParams = null }) {
+  if (toSpecialistId === 'seo') {
+    return deriveLiveListingContextForSeo({ completedSteps, toCapabilityId, existingResearchParams });
+  }
   if (toSpecialistId !== 'listing' && toSpecialistId !== 'marketing') return {};
   const toTask = getCapabilityTask(toSpecialistId, toCapabilityId);
   if (!toTask) return {};
