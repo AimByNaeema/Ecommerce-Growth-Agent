@@ -273,6 +273,8 @@ const TEST_FILES = [
   'approvalPersistenceIntegration.test.js',
   'complianceInputIntegration.test.js',
   'approvalIdUniqueness.test.js',
+  'dashboardApiKeyRetry.test.js',
+  'chiefControlCenter.test.js',
 ];
 
 function runAll() {

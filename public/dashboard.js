@@ -29,7 +29,10 @@
     });
     pageTitleEl.textContent = entry.title;
     pageSubtitleEl.textContent = entry.subtitle;
-    if (name === 'approvals') renderApprovalList();
+    if (name === 'approvals') {
+      renderApprovalList();
+      loadDurableApprovals();
+    }
     if (name === 'workflow') loadWorkflow();
     if (name === 'autonomy') loadAutonomy();
     if (name === 'history') renderHistoryList();
@@ -93,12 +96,29 @@
 
   async function apiFetch(url, options) {
     const opts = options || {};
-    const key = ensureApiKey();
-    const headers = Object.assign({}, opts.headers || {});
-    if (key) headers.Authorization = 'Bearer ' + key;
+    const send = (key) => {
+      const headers = Object.assign({}, opts.headers || {});
+      if (key) headers.Authorization = 'Bearer ' + key;
+      return fetch(url, Object.assign({}, opts, { headers }));
+    };
 
-    const res = await fetch(url, Object.assign({}, opts, { headers }));
-    if (res.status === 401) clearStoredApiKey();
+    let res = await send(ensureApiKey());
+    if (res.status === 401) {
+      // The stored key was not accepted - typically because AGENT_API_KEY was rotated on the
+      // server while this tab still held the old one. Previously the key was cleared but THIS
+      // request simply failed, so every panel that had already started (e.g. the Overview's
+      // "Could not load store overview") stayed broken until a manual reload. Ask once for the
+      // current key and retry this same request once. Safe to repeat: a 401 is returned by the
+      // server's access check before the request is processed, so nothing ran. Only one retry,
+      // so a wrong key can never loop.
+      clearStoredApiKey();
+      const freshKey = (window.prompt('The API key was not accepted - it may have been changed. Enter the current API key for this agent server (AGENT_API_KEY):') || '').trim();
+      if (freshKey) {
+        storeApiKey(freshKey);
+        res = await send(freshKey);
+        if (res.status === 401) clearStoredApiKey();
+      }
+    }
     return res;
   }
 
@@ -656,7 +676,12 @@
           '<p class="approval-decided ' + (decision === 'approved' ? 'approved' : 'rejected') + '">' +
           (decision === 'approved' ? 'Approved' : 'Rejected') +
           (data.task_status ? ' — plan status: ' + escapeHtml(String(data.task_status)) : '') +
+          (data.entity_verification && data.entity_verification.status
+            ? ' — store verification: ' + escapeHtml(String(data.entity_verification.status).replace(/_/g, ' '))
+            : '') +
           '</p>';
+        // What actually happened, as the server derived it: executed, verified, or not.
+        if (data.owner_view) panel.appendChild(renderOwnerSummary(data.owner_view));
 
         upsertApprovalLog({
           runId,
@@ -1130,6 +1155,11 @@
       } else {
         chiefResultArea.innerHTML = '';
       }
+      // The Chief's consolidated result in plain language, above the plan detail. Rendered only
+      // from the server's owner_view - nothing here decides a status.
+      if (data.owner_view) {
+        chiefResultArea.insertBefore(renderOwnerSummary(data.owner_view), chiefResultArea.firstChild);
+      }
 
       loadSessionList();
       noteActivity('Asked the Chief just now');
@@ -1142,6 +1172,125 @@
   });
 
   loadSessionList();
+
+  /* ---------- Ask the Chief (Overview) ----------
+     The owner's primary way in. It does not route, run or decide anything itself: it opens the
+     EXISTING Chief Orchestrator page, puts the goal into that page's own input and presses that
+     page's own button - so the session, the Chief's routing, the plan rendering and any approval
+     all come from the one existing code path above. */
+  const askChiefInput = document.getElementById('askChiefInput');
+  const askChiefBtn = document.getElementById('askChiefBtn');
+  if (askChiefInput && askChiefBtn) {
+    askChiefBtn.addEventListener('click', () => {
+      const goal = askChiefInput.value.trim();
+      if (!goal) {
+        askChiefInput.focus();
+        return;
+      }
+      selectPage('orchestrator');
+      chiefObjective.value = goal;
+      askChiefInput.value = '';
+      chiefRunBtn.click();
+    });
+  }
+
+  /* ---------- Owner summary of a Chief result ----------
+     Renders the server's owner_view (agent/core/ownerRunView.js) in plain language. Every value
+     shown is one the server derived from what actually happened - this function computes no
+     status of its own, and never shows "Done" unless the server reported success. */
+  const OWNER_STATUS_CHIP = {
+    success: 'success',
+    partial: 'partial',
+    waiting_for_approval: 'partial',
+    needs_clarification: 'partial',
+    rejected: 'error',
+    blocked_by_compliance: 'error',
+    failed: 'error',
+    verification_failed: 'error',
+  };
+
+  function ownerLabel(value) {
+    return String(value || 'not recorded').replace(/_/g, ' ');
+  }
+
+  function renderOwnerSummary(view) {
+    const card = document.createElement('div');
+    card.className = 'result-card owner-summary';
+    if (!view || typeof view !== 'object') return card;
+
+    const header = document.createElement('div');
+    header.className = 'result-header';
+    const title = document.createElement('span');
+    title.className = 'result-title';
+    title.textContent = 'Chief result';
+    const status = document.createElement('span');
+    status.className = 'result-status ' + (OWNER_STATUS_CHIP[view.status] || 'partial');
+    status.textContent = ownerLabel(view.status);
+    header.appendChild(title);
+    header.appendChild(status);
+    card.appendChild(header);
+
+    const summary = document.createElement('p');
+    summary.className = 'result-summary';
+    summary.textContent = view.status_text || '';
+    card.appendChild(summary);
+
+    const fields = document.createElement('dl');
+    fields.className = 'approval-fields';
+    fields.style.padding = '0 16px';
+    const addField = (label, value) => {
+      if (value === null || value === undefined || value === '') return;
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.textContent = String(value);
+      fields.appendChild(dt);
+      fields.appendChild(dd);
+    };
+    addField('Objective', view.objective);
+    addField('Specialists the Chief used', (view.specialists_used || []).join(', ') || 'None');
+    addField('Platform', view.platform || 'Not stated');
+    addField('When', view.created_at ? formatWhen(view.created_at) : null);
+    addField('Risk', view.risk);
+    addField('Compliance', (view.compliance || []).join(', ') || 'Not applicable');
+    addField('Approval', ownerLabel(view.approval_state));
+    addField('Execution', ownerLabel(view.execution_state));
+    addField('Verification', ownerLabel(view.verification_state));
+    if (view.clarification) addField('What the Chief needs', view.clarification);
+    card.appendChild(fields);
+
+    const addList = (label, items, render) => {
+      if (!Array.isArray(items) || items.length === 0) return;
+      const heading = document.createElement('div');
+      heading.className = 'panel-note';
+      heading.style.padding = '8px 16px 0';
+      heading.textContent = label;
+      card.appendChild(heading);
+      const list = document.createElement('ul');
+      list.style.margin = '4px 16px 12px 32px';
+      items.forEach((item) => {
+        const li = document.createElement('li');
+        li.textContent = render(item);
+        list.appendChild(li);
+      });
+      card.appendChild(list);
+    };
+    addList('Findings', view.findings, (f) => (f.specialist ? f.specialist + ': ' : '') + f.summary);
+    addList('Recommendations', view.recommendations, (r) => r);
+    addList('Waiting for your approval', view.proposed_actions, (a) =>
+      (a.what_changes || 'Action') +
+      (a.entity_id ? ' on ' + a.entity_id : '') +
+      (a.proposed_value ? ' → ' + a.proposed_value : '') +
+      (a.compliance_status ? ' · compliance ' + a.compliance_status : '') +
+      ' · risk ' + a.risk +
+      ' — decide it in the Approval Center or below.'
+    );
+    addList('Changes made to your store', view.mutations, (m) =>
+      (m.tool_id || 'Change') + (m.entity_id ? ' on ' + m.entity_id : '') + (m.proposed_value ? ' → ' + m.proposed_value : '') +
+      ' · verification ' + ownerLabel(m.verification_status)
+    );
+    return card;
+  }
 
   /* ---------- Approval Center page ---------- */
   let approvalFilter = 'all';
@@ -1223,6 +1372,175 @@
       }
     } catch (err) {
       row.querySelector('[data-role="row-error"]').textContent = 'Could not reach the server. Check that it is running.';
+      approveBtn.disabled = false;
+      rejectBtn.disabled = false;
+    }
+  }
+
+  /* ---------- Pending approvals saved on the server (GET /approvals/pending) ----------
+     Unlike the session log below, these survive a reload. Each shows what will change, where,
+     from what to what, why, the compliance verdict, the risk and the expiry. Approve/Reject
+     appear ONLY when the server says it can still decide that approval, and use exactly the
+     same signed challenge as every other approval control - the endpoint is chosen from the
+     approval's origin, never from a URL the response supplies. */
+  const DURABLE_DECISION_ENDPOINTS = {
+    chief: '/orchestrate/approve',
+    autonomous_cycle: '/autonomy/approvals/decide',
+  };
+
+  async function loadDurableApprovals() {
+    const area = document.getElementById('durableApprovalArea');
+    if (!area) return;
+    area.innerHTML = '<p class="empty-result">Loading…</p>';
+    let data;
+    try {
+      const res = await apiFetch('/approvals/pending');
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        area.innerHTML = '<p class="empty-result">' + escapeHtml(data.error || 'Could not load pending approvals.') + '</p>';
+        return;
+      }
+    } catch (err) {
+      area.innerHTML = '<p class="empty-result">Could not reach the server. Check that it is running.</p>';
+      return;
+    }
+    const items = Array.isArray(data.approvals) ? data.approvals : [];
+    area.innerHTML = '';
+    if (items.length === 0) {
+      area.innerHTML = '<p class="empty-result">Nothing is waiting for your decision.</p>';
+      return;
+    }
+    items.forEach((item) => area.appendChild(renderDurableApproval(item)));
+  }
+
+  function renderDurableApproval(item) {
+    const row = document.createElement('div');
+    row.className = 'approval-row';
+    row.dataset.approvalId = item.approval_id || '';
+
+    const head = document.createElement('div');
+    head.className = 'approval-row-head';
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'approval-row-title';
+    title.textContent = item.what_changes || 'Approval';
+    const meta = document.createElement('div');
+    meta.className = 'approval-row-meta';
+    meta.textContent = (item.origin === 'autonomous_cycle' ? 'Queued by the autonomous cycle' : 'Requested by the Chief') +
+      (item.approval_id ? ' · ' + item.approval_id : '');
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(meta);
+    const status = document.createElement('span');
+    status.className = 'approval-row-status pending';
+    status.textContent = 'pending';
+    head.appendChild(titleWrap);
+    head.appendChild(status);
+    row.appendChild(head);
+
+    const fields = document.createElement('dl');
+    fields.className = 'approval-fields';
+    const addField = (label, value) => {
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.textContent = value === null || value === undefined || value === '' ? 'Not recorded' : String(value);
+      fields.appendChild(dt);
+      fields.appendChild(dd);
+    };
+    addField('What will change', item.what_changes);
+    addField('Platform', item.platform);
+    addField('Product / entity', item.entity_id);
+    addField('Current value', item.current_value === null || item.current_value === undefined ? (item.current_value_note || null) : item.current_value);
+    addField('Proposed value', item.proposed_value);
+    addField('Reason', item.reason);
+    addField('Compliance', item.compliance_status ? item.compliance_status + ((item.compliance_reasons || []).length ? ' — ' + item.compliance_reasons.join(' ') : '') : null);
+    addField('Risk', item.risk);
+    addField('Approval expires', item.expires_at ? formatWhen(item.expires_at) : (item.expiry_note || null));
+    addField('Requested', item.requested_at ? formatWhen(item.requested_at) : null);
+    row.appendChild(fields);
+
+    const endpoint = DURABLE_DECISION_ENDPOINTS[item.origin];
+    if (item.decidable && endpoint) {
+      const notes = document.createElement('textarea');
+      notes.className = 'approval-notes';
+      notes.placeholder = 'Optional note (why you approved or rejected this)';
+      row.appendChild(notes);
+      const actions = document.createElement('div');
+      actions.className = 'approval-actions';
+      const approveBtn = document.createElement('button');
+      approveBtn.className = 'approve-btn';
+      approveBtn.type = 'button';
+      approveBtn.textContent = 'Approve';
+      const rejectBtn = document.createElement('button');
+      rejectBtn.className = 'reject-btn';
+      rejectBtn.type = 'button';
+      rejectBtn.textContent = 'Reject';
+      actions.appendChild(approveBtn);
+      actions.appendChild(rejectBtn);
+      row.appendChild(actions);
+      const outcome = document.createElement('div');
+      outcome.className = 'approval-row-meta';
+      outcome.dataset.role = 'row-outcome';
+      outcome.style.marginTop = '8px';
+      row.appendChild(outcome);
+      approveBtn.addEventListener('click', () => decideDurableApproval(item, 'approved', row, endpoint));
+      rejectBtn.addEventListener('click', () => decideDurableApproval(item, 'rejected', row, endpoint));
+    } else {
+      const note = document.createElement('p');
+      note.className = 'approval-row-reason';
+      note.textContent = item.not_decidable_reason || 'This approval cannot be decided from here.';
+      row.appendChild(note);
+    }
+    return row;
+  }
+
+  async function decideDurableApproval(item, decision, row, endpoint) {
+    const approveBtn = row.querySelector('.approve-btn');
+    const rejectBtn = row.querySelector('.reject-btn');
+    const outcome = row.querySelector('[data-role="row-outcome"]');
+    const notesField = row.querySelector('.approval-notes');
+    approveBtn.disabled = true;
+    rejectBtn.disabled = true;
+    outcome.textContent = 'Waiting for your signature…';
+
+    const signed = await collectSignedApproval({ approvalId: item.approval_id, decision, decidedBy: 'naeema' });
+    if (!signed.ok) {
+      approveBtn.disabled = false;
+      rejectBtn.disabled = false;
+      outcome.textContent = signed.error;
+      return;
+    }
+
+    const notes = (notesField && notesField.value.trim()) || undefined;
+    const body = item.origin === 'autonomous_cycle'
+      ? { approvalId: item.approval_id, decision, decidedBy: 'naeema', notes, nonce: signed.nonce, signature: signed.signature }
+      : { runId: item.run_id, approvalId: item.approval_id, decision, decidedBy: 'naeema', notes, nonce: signed.nonce, signature: signed.signature };
+
+    outcome.textContent = decision === 'approved' ? 'Running the approved action through the server-side checks…' : 'Recording your rejection…';
+    try {
+      const res = await apiFetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        outcome.textContent = data.error || 'The server did not accept this decision.';
+        approveBtn.disabled = false;
+        rejectBtn.disabled = false;
+        return;
+      }
+      const verification = (data.entity_verification && data.entity_verification.status) || (data.verification && data.verification.status) || null;
+      row.innerHTML = '';
+      const decided = document.createElement('p');
+      decided.className = 'approval-decided ' + (decision === 'approved' ? 'approved' : 'rejected');
+      decided.textContent = (decision === 'approved' ? 'Approved' : 'Rejected') +
+        (verification ? ' — store verification: ' + String(verification).replace(/_/g, ' ') : '');
+      row.appendChild(decided);
+      if (data.owner_view) row.appendChild(renderOwnerSummary(data.owner_view));
+      noteActivity('Decided an approval (' + decision + ') just now');
+    } catch (err) {
+      outcome.textContent = 'Could not reach the server. Check that it is running.';
       approveBtn.disabled = false;
       rejectBtn.disabled = false;
     }
@@ -1387,8 +1705,19 @@
           meta.appendChild(tag);
         }
         const kind = document.createElement('span');
-        kind.textContent = kindLabel;
+        const ownerRow = entry.owner_view || null;
+        kind.textContent = ownerRow && ownerRow.agent ? ownerRow.agent : kindLabel;
         meta.appendChild(kind);
+        // What the owner needs from a row at a glance, exactly as the server derived it.
+        if (ownerRow) {
+          const facts = document.createElement('span');
+          facts.textContent =
+            (ownerRow.platform ? ownerRow.platform + ' · ' : '') +
+            'approval ' + String(ownerRow.approval_state || 'not recorded').replace(/_/g, ' ') +
+            ' · verification ' + String(ownerRow.verification_state || 'not recorded').replace(/_/g, ' ') +
+            (ownerRow.mutation_count ? ' · ' + ownerRow.mutation_count + ' store change(s)' : '');
+          meta.appendChild(facts);
+        }
         main.appendChild(meta);
         row.appendChild(main);
 
@@ -3424,7 +3753,18 @@
       fact('Business autonomy', businessAutonomy) +
       fact('Storage', storage) +
       fact('Enabled platforms', (data.enabled_platforms || []).join(', ') || 'None') +
+      // Today's real usage against the business's own budgets, as the server measured it.
+      fact(
+        'Used today (UTC)',
+        data.daily_usage && data.daily_usage.available
+          ? data.daily_usage.runs_counted + ' of ' + (autonomy.daily_run_budget || 'no limit') + ' runs · ' +
+            data.daily_usage.tokens_total + ' of ' + (autonomy.daily_token_budget || 'default') + ' tokens' +
+            (data.daily_usage.coverage_complete ? '' : ' — some runs recorded no usage, so this is a minimum')
+          : 'Not measurable right now'
+      ) +
       '</div>' +
+      '<h3>Recent changes to your store</h3>' +
+      list(data.recent_mutations, (m) => (m.decided_at ? m.decided_at + ' — ' : '') + (m.tool_id || 'change') + (m.entity_id ? ' on ' + m.entity_id : '') + (m.proposed_value ? ' → ' + m.proposed_value : '') + ' — verification: ' + (m.verification_status || 'not recorded'), 'No approved store changes are recorded.') +
       '<h3>Schedules</h3>' +
       list(data.schedules, (job) => job.job_id + ' — ' + (job.enabled ? 'enabled' : 'disabled') + ' — ' + ((job.task && job.task.tool_id) || '') + (job.last_status ? ' — last: ' + job.last_status : ''), 'No schedules have been created for this business.') +
       '<h3>Waiting for your approval</h3>' +

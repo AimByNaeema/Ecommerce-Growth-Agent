@@ -100,6 +100,10 @@ const {
 // path (see /ask below). Reused unchanged from the shared infrastructure - never
 // reimplemented here.
 const { createAuditTracker } = require('./audit/auditTrail');
+// The owner's plain-language view of a Chief run, a pending approval and a History row -
+// derived only from what was recorded, never a new decision. See agent/core/ownerRunView.js.
+const ownerRunView = require('./agent/core/ownerRunView');
+const { readDailyUsage } = require('./agent/core/dailyUsageAccounting');
 const { createUsageLedger, summarizeUsage } = require('./usage/usageTracker');
 const { createToolResultCache } = require('./agent/core/toolResultCache');
 const { createUsageTracker } = require('./agent/core/usageLimits');
@@ -1434,6 +1438,33 @@ function createApp() {
   // silently reused across different objectives.
   const orchestratorRuns = new Map();
 
+  // Makes one Chief run's pending approvals decidable - the SAME two things /orchestrate has
+  // always done, in one place, so a Chief turn started from the Command Center session
+  // (POST /session/:id/message) is decidable exactly like one started from /orchestrate:
+  //   1. the run is held in orchestratorRuns, which /orchestrate/approve requires;
+  //   2. each pending approval is written to durable storage BEFORE a challenge can be issued
+  //      for it, because integrations/approvedCorrectionDispatch.js authorizes a store change
+  //      only from stored, server-written state.
+  // GRANTS NOTHING: a stored record is 'awaiting_decision', and only a verified Ed25519
+  // decision can move it on. A store write failure is logged and leaves that approval
+  // unexecutable - the fail-closed direction.
+  function registerChiefRun(runId, result) {
+    orchestratorRuns.set(runId, {
+      pendingApprovals: (result && result.pending_approvals) || [],
+      plan: result && result.routing && Array.isArray(result.routing.plan) ? result.routing.plan : [],
+    });
+    for (const pendingApproval of (result && result.pending_approvals) || []) {
+      try {
+        approvalStore.saveApprovalRecord(pendingApproval, { executionState: 'awaiting_decision' });
+      } catch (storeErr) {
+        console.error(
+          `Could not persist pending approval '${pendingApproval && pendingApproval.id}':`,
+          storeErr.message
+        );
+      }
+    }
+  }
+
   // The same "caller holds the run's state across calls" discipline as orchestratorRuns
   // above, applied to the two orchestrators exposed below - each keeps ONE paused run's
   // `_resumeState` (its live plan/iterations plus its token, usage, approval, audit and
@@ -1918,14 +1949,10 @@ function createApp() {
         researchParams: researchParamsCheck.value,
       });
       const runId = `orch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      orchestratorRuns.set(runId, {
-        pendingApprovals: result.pending_approvals || [],
-        plan: result.routing && Array.isArray(result.routing.plan) ? result.routing.plan : [],
-      });
 
-      // DURABLE PENDING STATE, WRITTEN AT CREATION TIME.
+      // DURABLE PENDING STATE, WRITTEN AT CREATION TIME - via registerChiefRun above.
       //
-      // THE DEFECT THIS CLOSES. orchestratorRuns above is an in-memory Map, and it was the
+      // THE DEFECT THIS CLOSES. orchestratorRuns is an in-memory Map, and it was the
       // ONLY record of a pending approval this endpoint produced. A correction approved
       // through /orchestrate/approve therefore verified correctly and then refused to
       // execute, because integrations/approvedCorrectionDispatch.js deliberately accepts
@@ -1935,24 +1962,7 @@ function createApp() {
       //
       // Written HERE, before a challenge can be issued for this approval, so the durable
       // record always exists first and the store is never the thing lagging behind.
-      // approvals/approvalStore.js is the existing store and the same one the dispatcher
-      // reads - no second persistence mechanism, and the record itself is unchanged.
-      //
-      // GRANTS NOTHING. The stored record is 'awaiting_decision': persisting a PENDING
-      // approval is not approving it. Only a verified Ed25519 decision moves it on, and
-      // every existing check still applies. A write failure is logged and never allowed to
-      // fail the run - but it does leave that approval unexecutable, which is the correct
-      // fail-closed direction and is exactly what the old behaviour did for every approval.
-      for (const pendingApproval of result.pending_approvals || []) {
-        try {
-          approvalStore.saveApprovalRecord(pendingApproval, { executionState: 'awaiting_decision' });
-        } catch (storeErr) {
-          console.error(
-            `Could not persist pending approval '${pendingApproval && pendingApproval.id}':`,
-            storeErr.message
-          );
-        }
-      }
+      registerChiefRun(runId, result);
       // Attaches a `summary` to a shallow copy of each plan step for this HTTP
       // response only - the internal execution-state objects held in
       // orchestratorRuns/result.routing.plan (and agent/core/executionState.js's own
@@ -1988,7 +1998,11 @@ function createApp() {
         console.error('Could not save run history for /orchestrate:', saveErr.message);
       }
 
-      res.json({ ...responseResult, run_id: runId });
+      res.json({
+        ...responseResult,
+        run_id: runId,
+        owner_view: ownerRunView.describeChiefResultForOwner({ result, runId, objective: objective.trim(), createdAt: new Date().toISOString() }),
+      });
     } catch (err) {
       res.status(502).json({ error: 'The Chief Orchestrator could not complete this run right now. Please try again shortly.' });
     }
@@ -2066,7 +2080,33 @@ function createApp() {
     }
 
     try {
-      const resumedOutcome = await orchestratorExecutionContract.resumeApprovedExecution(decidedRequest);
+      // THE DECIDED ACTION'S OWN AUDIT TRAIL. resumeApprovedExecution already records the
+      // approval, the execution (or refusal) and its outcome - but only into a tracker it is
+      // given, and this route used to give it none, so an approved store change left no audit
+      // event on its run. The same audit module and the same resume path, nothing re-decided.
+      const approvalAudit = createAuditTracker(runId);
+      const resumedOutcome = await orchestratorExecutionContract.resumeApprovedExecution(decidedRequest, undefined, approvalAudit);
+
+      // What the shared entity verification found for an executed store correction - relayed,
+      // allow-listed, never computed here. Absent for anything that is not a correction.
+      const entityVerification =
+        resumedOutcome && resumedOutcome.entity_verification && typeof resumedOutcome.entity_verification === 'object'
+          ? {
+              status: resumedOutcome.entity_verification.status || null,
+              reason_code: resumedOutcome.entity_verification.reason_code || null,
+            }
+          : null;
+      const describedAction = ownerRunView.describeProposedAction(decidedRequest) || {};
+      const approvalExecution = {
+        approval_id: approvalId,
+        tool_id: decidedRequest.tool_id || null,
+        decision,
+        execution_status: (resumedOutcome && resumedOutcome.status) || null,
+        entity_id: describedAction.entity_id || null,
+        proposed_value: describedAction.proposed_value || null,
+        entity_verification: entityVerification,
+        decided_at: decidedRequest.decided_at || new Date().toISOString(),
+      };
 
       const stepIndex = run.plan.findIndex(
         (step) =>
@@ -2092,11 +2132,40 @@ function createApp() {
       // shape - never invents anything not already known. A missing prior record (the
       // server restarted between /orchestrate and this call) or a save failure is
       // logged, never allowed to fail the real approval decision the user is waiting on.
+      let existingRecord = null;
       try {
-        const existingRecord = runHistoryStore.getRunRecordById(runId);
-        const planWithSummaries = run.plan.map((step) => ({ ...step, summary: summarizeExecutionState(step) }));
+        existingRecord = runHistoryStore.getRunRecordById(runId);
+      } catch (readErr) {
+        existingRecord = null;
+      }
+      const planWithSummaries = run.plan.map((step) => ({ ...step, summary: summarizeExecutionState(step) }));
+      const existingResult = (existingRecord && existingRecord.result) || {};
+      // The run's record after this decision: the revised plan, the approvals as the server now
+      // holds them (so a decided approval no longer reads as pending), this decision's execution
+      // and verification outcome, and the audit events the resume path recorded - appended to,
+      // never replacing, what the run already recorded.
+      const updatedResult = {
+        ...existingResult,
+        routing: { ...(existingResult.routing || {}), plan: planWithSummaries },
+        verification_status: planState.verification_status,
+        task_status: planState.task_status,
+        pending_approvals: run.pendingApprovals,
+        approval_executions: [...(Array.isArray(existingResult.approval_executions) ? existingResult.approval_executions : []), approvalExecution],
+        audit_trail: [...(Array.isArray(existingResult.audit_trail) ? existingResult.audit_trail : []), ...approvalAudit.events],
+      };
+      const ownerView = ownerRunView.describeChiefResultForOwner({
+        result: updatedResult,
+        runId,
+        objective: (existingRecord && existingRecord.objective) || existingResult.objective || null,
+        createdAt: (existingRecord && existingRecord.created_at) || null,
+        channel: (existingRecord && existingRecord.channel) || null,
+      });
+
+      try {
         const updatedStatus =
-          planState.verification_status === 'passed' ? 'success' : planState.verification_status === 'failed' ? 'error' : 'partial';
+          ownerView.status === 'verification_failed' || ownerView.status === 'failed'
+            ? 'error'
+            : planState.verification_status === 'passed' ? 'success' : planState.verification_status === 'failed' ? 'error' : 'partial';
         runHistoryStore.saveRunRecord({
           ...(existingRecord || {}),
           run_id: runId,
@@ -2105,12 +2174,7 @@ function createApp() {
           summary: planWithSummaries.map((step) => step.summary).join(' '),
           created_at: (existingRecord && existingRecord.created_at) || new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          result: {
-            ...(existingRecord && existingRecord.result),
-            routing: { ...((existingRecord && existingRecord.result && existingRecord.result.routing) || {}), plan: planWithSummaries },
-            verification_status: planState.verification_status,
-            task_status: planState.task_status,
-          },
+          result: updatedResult,
         });
       } catch (saveErr) {
         console.error('Could not update run history after approval decision:', saveErr.message);
@@ -2122,6 +2186,8 @@ function createApp() {
         step: revisedStep ? { ...revisedStep, summary: summarizeExecutionState(revisedStep) } : null,
         task_status: planState.task_status,
         verification_status: planState.verification_status,
+        entity_verification: entityVerification,
+        owner_view: ownerView,
       });
     } catch (err) {
       res.status(502).json({ error: 'The approved action could not be executed right now. Please try again shortly.' });
@@ -2702,6 +2768,11 @@ function createApp() {
         // Each turn's run is persisted through the EXISTING run store, under its own id.
         saveRun: (runResult, objective) => {
           const runId = `cc-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          // A Chief turn from the dashboard's primary entry point must be decidable exactly
+          // like an /orchestrate run: held for /orchestrate/approve, its pending approvals
+          // written durably first. Without this, an approval the Chief asked for here could
+          // not be decided at all.
+          registerChiefRun(runId, runResult);
           try {
             runHistoryStore.saveRunRecord({
               run_id: runId,
@@ -2727,6 +2798,16 @@ function createApp() {
         run_id: outcome.run_id || null,
         clarification: outcome.clarification || null,
         error: outcome.error || null,
+        // The Chief's consolidated result for the owner - derived from this turn's run only.
+        owner_view: outcome.runResult
+          ? ownerRunView.describeChiefResultForOwner({
+              result: outcome.runResult,
+              runId: outcome.run_id || null,
+              objective: message.trim(),
+              createdAt: new Date().toISOString(),
+              channel: session.channel || null,
+            })
+          : null,
       });
     } catch (err) {
       console.error('POST /session/:sessionId/message failed:', err.message);
@@ -2902,6 +2983,124 @@ function createApp() {
     };
   }
 
+  // ---------------------------------------------------------------------------------
+  // THE OWNER'S PENDING APPROVALS, FROM DURABLE STORAGE.
+  //
+  // Read-only. Lists every approval approvals/approvalStore.js holds as awaiting a decision -
+  // whether the Chief or the autonomous cycle asked for it - described for the owner by
+  // agent/core/ownerRunView.js: what will change, on which platform and entity, the current
+  // value (read from the store now, where the change is a product vendor), the proposed value,
+  // the reason, the compliance verdict, the risk and the expiry.
+  //
+  // IT DECIDES NOTHING. `decidable` only reports whether the EXISTING decision endpoint for that
+  // approval can still accept a signed decision: an autonomous approval is decided through
+  // /autonomy/approvals/decide from durable state; a Chief approval through /orchestrate/approve,
+  // which requires the run to still be held by this server. Every gate - signature, nonce,
+  // fingerprint, compliance, authorization, scope, idempotency, verification - runs there,
+  // unchanged. An expired approval is not listed: it can no longer be decided.
+  // ---------------------------------------------------------------------------------
+  app.get('/approvals/pending', protect, async (req, res) => {
+    try {
+      const now = new Date();
+      const items = [];
+      for (const envelope of approvalStore.listPendingApprovals()) {
+        if (!envelope || !isBusinessAuthorized(envelope.business_id || null)) continue;
+        if (envelope.expires_at && new Date(envelope.expires_at).getTime() <= now.getTime()) continue;
+        const described = ownerRunView.describeProposedAction(envelope.approval_request);
+        if (!described) continue;
+
+        let runId = null;
+        if (described.origin !== 'autonomous_cycle') {
+          for (const [candidateRunId, state] of orchestratorRuns.entries()) {
+            const held = state && Array.isArray(state.pendingApprovals) ? state.pendingApprovals : [];
+            if (held.some((request) => request && request.id === described.approval_id && request.status === 'pending')) {
+              runId = candidateRunId;
+              break;
+            }
+          }
+        }
+        const decidable = described.origin === 'autonomous_cycle' || runId !== null;
+        items.push({
+          ...described,
+          business_id: envelope.business_id || null,
+          run_id: runId,
+          decidable,
+          not_decidable_reason: decidable
+            ? null
+            : 'The server has restarted since the Chief asked for this, so it can no longer be decided here. Ask the Chief again to create a fresh approval.',
+          expires_at: envelope.expires_at || null,
+          expiry_note: envelope.expires_at ? null : 'No expiry is set for this approval; each signing challenge expires within minutes.',
+          current_value: null,
+          current_value_note: null,
+        });
+      }
+
+      // The current value, read from the connected store with the existing client - one read,
+      // and only for vendor changes, where the product record carries the value. Anything not
+      // read says so rather than showing a guess.
+      const vendorItems = items.filter((item) => item.tool_id === 'shopify_vendor_correction' && item.entity_id);
+      if (vendorItems.length > 0) {
+        try {
+          const products = await shopifyClient.getProducts();
+          const byId = new Map((Array.isArray(products) ? products : []).filter(Boolean).map((product) => [product.id, product]));
+          for (const item of vendorItems) {
+            const product = byId.get(item.entity_id);
+            if (product && typeof product.vendor === 'string') item.current_value = product.vendor;
+            else item.current_value_note = 'This product was not found in the store read.';
+          }
+        } catch (readErr) {
+          for (const item of vendorItems) item.current_value_note = 'The current value could not be read from the store right now.';
+        }
+      }
+      for (const item of items) {
+        if (item.current_value === null && !item.current_value_note) item.current_value_note = 'Not read for this kind of change.';
+      }
+
+      items.sort((a, b) => String(b.requested_at || '').localeCompare(String(a.requested_at || '')));
+      res.json({ approvals: items });
+    } catch (err) {
+      res.status(502).json({ error: 'Could not read pending approvals right now. Please try again shortly.' });
+    }
+  });
+
+  // Today's measured usage for the business, relayed from agent/core/dailyUsageAccounting.js -
+  // the same measurement the autonomy policy's daily budget gate reads. Allow-listed.
+  function dailyUsageForOwner(businessId) {
+    try {
+      const usage = readDailyUsage({ businessId, now: new Date() });
+      return {
+        available: usage.available === true,
+        day: usage.day || null,
+        runs_counted: usage.runs_counted,
+        tokens_total: usage.tokens_total,
+        coverage_complete: usage.coverage_complete === true,
+      };
+    } catch (err) {
+      return { available: false, day: null, runs_counted: null, tokens_total: null, coverage_complete: false };
+    }
+  }
+
+  // The most recent approved store changes recorded on Chief runs, each with what verification
+  // found - read from the saved run records, never inferred.
+  function recentMutationsForOwner(businessId) {
+    const changes = [];
+    try {
+      const summaries = runHistoryStore
+        .listRunRecordSummaries({ limit: HISTORY_SCAN_LIMIT, businessId })
+        .filter((run) => run && run.kind === 'orchestrate' && (run.business_id || null) === businessId);
+      for (const summary of summaries) {
+        const record = runHistoryStore.getRunRecordById(summary.run_id);
+        if (!record) continue;
+        const view = ownerRunView.describeChiefResultForOwner({ result: record.result, runId: record.run_id });
+        for (const mutation of view.mutations) changes.push({ ...mutation, run_id: record.run_id });
+        if (changes.length >= 20) break;
+      }
+    } catch (err) {
+      // An unreadable history contributes no changes rather than an invented list.
+    }
+    return changes.slice(0, 20);
+  }
+
   // Read-only: what the owner needs to see about autonomy for one business.
   app.get('/autonomy/state', protect, (req, res) => {
     const businessId = autonomyBusinessId(req.query && req.query.business_id);
@@ -2932,6 +3131,8 @@ function createApp() {
         recent_runs: recentRuns,
         latest_cycle: latestCycle,
         pending_approvals: autonomyApprovals.listPendingAutonomousApprovals({ businessId }),
+        daily_usage: dailyUsageForOwner(businessId),
+        recent_mutations: recentMutationsForOwner(businessId),
       });
     } catch (err) {
       res.status(502).json({ error: 'Could not read the autonomy state right now. Please try again shortly.' });
@@ -3069,7 +3270,19 @@ function createApp() {
       // window than the returned page keeps the filtering from silently shortening results.
       const scanned = runHistoryStore.listRunRecordSummaries({ limit: HISTORY_SCAN_LIMIT, businessId });
       const visible = scanned.filter((run) => isBusinessAuthorized(run && run.business_id)).slice(0, 50);
-      res.json({ runs: visible });
+      // Each row carries the owner's view of that run - which agent, which platform, approval,
+      // verification and store changes - read from the run's own saved record. A record that
+      // cannot be read contributes no view rather than an invented one.
+      const withOwnerView = visible.map((run) => {
+        let record = null;
+        try {
+          record = runHistoryStore.getRunRecordById(run.run_id);
+        } catch (readErr) {
+          record = null;
+        }
+        return { ...run, owner_view: record ? ownerRunView.describeRunRecordForOwner(record) : null };
+      });
+      res.json({ runs: withOwnerView });
     } catch (err) {
       res.status(502).json({ error: 'Could not read saved run history right now. Please try again shortly.' });
     }

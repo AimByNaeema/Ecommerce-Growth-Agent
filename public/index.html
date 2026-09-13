@@ -93,6 +93,20 @@
         </div>
       </div>
 
+      <!-- Ask the Chief: the owner's primary way in. The goal is handed to the EXISTING Chief
+           Orchestrator page and its session flow - the Chief decides which specialists to use.
+           Nothing is routed or run from this box itself. -->
+      <div class="panel-card" id="askChiefCard">
+        <div class="objective-block">
+          <label class="objective-label" for="askChiefInput">Ask the Chief</label>
+          <textarea id="askChiefInput" class="objective-input" rows="2" placeholder="e.g. Chief, analyse my Shopify store and find the best opportunities to increase sales."></textarea>
+        </div>
+        <div class="run-row">
+          <button class="run-btn" id="askChiefBtn" type="button">Ask the Chief</button>
+          <span class="run-hint">The Chief decides which specialists to use. Anything that changes your store waits for your approval.</span>
+        </div>
+      </div>
+
       <!-- Channel filter. Narrows what is shown to ONE channel's own data - it never
            merges, joins, or compares across channels. A pill appears only for a channel
            that is genuinely connected, so this row shows nothing to choose from until a
@@ -374,6 +388,13 @@
         </div>
       </div>
 
+      <!-- Every pending approval saved on the server (GET /approvals/pending) - survives a page
+           reload. Approve/Reject appear only where the server can still decide that approval, and
+           always go through the same signed challenge and server-side gates as everywhere else. -->
+      <div class="section-label">Waiting for your decision</div>
+      <div id="durableApprovalArea"><p class="empty-result">Loading…</p></div>
+
+      <div class="section-label">This browser session</div>
       <div class="session-note" id="approvalSessionNote">No approvals yet this session — they will appear here the moment the Chief asks for one.</div>
 
       <div class="filter-row" id="approvalFilterRow">
