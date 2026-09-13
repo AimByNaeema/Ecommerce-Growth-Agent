@@ -16,6 +16,11 @@ const {
   getCapabilityById,
   getRuleById,
   validateAdapterShape,
+  UNSUPPORTED_CAPABILITY_CODE,
+  UNSUPPORTED_CAPABILITY_DECLARATION,
+  createUnsupportedCapabilityError,
+  isUnsupportedCapabilityError,
+  getDeclaredUnsupportedCapabilities,
 } = require('../../integrations/adapters/platformAdapterContract');
 const shopifyClient = require('../../integrations/adapters/shopifyClient');
 const etsyClient = require('../../integrations/adapters/etsyClient');
@@ -35,6 +40,10 @@ const EXPECTED_RULE_IDS = [
   'never_fabricate_a_result',
   'credentials_isolated_per_business',
   'no_sdk_required',
+  // Added with the explicitly-unsupported-capability mechanism: a platform that cannot
+  // serve a required capability declares it and refuses, rather than returning an
+  // empty-but-successful value that would be indistinguishable from real data.
+  'unsupported_is_declared_never_faked',
 ];
 
 let passed = 0;
@@ -59,7 +68,7 @@ test('exactly the 7 required capabilities from the review exist, in the requeste
   );
 });
 
-test('the 4 required contract rules exist, in the requested order', () => {
+test('the 5 required contract rules exist, in the requested order', () => {
   assert.deepStrictEqual(
     ADAPTER_CONTRACT_RULES.map((rule) => rule.id),
     EXPECTED_RULE_IDS
@@ -148,7 +157,14 @@ test('validateAdapterShape rejects a capability present but not a function', () 
 
 test('integrations/adapters/shopifyClient.js satisfies the full contract today (structural check, no network call)', () => {
   const result = validateAdapterShape(shopifyClient);
-  assert.deepStrictEqual(result, { valid: true, errors: [] });
+  assert.deepStrictEqual(result, {
+    valid: true,
+    errors: [],
+    // Shopify declares nothing unsupported, so it serves the whole read surface - the
+    // baseline the unsupported-capability mechanism must leave completely untouched.
+    supported: EXPECTED_CAPABILITY_IDS,
+    unsupported: [],
+  });
 });
 
 // ---------------------------------------------------------------------------------
@@ -261,6 +277,112 @@ test('NO FAKE INTEGRATION: no kind is declared for a platform that has no adapte
   }
   // And the contract still adds no transport of its own to any platform.
   assert.ok(!/https?:\/\//.test(contractSource.replace(/\/\/.*$/gm, '')), 'the contract must contain no endpoint URL');
+});
+
+// ---------------------------------------------------------------------------------
+// EXPLICITLY UNSUPPORTED CAPABILITIES - declared, never faked.
+// ---------------------------------------------------------------------------------
+
+// A minimal adapter that declares two capabilities unsupported. Hand-built rather than
+// reusing a real adapter, so these tests exercise the MECHANISM, not one platform's
+// particular limits. No function here performs any I/O.
+function buildDeclaringAdapter(declaration) {
+  const adapter = {};
+  for (const id of EXPECTED_CAPABILITY_IDS) adapter[id] = () => {};
+  if (declaration !== undefined) adapter[UNSUPPORTED_CAPABILITY_DECLARATION] = declaration;
+  return adapter;
+}
+
+test('createUnsupportedCapabilityError builds an identifiable, attributable refusal', () => {
+  const error = createUnsupportedCapabilityError({
+    platform: 'example',
+    capability: 'getOrders',
+    reason: 'the example platform exposes no order endpoint.',
+  });
+  assert.ok(error instanceof Error);
+  assert.strictEqual(error.code, UNSUPPORTED_CAPABILITY_CODE);
+  assert.strictEqual(error.platform, 'example');
+  assert.strictEqual(error.capability, 'getOrders');
+  assert.ok(error.message.includes('getOrders'));
+  assert.ok(error.message.includes('the example platform exposes no order endpoint.'));
+  // It must say that nothing happened, so a caller cannot read it as a partial success.
+  assert.ok(/No request was attempted/.test(error.message));
+});
+
+test('createUnsupportedCapabilityError refuses to build a refusal with no stated reason', () => {
+  assert.throws(
+    () => createUnsupportedCapabilityError({ platform: 'example', capability: 'getOrders' }),
+    /requires a non-empty `reason`/
+  );
+  assert.throws(() => createUnsupportedCapabilityError({ capability: 'getOrders', reason: 'x' }), /non-empty `platform`/);
+  assert.throws(() => createUnsupportedCapabilityError({ platform: 'example', reason: 'x' }), /non-empty `capability`/);
+});
+
+test('isUnsupportedCapabilityError distinguishes a platform limit from any other failure', () => {
+  const unsupported = createUnsupportedCapabilityError({
+    platform: 'example',
+    capability: 'getOrders',
+    reason: 'no order endpoint.',
+  });
+  assert.strictEqual(isUnsupportedCapabilityError(unsupported), true);
+  // A network failure, a missing credential, and a platform error must never be mistaken
+  // for "this platform cannot answer that".
+  assert.strictEqual(isUnsupportedCapabilityError(new Error('fetch failed')), false);
+  assert.strictEqual(isUnsupportedCapabilityError(null), false);
+  assert.strictEqual(isUnsupportedCapabilityError(undefined), false);
+});
+
+test('an adapter declaring nothing is completely unaffected - it supports everything', () => {
+  const result = validateAdapterShape(buildDeclaringAdapter());
+  assert.strictEqual(result.valid, true);
+  assert.deepStrictEqual(result.supported, EXPECTED_CAPABILITY_IDS);
+  assert.deepStrictEqual(result.unsupported, []);
+  assert.deepStrictEqual(getDeclaredUnsupportedCapabilities(buildDeclaringAdapter()), []);
+});
+
+test('a declared capability is reported as unsupported, and the rest stay supported', () => {
+  const result = validateAdapterShape(buildDeclaringAdapter(['getOrders', 'getCustomers']));
+  assert.strictEqual(result.valid, true);
+  assert.deepStrictEqual(result.unsupported, ['getOrders', 'getCustomers']);
+  assert.deepStrictEqual(
+    result.supported,
+    EXPECTED_CAPABILITY_IDS.filter((id) => id !== 'getOrders' && id !== 'getCustomers')
+  );
+});
+
+test('A DECLARATION IS NOT A WAIVER: a declared capability must still be present as a function', () => {
+  const adapter = buildDeclaringAdapter(['getOrders']);
+  delete adapter.getOrders;
+  const result = validateAdapterShape(adapter);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.includes('missing required capability: getOrders (must be a function)'));
+});
+
+test('a declaration naming something that is not a capability is a mis-declaration, never ignored', () => {
+  const result = validateAdapterShape(buildDeclaringAdapter(['getOrders', 'getRefunds']));
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("names 'getRefunds', which is not a required capability")));
+  // The valid half is still classified correctly - one bad entry does not corrupt the rest.
+  assert.deepStrictEqual(result.unsupported, ['getOrders']);
+});
+
+test('a duplicated declaration is reported rather than silently collapsed', () => {
+  const result = validateAdapterShape(buildDeclaringAdapter(['getOrders', 'getOrders']));
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("names 'getOrders' more than once")));
+});
+
+test('a non-array declaration is rejected', () => {
+  const result = validateAdapterShape(buildDeclaringAdapter('getOrders'));
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes('must be an array of required capability ids')));
+});
+
+test("the contract rule forbidding faked results names the empty-value trap explicitly", () => {
+  const rule = getRuleById('unsupported_is_declared_never_faked');
+  assert.ok(rule, 'the rule must exist');
+  assert.ok(/empty array/.test(rule.description));
+  assert.ok(/never/i.test(rule.description));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -21,6 +21,9 @@
 // agent/core/specialistCapabilityRegistry.js's header comment for the exact list of
 // known gaps). input_contract/output_contract are the caller-facing "what must I
 // supply" / "what will I get back" declarations this registry exists to provide.
+// `platforms` is the one field here that is purely DERIVED (from tool_ids) rather than
+// declared - this file only states its shape; agent/core/specialistCapabilityRegistry.js
+// computes it, and nothing anywhere can hand-author one.
 //
 // SPECIALIST_CAPABILITY_ENTRY_FIELDS - one specialist's full entry: identity fields
 // reused verbatim from agent/core/specialistRegistry.js, a list of
@@ -85,6 +88,12 @@ const CAPABILITY_TASK_FIELDS = [
     title: 'Live data tool id',
     type: 'string | null',
     description: 'A tools/toolRegistry.js tool id (must also appear in tool_ids) that can satisfy this capability entirely from an existing approved read-only live source, needing no caller-supplied structured evidence - null (the default) when no such source exists. Declarative only: this field never fabricates a live source, it only names one that already exists and was verified against the tool\'s own real behavior (e.g. analytics_data_retrieval, product_data_retrieval).',
+  },
+  {
+    id: 'platforms',
+    title: 'Platforms',
+    type: 'array',
+    description: 'The e-commerce platform(s) this capability reaches, DERIVED ENTIRELY from the union of its tool_ids\' own tools/toolRegistry.js `platforms` arrays - never hand-authored, and there is deliberately no way to author one (agent/core/specialistCapabilityRegistry.js\'s buildTask() takes no platforms parameter). [] - the default - means platform-neutral: no tool this capability uses reaches an e-commerce platform at all. A capability is platform-bound only because one of its real tools is.',
   },
 ];
 
@@ -154,6 +163,10 @@ function createEmptyCapabilityTask(id = '') {
     input_contract: { required: [], optional: [] },
     output_contract: { model: null, fields: [] },
     live_data_tool_id: null,
+    // [] = platform-neutral, the honest default: a blank task asserts no platform until
+    // a real tool gives it one. Populated only by derivation - see the `platforms` field
+    // description above.
+    platforms: [],
   };
 }
 

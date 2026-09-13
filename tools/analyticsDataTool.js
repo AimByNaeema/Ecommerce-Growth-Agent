@@ -60,7 +60,27 @@
 //   status 'partial' - the live pull succeeded but was degraded (e.g. customers denied)
 //   status 'success' - the live pull returned at least one record
 
-const shopifyClient = require('../integrations/adapters/shopifyClient');
+// RESOLVED, NOT IMPORTED - see tools/businessConfigurationRetrieval.js's own note for the
+// rationale. Identical behavior against Shopify; the platform is now a named constant and
+// the adapter is contract-checked before use. The comments above still name
+// integrations/adapters/shopifyClient.js because that is exactly what the registry resolves
+// 'shopify' to - the module is unchanged, only the way this tool reaches it.
+const { getReadAdapter } = require('../integrations/adapters/adapterRegistry');
+
+// Matches tools/toolRegistry.js's `platforms: ['shopify']` binding for
+// analytics_data_retrieval, and this tool is genuinely Shopify-only: three of the four reads
+// it performs (getOrders, getInventoryLevels, getCustomers) are capabilities
+// integrations/adapters/etsyReadAdapter.js DECLARES unsupported, because Etsy serves none of
+// them under this project's granted scopes. Pointed at Etsy it would refuse loudly per
+// capability rather than quietly report zeros - which is the point of declaring them.
+const PLATFORM = 'shopify';
+
+// One resolution per call site, so a non-conforming or unregistered adapter fails at the
+// seam rather than at require time (which would take the whole tool - and server.js's
+// startup - down with it).
+function readAdapter() {
+  return getReadAdapter(PLATFORM);
+}
 const {
   calculateSalesMetrics,
   calculateProductMetrics,
@@ -113,7 +133,7 @@ function buildLivePullEvidence(kind, recordCount) {
 
 async function retrieveSales(params) {
   const limit = params.limit || 50;
-  const orders = await shopifyClient.getOrders({ limit, businessId: params.businessId });
+  const orders = await readAdapter().getOrders({ limit, businessId: params.businessId });
   const actualMetrics = orders.map(orderToActualMetric);
   const calculatedMetrics = calculateSalesMetrics(orders);
   const estimatedMetrics = params.periodDays
@@ -142,7 +162,7 @@ async function retrieveSales(params) {
 
 async function retrieveProducts(params) {
   const limit = params.limit || 50;
-  const products = await shopifyClient.getProducts({ limit, businessId: params.businessId });
+  const products = await readAdapter().getProducts({ limit, businessId: params.businessId });
   const actualMetrics = products.map(productToActualMetric);
   const calculatedMetrics = calculateProductMetrics(products);
 
@@ -175,7 +195,7 @@ async function retrieveInventory(params) {
   let inventoryItems = [];
   let inventoryError = null;
   try {
-    inventoryItems = await shopifyClient.getInventoryLevels({ limit, businessId: params.businessId });
+    inventoryItems = await readAdapter().getInventoryLevels({ limit, businessId: params.businessId });
   } catch (err) {
     inventoryError = err.message;
   }
@@ -218,7 +238,7 @@ async function retrieveCustomers(params) {
   let customers = [];
   let customersError = null;
   try {
-    customers = await shopifyClient.getCustomers({ limit, businessId: params.businessId });
+    customers = await readAdapter().getCustomers({ limit, businessId: params.businessId });
   } catch (err) {
     customersError = err.message;
   }
@@ -273,7 +293,7 @@ async function runAnalyticsDataTool(researchParams) {
   }
 
   const businessId = researchParams.businessId || null;
-  if (!shopifyClient.isConfigured({ businessId })) {
+  if (!readAdapter().isConfigured({ businessId })) {
     return {
       status: 'failed',
       result: null,
@@ -296,10 +316,11 @@ async function runAnalyticsDataTool(researchParams) {
 module.exports = { runAnalyticsDataTool };
 
 if (require.main === module) {
-  shopifyClient.loadEnvOnce();
+  // See tools/businessConfigurationRetrieval.js: isConfigured() loads the root .env itself,
+  // so the explicit loadEnvOnce() call this demo used to make was redundant.
   console.log('Smart E-Commerce Growth AI Agent - analytics_data_retrieval tool (read-only, live Shopify data):\n');
 
-  if (!shopifyClient.isConfigured()) {
+  if (!readAdapter().isConfigured()) {
     console.log('Store credentials are not set - showing the honest not-configured outcome only.');
     console.log('Copy .env.example to .env and fill in:');
     console.log('  SHOPIFY_STORE_DOMAIN=your-store.myshopify.com');

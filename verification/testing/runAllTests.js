@@ -46,6 +46,7 @@ const TEST_FILES = [
   'approvalArchitecture.test.js',
   'approvalRequestModel.test.js',
   'approvalWorkflow.test.js',
+  'approvalStore.test.js',
   'auditTrail.test.js',
   'analyticsModel.test.js',
   'analyticsInsightWorkflow.test.js',
@@ -54,6 +55,42 @@ const TEST_FILES = [
   'aiProviderSelector.test.js',
   'shopifyClient.test.js',
   'platformAdapterContract.test.js',
+  'adapterRegistry.test.js',
+  // What this project genuinely supports per platform, and proof that Amazon and eBay are
+  // refused at every layer rather than at one of them.
+  'platformSupportBoundary.test.js',
+  // The observation layer (monitoring/): snapshot model, store, change detection and the
+  // capture pass. Placed here because it resolves adapters through the registry above it.
+  'monitoringSnapshots.test.js',
+  // The scheduling layer (scheduler/): job model, store and the pass that turns a due job
+  // into a controlled execution request evaluated by the existing autonomy policy.
+  'scheduler.test.js',
+  // The reliability layer (reliability/): the circuit breaker and first-class verification,
+  // including the idempotency guard that stops a consequential action being applied twice.
+  'reliabilityControls.test.js',
+  // The controlled autonomous cycle (autonomy/): the loop that wires scheduler, monitor,
+  // policy, breaker, execution, verification and audit together without adding a second
+  // orchestrator or a second policy.
+  'autonomousCycle.test.js',
+  // The consequential path end to end: a scheduled action reaching a durable approval, a
+  // real Ed25519 decision, and the approved-correction dispatch that executes it once.
+  'approvedCorrectionFlow.test.js',
+  // The connected loop: owner schedules, change-driven follow-ups through the Chief, the
+  // owner's decision on a durable autonomous approval, verification, memory, and the
+  // one-cycle trigger - plus their HTTP surface.
+  'scheduleManagement.test.js',
+  'autonomousLoop.test.js',
+  'autonomyApprovalResolution.test.js',
+  'autonomyEndpoints.test.js',
+  // The whole chain through the real orchestration path - real config, policy, adapter
+  // registry, Chief plan step, compliance, approval and stores; only external boundaries stubbed.
+  'autonomyEndToEndMatrix.test.js',
+  // Multi-platform at the architecture level: no platform literal in core autonomy, observation
+  // declared at the registration point, real per-platform truth, and a synthetic platform
+  // onboarded through registration points alone.
+  'platformGenerality.test.js',
+  'autonomySecurityAdversarial.test.js',
+  'autonomyLearningLoop.test.js',
   'orderModel.test.js',
   'networkRetry.test.js',
   'secretExposureAudit.test.js',
@@ -67,6 +104,10 @@ const TEST_FILES = [
   'executionBounds.test.js',
   'usageLimits.test.js',
   'usageTracker.test.js',
+  // The controlled autonomy policy (agent/core/autonomyPolicy.js) and the cross-run
+  // budget read it depends on (agent/core/dailyUsageAccounting.js). Placed here because
+  // it composes the budget modules directly above it.
+  'autonomyPolicy.test.js',
   'aiReasoningCompletion.test.js',
   'aiReasoningProviderSelection.test.js',
   'executionState.test.js',
@@ -223,6 +264,14 @@ const TEST_FILES = [
   'geminiWebGrounding.test.js',
   'tavilySearchProvider.test.js',
   'workflowDocumentation.test.js',
+  // Production-readiness accuracy: every claim the registries make - about files, about
+  // executability, about platforms, about configuration - checked against reality.
+  'registryAccuracy.test.js',
+  'mutationIntentRouting.test.js',
+  'readOnlyRoutingCoverage.test.js',
+  'approvalPersistenceIntegration.test.js',
+  'complianceInputIntegration.test.js',
+  'approvalIdUniqueness.test.js',
 ];
 
 function runAll() {

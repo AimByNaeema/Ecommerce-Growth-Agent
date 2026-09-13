@@ -358,6 +358,114 @@ test('product_validation is honestly left with an empty optional array - validat
   assert.deepStrictEqual(task.input_contract.optional, []);
 });
 
+// ---------------------------------------------------------------------------------
+// platforms - DERIVED from tool_ids, never declared.
+// ---------------------------------------------------------------------------------
+
+test('every task platforms is exactly the sorted union of its own tools platforms', () => {
+  for (const entry of SPECIALIST_CAPABILITY_REGISTRY) {
+    for (const task of entry.supported_tasks) {
+      const expected = Array.from(
+        new Set(task.tool_ids.flatMap((toolId) => (getToolById(toolId) || { platforms: [] }).platforms))
+      ).sort();
+      assert.deepStrictEqual(
+        task.platforms,
+        expected,
+        `${entry.id}/${task.id} platforms must be the union of its tools' platforms`
+      );
+    }
+  }
+});
+
+test('exactly the 6 tool-bound capabilities are platform-bound, and they name exactly these platforms', () => {
+  const bound = {};
+  for (const entry of SPECIALIST_CAPABILITY_REGISTRY) {
+    for (const task of entry.supported_tasks) {
+      if (task.platforms.length > 0) bound[`${entry.id}/${task.id}`] = task.platforms;
+    }
+  }
+  assert.deepStrictEqual(bound, {
+    'product/product_discovery': ['shopify'],
+    // The one capability reaching two platforms, because its one tool does.
+    'product/catalogue_expansion_opportunities': ['etsy', 'shopify'],
+    'analytics_optimization/sales': ['shopify'],
+    'analytics_optimization/products': ['shopify'],
+    'analytics_optimization/customers': ['shopify'],
+    'analytics_optimization/inventory': ['shopify'],
+  });
+});
+
+test('every other capability is platform-neutral - the whole SEO/listing/marketing/social surface is unaffected', () => {
+  const neutralSpecialists = ['research', 'seo', 'listing', 'marketing', 'social_advertising'];
+  for (const specialistId of neutralSpecialists) {
+    for (const task of getSpecialistCapabilityById(specialistId).supported_tasks) {
+      assert.deepStrictEqual(
+        task.platforms,
+        [],
+        `${specialistId}/${task.id} should be platform-neutral - no tool it uses reaches a platform`
+      );
+    }
+  }
+});
+
+test('a capability with no wired tool is platform-neutral, never platform-bound by guesswork', () => {
+  for (const entry of SPECIALIST_CAPABILITY_REGISTRY) {
+    for (const task of entry.supported_tasks) {
+      if (task.tool_ids.length === 0) {
+        assert.deepStrictEqual(task.platforms, [], `${entry.id}/${task.id} has no tool, so it can assert no platform`);
+      }
+    }
+  }
+});
+
+test('platforms cannot be hand-authored - buildTask() accepts no platforms parameter', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', '..', 'agent', 'core', 'specialistCapabilityRegistry.js'),
+    'utf8'
+  );
+  // The destructured parameter list of buildTask must not contain `platforms`.
+  const signature = /function buildTask\(\{([\s\S]*?)\}\)\s*\{/.exec(source);
+  assert.ok(signature, 'buildTask signature not found');
+  assert.ok(
+    !/\bplatforms\b/.test(signature[1]),
+    'buildTask must take no platforms parameter - the value is derived, never declared'
+  );
+  // And no task definition may set one directly.
+  assert.ok(
+    !/platforms:\s*\[/.test(source),
+    'no capability task may declare a platforms array literal - it is derived from tool_ids'
+  );
+});
+
+test('a platform-bound capability never names a platform this project has no adapter for', () => {
+  const { CHANNELS } = require('../../agent/core/channelModel');
+  for (const entry of SPECIALIST_CAPABILITY_REGISTRY) {
+    for (const task of entry.supported_tasks) {
+      for (const platform of task.platforms) {
+        assert.ok(CHANNELS.includes(platform), `${entry.id}/${task.id} names unknown platform '${platform}'`);
+      }
+    }
+  }
+});
+
+test('neither Etsy read tool is referenced by any capability task - they reach Product by category alone', () => {
+  const referenced = new Set();
+  for (const entry of SPECIALIST_CAPABILITY_REGISTRY) {
+    for (const task of entry.supported_tasks) {
+      for (const toolId of task.tool_ids) referenced.add(toolId);
+    }
+  }
+  // This is the leak the platform gate closes: both tools are in Product's
+  // category-derived required_tools while no capability actually consumes them.
+  for (const toolId of ['etsy_shop_data_retrieval', 'etsy_listing_data_retrieval']) {
+    assert.ok(!referenced.has(toolId), `${toolId} is not consumed by any capability task`);
+    assert.ok(
+      getSpecialistCapabilityById('product').required_tools.includes(toolId),
+      `${toolId} still reaches Product through category ownership`
+    );
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
   process.exit(1);

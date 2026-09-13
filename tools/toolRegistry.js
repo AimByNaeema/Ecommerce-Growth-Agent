@@ -26,15 +26,28 @@
 // tools/advertisingStrategyTool.js, tools/advertisingPerformanceTool.js,
 // tools/analyticsTool.js, tools/analyticsDataTool.js,
 // tools/webCompetitorResearchTool.js, tools/productResearchTool.js,
-// tools/offerRecommendationTool.js, tools/shopifyVendorCorrectionTool.js,
-// tools/shopifyInventoryCorrectionTool.js, and
-// tools/shopifyCollectionMembershipTool.js) - the other 2 tools (memory_retrieval,
+// tools/offerRecommendationTool.js) - the other 2 tools (memory_retrieval,
 // verification) remain 'not_implemented'.
+//
+// THE THREE shopify_* CORRECTION ENTRIES ARE THE EXCEPTION, AND SAY SO IN THEIR OWN
+// DESCRIPTIONS. There are no tools/shopify*CorrectionTool.js wrapper files - an earlier
+// version of this header named three that were never written - and there is deliberately
+// no TOOL_EXECUTORS entry for any of them, because ordinary dispatch must never be able to
+// run a consequential mutation. They are reached ONLY by
+// agent/core/orchestratorExecutionContract.js's resumeApprovedExecution(), after a real
+// Ed25519-verified human approval, via integrations/approvedCorrectionDispatch.js. Their
+// capability lives in integrations/shopify*.js, which re-checks compliance and publish
+// authorization for itself. See each entry's own description.
 //
 // This is a single shared list for the ONE agent - every entry is a capability that
 // agent can eventually use, never a separate agent, persona, or system prompt. See
 // agent/core/agentContract.js's select_tools stage, which this registry exists to
 // support.
+
+// The platform vocabulary is agent/core/channelModel.js's, never a second copy of it -
+// see TOOL_PLATFORMS below. channelModel.js requires nothing, so this introduces no
+// cycle (agent/core/toolPermissions.js already requires this file).
+const { CHANNELS } = require('../agent/core/channelModel');
 
 const TOOL_CATEGORIES = [
   'configuration',
@@ -81,6 +94,39 @@ const TOOL_STATUSES = ['not_implemented', 'implemented'];
 //                 agent/core/toolPermissions.js's TOOL_CLASSIFICATIONS).
 const TOOL_OPERATIONS = ['read', 'write', 'execute'];
 
+// The e-commerce platform(s) each tool actually reaches, as a THIRD axis independent of
+// both `category` (which specialist domain owns it) and `operation` (what kind of work
+// it does). This is the axis agent/core/toolPermissions.js's platform gate reads: a tool
+// bound to a platform a business has not enabled is denied, however well-owned and
+// role-permitted it is.
+//
+// AN ARRAY, NOT A SINGLE VALUE, AND `[]` IS THE NEUTRAL CASE:
+//   - []                     - platform-neutral. The tool reaches no e-commerce platform
+//                              at all: it composes caller-supplied records, calls a model,
+//                              or searches the public web. 29 of the 39 tools below.
+//   - ['shopify'] / ['etsy'] - bound to exactly that platform.
+//   - ['shopify', 'etsy']    - genuinely reaches BOTH. Exactly one tool does today
+//                              (catalogue_expansion_opportunities, whose
+//                              tools/customerMarketOpportunityTool.js reads the Shopify
+//                              catalogue and the Etsy listings independently in one
+//                              Promise.all and contributes nothing for an unconnected
+//                              channel). A single-value field could only have recorded
+//                              that tool falsely, which is why this is an array.
+//
+// NEVER GUESSED. A tool is marked platform-bound only where its own implementation
+// reaches an adapter: the seven tool files that require() integrations/adapters/
+// shopifyClient.js or etsyReadClient.js, plus the three shopify_* correction entries
+// whose registry descriptions name the Shopify mutation each one calls. Every other
+// entry is [] because nothing in it touches a platform.
+//
+// TOOL_PLATFORMS is agent/core/channelModel.js's CHANNELS, reused rather than
+// redeclared - so this registry names no platform of its own, and a platform becomes
+// nameable here the day a real adapter for it lands, never the day it is discussed.
+// Deliberately NOT compliance/compliancePolicy.js's RECOGNIZED_PLATFORMS (a rule-free
+// context list that already names amazon/ebay, neither of which has an adapter), and
+// deliberately not configuration/business.yaml's free-text `platform:` field.
+const TOOL_PLATFORMS = CHANNELS;
+
 const TOOL_REGISTRY = [
   {
     id: 'business_configuration_retrieval',
@@ -90,6 +136,7 @@ const TOOL_REGISTRY = [
     category: 'configuration',
     operation: 'read',
     status: 'implemented',
+    platforms: ['shopify'],
   },
   {
     id: 'product_data_retrieval',
@@ -99,6 +146,7 @@ const TOOL_REGISTRY = [
     category: 'products',
     operation: 'read',
     status: 'implemented',
+    platforms: ['shopify'],
   },
   {
     id: 'collection_data_retrieval',
@@ -108,6 +156,7 @@ const TOOL_REGISTRY = [
     category: 'products',
     operation: 'read',
     status: 'implemented',
+    platforms: ['shopify'],
   },
   {
     id: 'etsy_shop_data_retrieval',
@@ -117,6 +166,7 @@ const TOOL_REGISTRY = [
     category: 'products',
     operation: 'read',
     status: 'implemented',
+    platforms: ['etsy'],
   },
   {
     id: 'etsy_listing_data_retrieval',
@@ -126,6 +176,7 @@ const TOOL_REGISTRY = [
     category: 'products',
     operation: 'read',
     status: 'implemented',
+    platforms: ['etsy'],
   },
   {
     id: 'market_product_opportunity_analysis',
@@ -135,6 +186,7 @@ const TOOL_REGISTRY = [
     category: 'products',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'product_research',
@@ -144,6 +196,7 @@ const TOOL_REGISTRY = [
     category: 'products',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'market_research',
@@ -153,6 +206,7 @@ const TOOL_REGISTRY = [
     category: 'research',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'customer_research',
@@ -162,6 +216,7 @@ const TOOL_REGISTRY = [
     category: 'customer_market_intelligence',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'global_market_opportunity_analysis',
@@ -171,6 +226,7 @@ const TOOL_REGISTRY = [
     category: 'research',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'catalogue_expansion_opportunities',
@@ -180,6 +236,7 @@ const TOOL_REGISTRY = [
     category: 'products',
     operation: 'read',
     status: 'implemented',
+    platforms: ['shopify', 'etsy'],
   },
   {
     id: 'competitor_research',
@@ -189,6 +246,7 @@ const TOOL_REGISTRY = [
     category: 'research',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'research_analysis',
@@ -198,6 +256,7 @@ const TOOL_REGISTRY = [
     category: 'research',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'keyword_research',
@@ -207,6 +266,7 @@ const TOOL_REGISTRY = [
     category: 'seo',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'seo_analysis',
@@ -216,6 +276,7 @@ const TOOL_REGISTRY = [
     category: 'seo',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'listing_content_generation',
@@ -225,6 +286,7 @@ const TOOL_REGISTRY = [
     category: 'listing',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'marketing_analysis',
@@ -234,6 +296,7 @@ const TOOL_REGISTRY = [
     category: 'marketing',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     // Deliberately narrow wording: this description competes with marketing_analysis's
@@ -248,6 +311,7 @@ const TOOL_REGISTRY = [
     category: 'marketing',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'social_content_planning',
@@ -257,6 +321,7 @@ const TOOL_REGISTRY = [
     category: 'social_advertising',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'paid_advertising_planning',
@@ -266,6 +331,7 @@ const TOOL_REGISTRY = [
     category: 'social_advertising',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'social_media_strategy_generation',
@@ -275,6 +341,7 @@ const TOOL_REGISTRY = [
     category: 'social_advertising',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'platform_content_generation',
@@ -284,6 +351,7 @@ const TOOL_REGISTRY = [
     category: 'social_advertising',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'content_calendar_generation',
@@ -293,6 +361,7 @@ const TOOL_REGISTRY = [
     category: 'social_advertising',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'advertising_strategy_planning',
@@ -302,6 +371,7 @@ const TOOL_REGISTRY = [
     category: 'social_advertising',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'advertising_performance_analysis',
@@ -311,6 +381,7 @@ const TOOL_REGISTRY = [
     category: 'social_advertising',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'analytics',
@@ -320,6 +391,7 @@ const TOOL_REGISTRY = [
     category: 'analytics',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'analytics_data_retrieval',
@@ -329,6 +401,7 @@ const TOOL_REGISTRY = [
     category: 'analytics',
     operation: 'read',
     status: 'implemented',
+    platforms: ['shopify'],
   },
   {
     id: 'ai_reasoning_completion',
@@ -338,6 +411,7 @@ const TOOL_REGISTRY = [
     category: 'ai_reasoning',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'memory_retrieval',
@@ -347,6 +421,7 @@ const TOOL_REGISTRY = [
     category: 'memory',
     operation: 'read',
     status: 'not_implemented',
+    platforms: [],
   },
   {
     id: 'verification',
@@ -356,6 +431,7 @@ const TOOL_REGISTRY = [
     category: 'verification',
     operation: 'read',
     status: 'not_implemented',
+    platforms: [],
   },
   {
     id: 'live_competitor_research',
@@ -365,6 +441,7 @@ const TOOL_REGISTRY = [
     category: 'research',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'discover_market_questions',
@@ -374,6 +451,7 @@ const TOOL_REGISTRY = [
     category: 'seo',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'seo_content_generation',
@@ -383,6 +461,7 @@ const TOOL_REGISTRY = [
     category: 'seo',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'compliance_check',
@@ -400,6 +479,7 @@ const TOOL_REGISTRY = [
     category: 'compliance',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'seo_quality_check',
@@ -409,6 +489,7 @@ const TOOL_REGISTRY = [
     category: 'seo',
     operation: 'read',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'listing_quality_check',
@@ -418,33 +499,37 @@ const TOOL_REGISTRY = [
     category: 'listing',
     operation: 'write',
     status: 'implemented',
+    platforms: [],
   },
   {
     id: 'shopify_vendor_correction',
     title: 'Shopify product vendor correction',
     description:
-      "Correct one product's vendor field via integrations/adapters/shopifyClient.js's productUpdate-backed updateProductVendor(), reached only through integrations/shopifyVendorCorrection.js's correctProductVendor() and its compliance/approval/publish-authorization re-check. Changes ONLY the vendor field - no other field, no price, no content. See tools/shopifyVendorCorrectionTool.js. The first 'execute' tool: it calls the external Shopify store directly once authorized, unlike every 'write' tool above which only composes a draft for a human to review.",
+      "Correct one product's vendor field via integrations/adapters/shopifyClient.js's productUpdate-backed updateProductVendor(), reached only through integrations/shopifyVendorCorrection.js's correctProductVendor() and its compliance/approval/publish-authorization re-check. Changes ONLY the vendor field - no other field, no price, no content. The first 'execute' tool: it calls the external Shopify store directly once authorized, unlike every 'write' tool above which only composes a draft for a human to review. REACHABLE ONLY THROUGH AN APPROVED EXECUTION: it has no TOOL_EXECUTORS entry, because ordinary dispatch must never be able to run it. agent/core/orchestratorExecutionContract.js's resumeApprovedExecution() routes it to integrations/approvedCorrectionDispatch.js, which loads the approval from durable state, requires genuine Ed25519 provenance, claims it execute-once, and then calls the integration module, which re-checks compliance and publish authorization for itself beforehand.",
     category: 'products',
     operation: 'execute',
     status: 'implemented',
+    platforms: ['shopify'],
   },
   {
     id: 'shopify_inventory_correction',
     title: 'Shopify inventory deficit correction',
     description:
-      "Restore inventory available quantity via integrations/adapters/shopifyClient.js's inventoryAdjustQuantities-backed adjustInventoryQuantities(), reached only through integrations/shopifyInventoryCorrection.js's correctInventoryDeficit(). The restored amount is always exactly the sum of quantities decremented by Shopify's own test:true orders for that inventory item (planInventoryCorrections()) - never an invented or guessed figure; an item whose deficit does not fully reconcile against test orders is reported unresolved, not corrected. See tools/shopifyInventoryCorrectionTool.js.",
+      "Restore inventory available quantity via integrations/adapters/shopifyClient.js's inventoryAdjustQuantities-backed adjustInventoryQuantities(), reached only through integrations/shopifyInventoryCorrection.js's correctInventoryDeficit(). The restored amount is always exactly the sum of quantities decremented by Shopify's own test:true orders for that inventory item (planInventoryCorrections()) - never an invented or guessed figure; an item whose deficit does not fully reconcile against test orders is reported unresolved, not corrected. REACHABLE ONLY THROUGH AN APPROVED EXECUTION: it has no TOOL_EXECUTORS entry, because ordinary dispatch must never be able to run it. agent/core/orchestratorExecutionContract.js's resumeApprovedExecution() routes it to integrations/approvedCorrectionDispatch.js, which loads the approval from durable state, requires genuine Ed25519 provenance, claims it execute-once, and then calls the integration module, which re-checks compliance and publish authorization for itself beforehand.",
     category: 'products',
     operation: 'execute',
     status: 'implemented',
+    platforms: ['shopify'],
   },
   {
     id: 'shopify_collection_membership_update',
     title: 'Shopify collection membership update',
     description:
-      "Add one product to one existing Shopify collection via integrations/adapters/shopifyClient.js's collectionAddProducts-backed addProductsToCollection(), reached only through integrations/shopifyCollectionMembership.js's addProductToFreeDesignsCollection(). Never creates a collection, never touches any other collection or field. See tools/shopifyCollectionMembershipTool.js.",
+      "Add one product to one existing Shopify collection via integrations/adapters/shopifyClient.js's collectionAddProducts-backed addProductsToCollection(), reached only through integrations/shopifyCollectionMembership.js's addProductToFreeDesignsCollection(). Never creates a collection, never touches any other collection or field. REACHABLE ONLY THROUGH AN APPROVED EXECUTION: it has no TOOL_EXECUTORS entry, because ordinary dispatch must never be able to run it. agent/core/orchestratorExecutionContract.js's resumeApprovedExecution() routes it to integrations/approvedCorrectionDispatch.js, which loads the approval from durable state, requires genuine Ed25519 provenance, claims it execute-once, and then calls the integration module, which re-checks compliance and publish authorization for itself beforehand.",
     category: 'products',
     operation: 'execute',
     status: 'implemented',
+    platforms: ['shopify'],
   },
 ];
 
@@ -468,16 +553,35 @@ function getToolsByOperation(operation) {
   return TOOL_REGISTRY.filter((tool) => tool.operation === operation);
 }
 
+// The tools bound to one platform, or - for `null`/omitted - the platform-NEUTRAL tools
+// (those reaching no e-commerce platform at all). Same one-line filter shape as
+// getToolsByCategory/getToolsByStatus/getToolsByOperation above; it reads the `platforms`
+// array rather than comparing a scalar, because a tool may legitimately name more than
+// one platform (see TOOL_PLATFORMS).
+//
+// An unrecognized platform returns [] rather than throwing: this is a read-only lookup
+// like every other helper here, and "no tool is bound to that platform" is the honest
+// answer for a platform this project has no adapter for. Refusing an unknown platform is
+// the PERMISSION layer's job, and agent/core/toolPermissions.js does refuse it.
+function getToolsByPlatform(platform) {
+  if (platform === null || platform === undefined) {
+    return TOOL_REGISTRY.filter((tool) => tool.platforms.length === 0);
+  }
+  return TOOL_REGISTRY.filter((tool) => tool.platforms.includes(platform));
+}
+
 module.exports = {
   TOOL_CATEGORIES,
   TOOL_STATUSES,
   TOOL_OPERATIONS,
+  TOOL_PLATFORMS,
   TOOL_REGISTRY,
   getToolRegistry,
   getToolById,
   getToolsByCategory,
   getToolsByStatus,
   getToolsByOperation,
+  getToolsByPlatform,
 };
 
 if (require.main === module) {
@@ -487,11 +591,21 @@ if (require.main === module) {
     if (toolsInCategory.length === 0) continue;
     console.log(`[${category}]`);
     for (const tool of toolsInCategory) {
-      console.log(`  - ${tool.id} (${tool.status}, ${tool.operation}): ${tool.title}`);
+      const platformNote = tool.platforms.length === 0 ? 'platform-neutral' : tool.platforms.join('+');
+      console.log(`  - ${tool.id} (${tool.status}, ${tool.operation}, ${platformNote}): ${tool.title}`);
       console.log(`      ${tool.description}`);
     }
   }
   const implementedCount = getToolsByStatus('implemented').length;
   console.log(`\n${TOOL_REGISTRY.length} tools registered, ${implementedCount} implemented - registry foundation only.`);
+
+  console.log(`\nPlatform binding (TOOL_PLATFORMS, reused from agent/core/channelModel.js: ${TOOL_PLATFORMS.join(', ')}):`);
+  console.log(`  platform-neutral (${getToolsByPlatform(null).length}): reach no e-commerce platform at all`);
+  for (const platform of TOOL_PLATFORMS) {
+    const bound = getToolsByPlatform(platform);
+    console.log(`  ${platform} (${bound.length}): ${bound.map((tool) => tool.id).join(', ')}`);
+  }
+  console.log('A tool bound to a platform a business has not enabled is denied by agent/core/toolPermissions.js,');
+  console.log('which reads configuration alone - never whichever credentials happen to be present.');
   console.log('No tool is ever called from this file - dispatch lives in agent/core/orchestratorExecutionContract.js, gated by agent/core/toolPermissions.js.');
 }

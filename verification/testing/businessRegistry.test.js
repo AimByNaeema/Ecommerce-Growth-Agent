@@ -8,6 +8,8 @@ const {
   getBusinessBasePath,
   listBusinessIds,
   loadBusinessConfig,
+  getEnabledPlatforms,
+  getAutonomyConfig,
   parseEnvFileContent,
   loadBusinessCredentials,
   CREDENTIAL_KEYS,
@@ -206,6 +208,171 @@ test('loadBusinessCredentials never touches process.env', () => {
     () => {
       loadBusinessCredentials('test-registry-creds-no-env-mutation');
       assert.strictEqual(process.env.SHOPIFY_STORE_DOMAIN, before);
+    }
+  );
+});
+
+// --- getAutonomyConfig (what feeds agent/core/autonomyPolicy.js) --------------------
+//
+// Same shape of function, same rules, same evidence: read from configuration alone,
+// never from a credential, and off unless the file says otherwise.
+
+test('getAutonomyConfig returns what a business config actually states', () => {
+  withTempBusiness(
+    'test-registry-autonomy-on',
+    { businessYaml: `${VALID_BUSINESS_YAML}
+autonomy:
+  enabled: true
+  daily_token_budget: 7500
+` },
+    () => {
+      assert.deepStrictEqual(getAutonomyConfig('test-registry-autonomy-on'), {
+        enabled: true,
+        daily_token_budget: 7500,
+        daily_run_budget: null,
+      });
+    }
+  );
+});
+
+test('getAutonomyConfig reports autonomy off for a config that states none', () => {
+  // VALID_BUSINESS_YAML has no autonomy block - the pre-existing config shape, which must
+  // keep meaning "never granted".
+  withTempBusiness('test-registry-autonomy-absent', { businessYaml: VALID_BUSINESS_YAML }, () => {
+    assert.deepStrictEqual(getAutonomyConfig('test-registry-autonomy-absent'), {
+      enabled: false,
+      daily_token_budget: null,
+      daily_run_budget: null,
+    });
+  });
+});
+
+test('getAutonomyConfig never consults credentials - a full Shopify and Etsy .env grants nothing', () => {
+  withTempBusiness(
+    'test-registry-autonomy-creds',
+    {
+      businessYaml: VALID_BUSINESS_YAML,
+      envFile: [
+        'SHOPIFY_STORE_DOMAIN=creds-test.myshopify.com',
+        'SHOPIFY_ADMIN_API_ACCESS_TOKEN=shpat_not-a-real-token',
+        'ETSY_API_KEYSTRING=not-a-real-keystring',
+        'ETSY_OAUTH_ACCESS_TOKEN=not-a-real-token',
+      ].join('\n'),
+    },
+    () => {
+      assert.strictEqual(getAutonomyConfig('test-registry-autonomy-creds').enabled, false);
+    }
+  );
+});
+
+test('getAutonomyConfig and getEnabledPlatforms are independent decisions', () => {
+  withTempBusiness(
+    'test-registry-autonomy-split',
+    { businessYaml: `${VALID_BUSINESS_YAML}
+enabled_platforms: ["shopify"]
+autonomy:
+  enabled: false
+` },
+    () => {
+      assert.deepStrictEqual(getEnabledPlatforms('test-registry-autonomy-split'), ['shopify']);
+      assert.strictEqual(getAutonomyConfig('test-registry-autonomy-split').enabled, false);
+    }
+  );
+});
+
+// --- getEnabledPlatforms (the list that feeds the permission gate) ------------------
+//
+// Every test below reads a temp business.yaml from disk. None reads a credential, and
+// none reaches Shopify, Etsy or any other external service.
+
+test('getEnabledPlatforms returns the platforms a business config actually states', () => {
+  withTempBusiness(
+    'test-registry-platforms',
+    { businessYaml: `${VALID_BUSINESS_YAML}\nenabled_platforms: ["shopify", "etsy"]\n` },
+    () => {
+      assert.deepStrictEqual(getEnabledPlatforms('test-registry-platforms'), ['shopify', 'etsy']);
+    }
+  );
+});
+
+test('getEnabledPlatforms returns [] for a business config that states none', () => {
+  // VALID_BUSINESS_YAML has no enabled_platforms - the pre-existing config shape.
+  withTempBusiness('test-registry-platforms-absent', { businessYaml: VALID_BUSINESS_YAML }, () => {
+    assert.deepStrictEqual(getEnabledPlatforms('test-registry-platforms-absent'), []);
+  });
+});
+
+test('getEnabledPlatforms drops a platform this project has no adapter for', () => {
+  withTempBusiness(
+    'test-registry-platforms-unknown',
+    { businessYaml: `${VALID_BUSINESS_YAML}\nenabled_platforms: ["shopify", "amazon", "ebay"]\n` },
+    () => {
+      assert.deepStrictEqual(getEnabledPlatforms('test-registry-platforms-unknown'), ['shopify']);
+    }
+  );
+});
+
+test('getEnabledPlatforms ignores the free-text platform field entirely', () => {
+  // `platform: "Shopify"` is descriptive prose and must never grant access on its own.
+  withTempBusiness('test-registry-platforms-prose', { businessYaml: VALID_BUSINESS_YAML }, () => {
+    const config = loadBusinessConfig('test-registry-platforms-prose');
+    assert.strictEqual(config.platform, 'Shopify');
+    assert.deepStrictEqual(getEnabledPlatforms('test-registry-platforms-prose'), []);
+  });
+});
+
+test('getEnabledPlatforms never consults credentials - a full Etsy .env enables nothing', () => {
+  withTempBusiness(
+    'test-registry-platforms-creds',
+    {
+      businessYaml: `${VALID_BUSINESS_YAML}\nenabled_platforms: ["shopify"]\n`,
+      envFile: [
+        'SHOPIFY_STORE_DOMAIN=example.myshopify.com',
+        'ETSY_API_KEYSTRING=CANARY-must-not-enable-etsy',
+        'ETSY_OAUTH_ACCESS_TOKEN=CANARY-must-not-enable-etsy',
+        'ETSY_SHOP_ID=12345678',
+      ].join('\n'),
+    },
+    () => {
+      // The credentials are genuinely present...
+      const credentials = loadBusinessCredentials('test-registry-platforms-creds');
+      assert.notStrictEqual(credentials.ETSY_API_KEYSTRING, '');
+      // ...and Etsy is still not enabled, because configuration alone decides.
+      assert.deepStrictEqual(getEnabledPlatforms('test-registry-platforms-creds'), ['shopify']);
+    }
+  );
+});
+
+test('getEnabledPlatforms throws a clear error when business.yaml is missing (never guesses)', () => {
+  withTempBusiness('test-registry-platforms-missing', {}, () => {
+    assert.throws(() => getEnabledPlatforms('test-registry-platforms-missing'), /Business configuration file not found/);
+  });
+});
+
+test('getEnabledPlatforms rejects an invalid businessId before touching the filesystem', () => {
+  assert.throws(() => getEnabledPlatforms('../escape'), /Invalid businessId/);
+});
+
+test('getEnabledPlatforms output is canonical and directly usable by the permission gate', () => {
+  // The end-to-end contract Phase 3 will rely on: config -> getEnabledPlatforms ->
+  // checkToolAccess. The config deliberately writes a platform in non-canonical form to
+  // prove the CONFIG layer canonicalizes once, so the gate receives ids it can vouch for.
+  const { checkToolAccess } = require('../../agent/core/toolPermissions');
+  withTempBusiness(
+    'test-registry-platforms-gate',
+    { businessYaml: `${VALID_BUSINESS_YAML}\nenabled_platforms: ["Shopify"]\n` },
+    () => {
+      const enabledPlatforms = getEnabledPlatforms('test-registry-platforms-gate');
+      assert.deepStrictEqual(enabledPlatforms, ['shopify']);
+
+      assert.strictEqual(
+        checkToolAccess({ specialistId: 'product', toolId: 'product_data_retrieval', enabledPlatforms }).decision,
+        'allowed'
+      );
+      assert.strictEqual(
+        checkToolAccess({ specialistId: 'product', toolId: 'etsy_shop_data_retrieval', enabledPlatforms }).decision,
+        'denied'
+      );
     }
   );
 });

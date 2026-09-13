@@ -24,6 +24,9 @@
 //      forward past a real failure.
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 const {
   OPTIMIZATION_CYCLE_STAGE_KEYS,
   STOP_REASONS,
@@ -276,11 +279,11 @@ function iterateAnalysis(rationale) {
             assert.strictEqual(paused.pending_approval.tool_id, 'analytics_data_retrieval');
             assert.strictEqual(calls, 0);
 
-            const decidedRequests = decideApprovalRequest([paused.pending_approval], paused.pending_approval.id, {
+            const decidedRequests = decideApprovalRequest([paused.pending_approval], paused.pending_approval.id, signedDecision([paused.pending_approval], paused.pending_approval.id, {
               decision: 'rejected',
               decidedBy: 'owner@example.com',
               notes: 'Not needed right now.',
-            });
+            }));
             const resumed = await resumeAfterApproval(decidedRequests[0], paused._resumeState);
 
             assert.strictEqual(resumed.status, 'stopped');
@@ -319,10 +322,10 @@ function iterateAnalysis(rationale) {
               actionParams: {},
             });
 
-            const decidedRequests = decideApprovalRequest([paused.pending_approval], paused.pending_approval.id, {
+            const decidedRequests = decideApprovalRequest([paused.pending_approval], paused.pending_approval.id, signedDecision([paused.pending_approval], paused.pending_approval.id, {
               decision: 'approved',
               decidedBy: 'owner@example.com',
-            });
+            }));
             const resumed = await resumeAfterApproval(decidedRequests[0], paused._resumeState);
 
             assert.strictEqual(resumed.status, 'awaiting_measurement');

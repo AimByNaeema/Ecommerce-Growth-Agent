@@ -238,6 +238,69 @@ async function withMockedFetch(handler, run) {
     assert.ok(EXTERNAL_API_TOOL_IDS.has('etsy_listing_data_retrieval'));
   });
 
+  // ---------------------------------------------------------------------------------
+  // RESOLVED THROUGH THE ADAPTER REGISTRY, not by requiring a concrete client.
+  // ---------------------------------------------------------------------------------
+  //
+  // No Etsy request is made below: etsyReadClient.getEtsyShop is substituted, so the chain
+  // tool -> adapterRegistry -> etsyReadAdapter -> (stub) runs entirely in process.
+
+  await testAsync('the shop read goes through the registry-resolved adapter, preserving the native record', async () => {
+    const etsyReadClient = require('../../integrations/adapters/etsyReadClient');
+    const { retrieveEtsyShopData } = require('../../tools/etsyShopDataTool');
+
+    // The exact normalized record the read client produces, channel stamp included.
+    const shopRecord = {
+      shop_id: 4242,
+      shop_name: 'Fixture Shop',
+      title: 'A fixture',
+      currency_code: 'GBP',
+      url: 'https://www.etsy.com/shop/FixtureShop',
+      listing_active_count: 3,
+      channel: 'etsy',
+    };
+
+    let seen;
+    const saved = etsyReadClient.getEtsyShop;
+    etsyReadClient.getEtsyShop = async (args) => {
+      seen = args;
+      return shopRecord;
+    };
+    try {
+      const result = await retrieveEtsyShopData({ businessId: 'biz-a' });
+      // The tool still returns Etsy's OWN record shape - the shim's contract-shaped view is
+      // unwrapped via .native, so every downstream reader of shop_id is unaffected.
+      assert.deepStrictEqual(result, shopRecord);
+      assert.strictEqual(result.channel, 'etsy', 'provenance survives the shim');
+      assert.deepStrictEqual(seen, { businessId: 'biz-a' }, 'businessId reaches the client unchanged');
+    } finally {
+      etsyReadClient.getEtsyShop = saved;
+    }
+  });
+
+  test('the tool resolves its adapter and no longer reads data through the concrete client', () => {
+    const source = require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '..', '..', 'tools', 'etsyShopDataTool.js'),
+      'utf8'
+    );
+    const code = source
+      .split(/\r?\n/)
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+
+    // The platform is a named constant in the source, which is why this checks the call and
+    // the constant separately rather than a string literal inside the call.
+    assert.ok(code.includes('getReadAdapter(PLATFORM)'), 'the adapter must be resolved through the registry');
+    assert.ok(/const PLATFORM = 'etsy';/.test(code), "the resolved platform must be 'etsy'");
+    // No DATA call and no configured-check may go to the concrete client any more.
+    for (const forbidden of ['etsyReadClient.getEtsyShop', 'etsyReadClient.getEtsyListings', 'etsyReadClient.canRead']) {
+      assert.ok(!code.includes(forbidden), `${forbidden} must no longer be called directly`);
+    }
+    // The one surviving use is the non-contract diagnostic that names missing credential
+    // KEYS - isConfigured() is a boolean and cannot report which ones.
+    assert.ok(code.includes('etsyReadClient.missingReadCredentials'));
+  });
+
   test('this test file is registered in the suite runner', () => {
     const { TEST_FILES } = require('./runAllTests');
     assert.ok(TEST_FILES.includes('etsyShopDataTool.test.js'));

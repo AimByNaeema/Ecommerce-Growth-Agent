@@ -1,6 +1,9 @@
 'use strict';
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 const path = require('path');
 const {
   understandObjective,
@@ -1538,10 +1541,10 @@ test('planRouting does NOT merge a genuinely separate unmatched instruction that
       const pendingOutcome = await resumeApprovedExecution(pendingRequest);
       assert.strictEqual(pendingOutcome.status, 'approval_required');
 
-      const rejectedRequests = decideApprovalRequest([pendingRequest], gated.approval_request_id, {
+      const rejectedRequests = decideApprovalRequest([pendingRequest], gated.approval_request_id, signedDecision([pendingRequest], gated.approval_request_id, {
         decision: 'rejected',
         decidedBy: 'owner@example.com',
-      });
+      }));
       const rejectedOutcome = await resumeApprovedExecution(rejectedRequests[0]);
       assert.strictEqual(rejectedOutcome.status, 'denied');
     } finally {
@@ -1568,10 +1571,10 @@ test('planRouting does NOT merge a genuinely separate unmatched instruction that
       const gated = await executeSelectedCapability(executionRequest, undefined, runApprovalTracker);
       const [pendingRequest] = runApprovalTracker.requests;
 
-      const approvedRequests = decideApprovalRequest([pendingRequest], gated.approval_request_id, {
+      const approvedRequests = decideApprovalRequest([pendingRequest], gated.approval_request_id, signedDecision([pendingRequest], gated.approval_request_id, {
         decision: 'approved',
         decidedBy: 'owner@example.com',
-      });
+      }));
 
       // The real executor is genuinely reached now (not before) - it fails fast on its
       // own "not configured" check rather than making a network call, the same

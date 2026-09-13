@@ -11,6 +11,13 @@ business_model: "B2C digital products business. Sells downloadable PNG and SVG b
 
 platform: "Shopify"
 
+# Which platforms the agent is permitted to use for this business - the ONLY authority on
+# platform enablement (see configuration/business.example.yaml for the full explanation).
+# Credentials never enable a platform on their own; a platform absent from this list is
+# refused before any request is attempted. Both are listed because this business genuinely
+# sells on both and both have a real adapter: Shopify (read/write) and Etsy (read-only).
+enabled_platforms: [shopify, etsy]
+
 store_url: "https://digitalstudionaeema.com/"
 
 # From the public storefront's own text: "Instant Digital Access - Receive access

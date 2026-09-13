@@ -27,7 +27,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { loadBusinessConfig: loadBusinessConfigFile } = require('../tools/configValidator');
+const {
+  loadBusinessConfig: loadBusinessConfigFile,
+  readEnabledPlatforms,
+  readAutonomyConfig,
+} = require('../tools/configValidator');
 
 const BUSINESSES_ROOT = path.join(__dirname, 'businesses');
 
@@ -107,6 +111,48 @@ function loadBusinessConfig(id) {
   return loadBusinessConfigFile(path.join(basePath, 'business.yaml'));
 }
 
+// The platforms this business has actually enabled, read from its own business.yaml
+// `enabled_platforms` field - the single authority on platform enablement (see
+// tools/configValidator.js's readEnabledPlatforms(), reused here rather than reimplemented,
+// so there is exactly one reader of this field in the project).
+//
+// THIS IS THE FUNCTION THAT FEEDS THE PERMISSION GATE. A caller resolves the list here and
+// hands it to agent/core/toolPermissions.js's checkToolAccess({ ..., enabledPlatforms }),
+// which is what keeps that module free of any file or environment read of its own.
+//
+// DELIBERATELY INDEPENDENT OF loadBusinessCredentials() BELOW. Enablement is a decision
+// recorded in configuration; credentials are a separate fact about whether a call can
+// physically be made. Deriving either from the other is exactly the conflation this field
+// exists to end - so nothing here looks at a credential, and a business listing a platform
+// it holds no credentials for gets that platform back unchanged (the adapter will fail
+// honestly later, which is the correct place for that error).
+//
+// Returns [] for a business whose config states none - "nothing has been stated", which
+// the permission gate treats as no platform enabled and therefore denies. Never a
+// permissive default.
+function getEnabledPlatforms(id) {
+  return readEnabledPlatforms(loadBusinessConfig(id));
+}
+
+// Whether this business permits the agent to act on its own, and what it may spend across
+// a day doing so - read from its own business.yaml `autonomy` block (see
+// tools/configValidator.js's readAutonomyConfig(), reused here rather than reimplemented,
+// so there is exactly one reader of this field in the project).
+//
+// EXACTLY THE SAME SHAPE OF FUNCTION AS getEnabledPlatforms() ABOVE, and deliberately so:
+// both answer a permission question from configuration alone, neither looks at a credential,
+// and both hand their result to a gate that does no file or environment read of its own
+// (here, agent/core/autonomyPolicy.js).
+//
+// ENABLEMENT HERE IS NECESSARY, NEVER SUFFICIENT. A business that enables autonomy still has
+// every other gate applied to it - compliance, tool and platform authorization, the per-run
+// and daily budgets, the human-approval requirement, and the global AGENT_AUTONOMY_ENABLED
+// kill switch, which can withdraw autonomy from every business at once but can never grant it
+// to one whose own config leaves it off.
+function getAutonomyConfig(id) {
+  return readAutonomyConfig(loadBusinessConfig(id));
+}
+
 // Parses a .env-shaped string into a plain object: KEY=VALUE per line, blank lines and
 // #-comments skipped, surrounding quotes on the value stripped. Pure - never touches
 // process.env. Mirrors the subset of dotenv syntax .env.example already uses.
@@ -155,6 +201,8 @@ module.exports = {
   getBusinessBasePath,
   listBusinessIds,
   loadBusinessConfig,
+  getEnabledPlatforms,
+  getAutonomyConfig,
   parseEnvFileContent,
   loadBusinessCredentials,
 };

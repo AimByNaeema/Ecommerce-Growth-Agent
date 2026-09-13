@@ -282,10 +282,14 @@ function verifyComplianceForApprovalRequest(request) {
 // Nothing about that lifecycle is reimplemented or bypassed here.
 //
 // Returns { ok, requests, decided_request, compliance_result, reason, limitations }.
+// `authorization` is relayed straight through to approvals/approvalWorkflow.js's
+// decideApprovalRequest(), which requires it and verifies it. This gate neither inspects
+// nor validates it: human provenance is that module's boundary, compliance is this one's,
+// and duplicating the check here would create a second place for the two to disagree.
 function decideComplianceGatedApproval(
   requests,
   requestId,
-  { decision, decidedBy, notes = null, expectedBusinessId = null, auditTracker = null } = {}
+  { decision, decidedBy, notes = null, expectedBusinessId = null, auditTracker = null, authorization = null } = {}
 ) {
   if (!Array.isArray(requests)) {
     throw new Error('decideComplianceGatedApproval requires `requests` to be an array.');
@@ -327,7 +331,7 @@ function decideComplianceGatedApproval(
 
   let updated;
   try {
-    updated = decideApprovalRequest(requests, requestId, { decision, decidedBy, notes, expectedBusinessId });
+    updated = decideApprovalRequest(requests, requestId, { decision, decidedBy, notes, expectedBusinessId, authorization });
   } catch (err) {
     // decideApprovalRequest's own errors are already specific and safe (a missing
     // decidedBy, an already-decided request, a cross-business mismatch) - relayed, never

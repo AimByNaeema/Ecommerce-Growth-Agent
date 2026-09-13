@@ -18,6 +18,8 @@
 // access. Nothing here can reach Gemini, Claude, Shopify, or an ad platform.
 
 const assert = require('node:assert');
+// Real Ed25519 signing for the HTTP approval flow - see approvalSigningTestKey.js.
+const { signPayloadString } = require('./approvalSigningTestKey');
 const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -36,6 +38,12 @@ const { createApprovalRequest } = require('../../approvals/approvalWorkflow');
 process.env.RUN_HISTORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-endpoints-test-run-history-'));
 const TEST_API_KEY = 'test-agent-api-key-do-not-use-in-production';
 process.env.AGENT_API_KEY = TEST_API_KEY;
+// This suite drives /growth-workflow with an explicit business id, which
+// security/serverAccessControl.js's business-authorization gate now refuses unless the
+// credential is bound to it. Authorizing exactly the one id this suite uses keeps it testing
+// its own concern (workflow orchestration) rather than the authorization boundary, whose own
+// allowed/denied cases live in serverAccessControl.test.js.
+process.env.AGENT_API_KEY_BUSINESS_IDS = 'business-42';
 process.env.RATE_LIMIT_MAX_REQUESTS = '10000';
 
 const { createApp } = require('../../server');
@@ -92,6 +100,20 @@ function request(port, { method, path: reqPath, body, authenticated = true }) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+// Obtains a REAL signed approval over HTTP, exactly as the dashboard does: ask the server
+// for the challenge, sign that exact payload with the test private key, return the body with
+// the nonce and signature attached. The server verifies it with the real gate - nothing here
+// is mocked.
+async function signedApprovalBody(port, body) {
+  const query =
+    'approvalId=' + encodeURIComponent(body.approvalId) +
+    '&decision=' + encodeURIComponent(body.decision) +
+    '&decidedBy=' + encodeURIComponent(body.decidedBy);
+  const challengeRes = await request(port, { method: 'GET', path: '/approval-challenge?' + query });
+  const challenge = JSON.parse(challengeRes.raw);
+  return { ...body, nonce: challenge.nonce, signature: signPayloadString(challenge.payload) };
 }
 
 async function withServer(fn) {
@@ -413,10 +435,12 @@ const ALL_NEW_ENDPOINTS = [
             method: 'POST',
             path: '/growth-workflow/approve',
             body: {
+              ...(await signedApprovalBody(port, {
+                approvalId: 'apr-workflow-1',
+                decision: 'approved',
+                decidedBy: 'tester',
+              })),
               run_id: 'growth-run-budget',
-              approvalId: 'apr-workflow-1',
-              decision: 'approved',
-              decidedBy: 'tester',
               // A caller attempting to zero this run's spend and hand itself a fresh
               // budget. It must have no effect whatsoever.
               _resumeState: { runTokenTracker: { tokensUsedThisRun: 0 }, runUsageTracker: { toolCalls: 0, modelCalls: 0 } },
@@ -443,7 +467,16 @@ const ALL_NEW_ENDPOINTS = [
       },
       () =>
         withServer(async (port) => {
-          const body = { approvalId: 'apr-workflow-1', decision: 'approved', decidedBy: 'tester' };
+          // A well-formed but unverifiable signature: enough to pass body validation so the
+          // run-id refusal below is what is actually being tested, and guaranteed never to
+          // authorize anything.
+          const body = {
+            approvalId: 'apr-workflow-1',
+            decision: 'approved',
+            decidedBy: 'tester',
+            nonce: 'not-a-real-challenge-nonce',
+            signature: Buffer.from('not-a-real-signature').toString('base64'),
+          };
 
           const unknown = await request(port, { method: 'POST', path: '/growth-workflow/approve', body: { ...body, run_id: 'never-existed' } });
           assert.strictEqual(unknown.status, 400);
@@ -480,7 +513,18 @@ const ALL_NEW_ENDPOINTS = [
           const badDecision = await request(port, { method: 'POST', path: '/growth-workflow/approve', body: { ...base, decision: 'maybe', decidedBy: 'tester' } });
           assert.strictEqual(badDecision.status, 400);
 
-          const wrongId = await request(port, { method: 'POST', path: '/growth-workflow/approve', body: { ...base, approvalId: 'apr-nope', decision: 'approved', decidedBy: 'tester' } });
+          const wrongId = await request(port, {
+            method: 'POST',
+            path: '/growth-workflow/approve',
+            body: {
+              ...base,
+              approvalId: 'apr-nope',
+              decision: 'approved',
+              decidedBy: 'tester',
+              nonce: 'not-a-real-challenge-nonce',
+              signature: Buffer.from('not-a-real-signature').toString('base64'),
+            },
+          });
           assert.strictEqual(wrongId.status, 400);
           // approvalWorkflow.js's own specific message, surfaced rather than replaced.
           assert.match(JSON.parse(wrongId.raw).error, /found no request with id/);
@@ -507,7 +551,7 @@ const ALL_NEW_ENDPOINTS = [
           const res = await request(port, {
             method: 'POST',
             path: '/growth-workflow/approve',
-            body: { run_id: 'growth-run-approve', approvalId: 'apr-workflow-1', decision: 'approved', decidedBy: 'a.human@example.com', notes: 'ok' },
+            body: await signedApprovalBody(port, { run_id: 'growth-run-approve', approvalId: 'apr-workflow-1', decision: 'approved', decidedBy: 'a.human@example.com', notes: 'ok' }),
           });
           assert.strictEqual(res.status, 200);
           assert.strictEqual(decided.decidedRequest.status, 'approved');
@@ -539,7 +583,7 @@ const ALL_NEW_ENDPOINTS = [
           const res = await request(port, {
             method: 'POST',
             path: '/optimization-cycle/approve',
-            body: { run_id: 'optimization-cycle-reject', approvalId: 'apr-workflow-1', decision: 'rejected', decidedBy: 'tester' },
+            body: await signedApprovalBody(port, { run_id: 'optimization-cycle-reject', approvalId: 'apr-workflow-1', decision: 'rejected', decidedBy: 'tester' }),
           });
           assert.strictEqual(res.status, 200);
           assert.strictEqual(decided.status, 'rejected');

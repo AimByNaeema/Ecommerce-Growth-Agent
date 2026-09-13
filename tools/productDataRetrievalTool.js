@@ -15,15 +15,27 @@
 // tools/ anywhere in this codebase - agent/core/productAgent.js stays
 // Shopify-agnostic and only ever accepts caller-supplied entries.
 
-const shopifyClient = require('../integrations/adapters/shopifyClient');
+// RESOLVED, NOT IMPORTED - see tools/businessConfigurationRetrieval.js's own note for the
+// rationale. Identical behavior against Shopify; the platform is now a named constant and
+// the adapter is contract-checked before use.
+const { getReadAdapter } = require('../integrations/adapters/adapterRegistry');
 const { discoverProducts } = require('../agent/core/productAgent');
 
-// Retrieves product data by calling shopifyClient.getProducts(). Read-only: makes no
-// writes, changes nothing. Returns exactly what getProducts() returns and throws
-// exactly what it throws (not configured / network failure / API error) - never
-// fabricates a result.
+// Matches tools/toolRegistry.js's `platforms: ['shopify']` binding for
+// product_data_retrieval. Deliberately still Shopify: getProducts() IS a capability
+// integrations/adapters/etsyReadAdapter.js supports, but mapShopifyProductToCandidate()
+// below reads Shopify-shaped fields (productType, handle, status's ACTIVE/DRAFT/ARCHIVED
+// vocabulary) that an Etsy listing does not have. Pointing this tool at another platform
+// therefore needs that mapping generalized first - a separate, explicitly-scoped change, not
+// a constant edit. Naming the platform here is what makes that dependency visible instead of
+// hiding it in an import.
+const PLATFORM = 'shopify';
+
+// Retrieves product data by calling the resolved adapter's getProducts(). Read-only: makes
+// no writes, changes nothing. Returns exactly what getProducts() returns and throws exactly
+// what it throws (not configured / network failure / API error) - never fabricates a result.
 async function retrieveProductData(params = {}) {
-  return shopifyClient.getProducts(params);
+  return getReadAdapter(PLATFORM).getProducts(params);
 }
 
 // Shopify's product status enum -> agent/core/productModel.js's availability enum.
@@ -82,8 +94,9 @@ async function runProductDataRetrievalTool(researchParams) {
 module.exports = { retrieveProductData, mapShopifyProductToCandidate, runProductDataRetrievalTool };
 
 if (require.main === module) {
-  shopifyClient.loadEnvOnce();
-  if (!shopifyClient.isConfigured()) {
+  // See tools/businessConfigurationRetrieval.js: isConfigured() loads the root .env itself,
+  // so the explicit loadEnvOnce() call this demo used to make was redundant.
+  if (!getReadAdapter(PLATFORM).isConfigured()) {
     console.log('product_data_retrieval tool loaded, but store credentials are not set.');
     console.log('Copy .env.example to .env and fill in:');
     console.log('  SHOPIFY_STORE_DOMAIN=your-store.myshopify.com');

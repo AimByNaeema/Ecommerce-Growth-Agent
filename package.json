@@ -159,6 +159,7 @@
     "agent:command-center-session-store": "node agent/core/commandCenterSessionStore.js",
     "agent:command-center-session": "node agent/core/commandCenterSession.js",
     "integrations:shopify-blog-publishing": "node integrations/shopifyBlogPublishing.js",
+    "autonomy:cycle": "node --env-file=.env autonomy/runCycleCli.js",
     "test": "node verification/testing/runAllTests.js"
   },
   "dependencies": {

@@ -17,6 +17,8 @@
 // correctly, not just that a mock was called.
 
 const assert = require('node:assert');
+// Real Ed25519 signing for the HTTP approval flow - see approvalSigningTestKey.js.
+const { signPayloadString } = require('./approvalSigningTestKey');
 const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -30,6 +32,14 @@ const { createApprovalRequest } = require('../../approvals/approvalWorkflow');
 // suite never writes real files into this project's own memory/state/runs/. Read at
 // call time, not module load, so setting it before createApp() below is sufficient.
 process.env.RUN_HISTORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrator-endpoints-test-run-history-'));
+
+// /orchestrate now also persists each pending approval to approvals/approvalStore.js, and
+// /orchestrate/approve persists the decided record - the durable state
+// integrations/approvedCorrectionDispatch.js requires before it will execute anything.
+// Redirected to a throwaway directory for the same reason RUN_HISTORY_STORE_DIR above is:
+// this suite must never write real files into the project's own memory/state/approvals/.
+// Read at call time, so setting it before createApp() below is sufficient.
+process.env.APPROVAL_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrator-endpoints-test-approvals-'));
 
 // security/serverAccessControl.js fails closed: with no AGENT_API_KEY set, every
 // endpoint below would return 503 instead of running. Set before createApp() is
@@ -107,6 +117,20 @@ function request(port, { method, path: reqPath, body }) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+// Obtains a REAL signed approval over HTTP, exactly as the dashboard does: ask the server
+// for the challenge, sign that exact payload with the test private key, return the body with
+// the nonce and signature attached. The server verifies it with the real gate - nothing here
+// is mocked.
+async function signedApprovalBody(port, body) {
+  const query =
+    'approvalId=' + encodeURIComponent(body.approvalId) +
+    '&decision=' + encodeURIComponent(body.decision) +
+    '&decidedBy=' + encodeURIComponent(body.decidedBy);
+  const challengeRes = await request(port, { method: 'GET', path: '/approval-challenge?' + query });
+  const challenge = JSON.parse(challengeRes.raw);
+  return { ...body, nonce: challenge.nonce, signature: signPayloadString(challenge.payload) };
 }
 
 async function withServer(fn) {
@@ -310,7 +334,7 @@ async function main() {
           const approveRes = await request(port, {
             method: 'POST',
             path: '/orchestrate/approve',
-            body: { runId, approvalId: 'apr-1', decision: 'approved', decidedBy: 'naeema', notes: 'Looks right.' },
+            body: await signedApprovalBody(port, { runId, approvalId: 'apr-1', decision: 'approved', decidedBy: 'naeema', notes: 'Looks right.' }),
           });
           assert.strictEqual(approveRes.status, 200);
           const parsed = JSON.parse(approveRes.raw);
@@ -327,7 +351,7 @@ async function main() {
           const secondRes = await request(port, {
             method: 'POST',
             path: '/orchestrate/approve',
-            body: { runId, approvalId: 'apr-1', decision: 'approved', decidedBy: 'naeema' },
+            body: await signedApprovalBody(port, { runId, approvalId: 'apr-1', decision: 'approved', decidedBy: 'naeema' }),
           });
           assert.strictEqual(secondRes.status, 400);
         });
@@ -374,7 +398,7 @@ async function main() {
           const approveRes = await request(port, {
             method: 'POST',
             path: '/orchestrate/approve',
-            body: { runId, approvalId: 'apr-1', decision: 'rejected', decidedBy: 'naeema', notes: 'Not needed.' },
+            body: await signedApprovalBody(port, { runId, approvalId: 'apr-1', decision: 'rejected', decidedBy: 'naeema', notes: 'Not needed.' }),
           });
           assert.strictEqual(approveRes.status, 200);
           const parsed = JSON.parse(approveRes.raw);
@@ -556,7 +580,7 @@ async function main() {
           await request(port, {
             method: 'POST',
             path: '/orchestrate/approve',
-            body: { runId, approvalId: 'apr-1', decision: 'approved', decidedBy: 'naeema' },
+            body: await signedApprovalBody(port, { runId, approvalId: 'apr-1', decision: 'approved', decidedBy: 'naeema' }),
           });
 
           const afterDetail = JSON.parse((await request(port, { method: 'GET', path: '/history/' + runId })).raw);

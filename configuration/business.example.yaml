@@ -8,8 +8,69 @@ business_name: ""
 # How the business operates (e.g. B2C, B2B, D2C, marketplace, wholesale).
 business_model: ""
 
-# E-commerce platform the business runs on (e.g. Shopify).
+# E-commerce platform the business runs on (e.g. Shopify). DESCRIPTIVE PROSE ONLY - this
+# field is business context and grants no access. Use `enabled_platforms` below to decide
+# which platforms the agent may actually touch.
 platform: ""
+
+# Which platforms the agent is permitted to use for this business. THIS IS THE ONLY
+# AUTHORITY on platform enablement - agent/core/toolPermissions.js's platform gate reads
+# this and nothing else, and a tool bound to a platform absent from this list is denied
+# before any call is attempted.
+#
+# CREDENTIALS DO NOT ENABLE A PLATFORM. Having a Shopify token or an Etsy token in .env
+# says only that a call could physically be made; it never grants permission. The two are
+# independent and both are needed: list a platform here to permit it, and configure its
+# credentials (see .env.example) to make it reachable.
+#
+# Only platforms this project has a real adapter for may be listed - today exactly:
+#   shopify   integrations/adapters/shopifyClient.js
+#   etsy      integrations/adapters/etsyReadClient.js (read-only)
+# Anything else (e.g. amazon, ebay) is rejected by tools/configValidator.js rather than
+# silently ignored, because this value is an access decision.
+#
+# Optional, and empty by default: leaving it empty means NO platform is enabled, so every
+# platform-bound tool is denied. That is the honest default ("nothing has been stated"),
+# never a permissive one. Platform-neutral capabilities - research, SEO, listing content,
+# marketing, social and advertising - are unaffected and keep working with none enabled.
+enabled_platforms: []
+
+# Whether the agent may act on its OWN INITIATIVE for this business, and what it may spend
+# across one day doing so. THIS IS THE ONLY PLACE A BUSINESS GRANTS AUTONOMY -
+# agent/core/autonomyPolicy.js reads this and the global kill switch, and nothing else.
+#
+# A DIFFERENT QUESTION FROM enabled_platforms ABOVE. That field says which platforms may be
+# touched at all; this says whether the agent may decide by itself to touch one. Both are
+# needed for an autonomous action, and neither implies the other.
+#
+# CREDENTIALS NEVER IMPLY AUTONOMY. A Shopify or Etsy token in .env says only that a call
+# could physically be made. It grants nothing here, in exactly the way it grants nothing in
+# enabled_platforms.
+#
+# OFF UNLESS EXPLICITLY ENABLED. Omitting this block, leaving it blank, or writing anything
+# other than a real boolean `true` for `enabled` all mean the same thing: autonomy is not
+# permitted, and every agent-initiated action is blocked. `enabled: "true"` (a string) is
+# deliberately NOT accepted - tools/configValidator.js reports it as an error rather than
+# quietly reading it as on or as off.
+#
+# AUTONOMY IS NEVER A BYPASS. Enabling it here does not skip anything: a consequential action
+# still requires the same Ed25519-signed human approval it requires today, a compliance BLOCK
+# still blocks, and an unauthorized tool or a disabled platform still blocks. Enabling this
+# only permits LOW-RISK, fully-gated actions to proceed without a human starting them.
+#
+# THE GLOBAL KILL SWITCH CAN ONLY SUBTRACT. AGENT_AUTONOMY_ENABLED (see .env.example) stops
+# all autonomous execution across every business when it is off, and it can never grant
+# autonomy to a business that leaves `enabled` false here.
+#
+# THE BUDGETS ARE COUNTS, NEVER MONEY. This project has no model price table anywhere, so a
+# currency figure would have to be invented. `daily_token_budget` counts model output tokens
+# across one UTC day; `daily_run_budget` counts runs across the same day. Both are optional:
+# leave either blank to use the project's own conservative default ceiling (derived from the
+# per-run token budget - see agent/core/tokenControls.js), never an unlimited one.
+autonomy:
+  enabled: false
+  daily_token_budget:
+  daily_run_budget:
 
 # Live website/storefront URL. Optional.
 store_url: ""

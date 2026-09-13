@@ -25,10 +25,22 @@ function test(name, fn) {
   }
 }
 
-test('the capability task record has exactly the 7 required fields, in the requested order', () => {
+test('the capability task record has exactly the 8 required fields, in the requested order', () => {
   assert.deepStrictEqual(
     CAPABILITY_TASK_FIELDS.map((f) => f.id),
-    ['id', 'title', 'description', 'tool_ids', 'input_contract', 'output_contract', 'live_data_tool_id']
+    [
+      'id',
+      'title',
+      'description',
+      'tool_ids',
+      'input_contract',
+      'output_contract',
+      'live_data_tool_id',
+      // Appended, following the exact additive precedent live_data_tool_id itself set.
+      // Derived from tool_ids by agent/core/specialistCapabilityRegistry.js - this file
+      // only declares its shape.
+      'platforms',
+    ]
   );
 });
 
@@ -81,6 +93,40 @@ test('validateCapabilityTaskShape() rejects a non-array tool_ids', () => {
   const result = validateCapabilityTaskShape(task);
   assert.strictEqual(result.valid, false);
   assert.ok(result.errors.includes('tool_ids must be an array'));
+});
+
+// --- platforms: the one purely DERIVED field (see agent/core/specialistCapabilityRegistry.js) ---
+
+test('createEmptyCapabilityTask() defaults platforms to empty - a blank task asserts no platform', () => {
+  const task = createEmptyCapabilityTask('example_task');
+  assert.deepStrictEqual(task.platforms, []);
+  assert.strictEqual(validateCapabilityTaskShape(task).valid, true);
+});
+
+test('validateCapabilityTaskShape() detects a missing platforms field', () => {
+  const task = createEmptyCapabilityTask('example_task');
+  delete task.platforms;
+  const result = validateCapabilityTaskShape(task);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.includes('missing field: platforms'));
+});
+
+test('validateCapabilityTaskShape() rejects a non-array platforms', () => {
+  const task = createEmptyCapabilityTask('example_task');
+  task.platforms = 'shopify';
+  const result = validateCapabilityTaskShape(task);
+  assert.strictEqual(result.valid, false);
+  assert.ok(result.errors.includes('platforms must be an array'));
+});
+
+test('the platforms field declares itself as derived from tool_ids, never hand-authored', () => {
+  const field = CAPABILITY_TASK_FIELDS.find((f) => f.id === 'platforms');
+  assert.ok(field, 'platforms field is missing from CAPABILITY_TASK_FIELDS');
+  assert.strictEqual(field.type, 'array');
+  assert.ok(
+    /derived/i.test(field.description) && /tool_ids/.test(field.description),
+    'the platforms description must state that it is derived from tool_ids'
+  );
 });
 
 test('validateCapabilityTaskShape() rejects a malformed input_contract', () => {

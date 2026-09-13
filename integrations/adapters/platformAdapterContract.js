@@ -127,6 +127,11 @@ const ADAPTER_CONTRACT_RULES = [
     description:
       'An adapter is not required to add a platform SDK dependency - a plain HTTP/GraphQL client (e.g. Node\'s built-in fetch) satisfies this contract, same precedent as integrations/adapters/shopifyClient.js.',
   },
+  {
+    id: 'unsupported_is_declared_never_faked',
+    description:
+      "A platform that genuinely cannot serve a required capability must DECLARE it (see UNSUPPORTED_CAPABILITY_DECLARATION) and refuse the call with an unsupported-capability error. It must never return an empty array, a null, a zero, or any other success-shaped value standing in for data the platform does not have - an empty result means 'the platform has none', which is a different and checkable fact from 'this platform cannot answer that question at all'.",
+  },
 ];
 
 // ---------------------------------------------------------------------------------
@@ -309,6 +314,91 @@ function getPublishingCapabilityById(id, { kind = DEFAULT_PUBLISHING_KIND } = {}
   return publishingKind.capabilities.find((entry) => entry.id === id);
 }
 
+// ---------------------------------------------------------------------------------
+// EXPLICITLY UNSUPPORTED CAPABILITIES - additive, and the honest alternative to both
+// silently omitting a capability and silently faking one.
+// ---------------------------------------------------------------------------------
+//
+// THE PROBLEM. The read contract above requires all 7 capabilities, which was written
+// around integrations/adapters/shopifyClient.js - the one adapter that genuinely has all
+// 7. A second platform need not. Etsy's read surface, under the only scopes
+// integrations/etsyOAuth.js will request (shops_r, listings_r), can serve a shop record
+// and the shop's listings; it has no orders, no customers, no per-location inventory and
+// no collection concept reachable from those scopes at all.
+//
+// Before this addition an adapter in that position had exactly two options, and both lied:
+//   - omit the function      -> validateAdapterShape() reports it non-conforming, which
+//                               reads as "broken adapter" rather than "platform limit".
+//   - return [] or null      -> reports as SUCCESS with no data, indistinguishable from a
+//                               shop that genuinely has zero orders. That is the worse
+//                               failure: it silently becomes a real number in an analytics
+//                               total (see ADAPTER_CONTRACT_RULES's
+//                               'unsupported_is_declared_never_faked').
+//
+// THE THIRD OPTION. An adapter EXPOSES the function (so callers and this validator find
+// it where the contract says it will be), DECLARES it unsupported as data, and REFUSES the
+// call with an identifiable error. Nothing about a fully-capable adapter changes:
+// shopifyClient.js declares nothing and validates exactly as it did before.
+//
+// A DECLARATION IS NOT A WAIVER. A declared-unsupported capability still counts as
+// present-and-callable; validateAdapterShape() reports it in `unsupported` rather than
+// `supported`, so a caller can see precisely what this platform will and will not answer
+// instead of discovering it from a thrown error at runtime.
+const UNSUPPORTED_CAPABILITY_CODE = 'unsupported_capability';
+
+// The export name an adapter uses to declare its unsupported capabilities: an array of
+// REQUIRED_ADAPTER_CAPABILITIES ids. Named as a constant so a typo in an adapter is a
+// silent no-declaration rather than a silent mis-declaration, and so this validator and
+// every adapter agree on one spelling.
+const UNSUPPORTED_CAPABILITY_DECLARATION = 'UNSUPPORTED_READ_CAPABILITIES';
+
+// Builds the error a declared-unsupported capability must reject with. Carries a machine-
+// readable `code`, plus which platform and capability were asked for, so a caller can
+// distinguish "this platform cannot answer that" from a network failure or a missing
+// credential - three outcomes that must never be conflated.
+//
+// `reason` is required and must be the REAL reason (e.g. which scope does not exist),
+// never a generic "not supported" - an unsupported capability with no stated reason is how
+// a temporary gap becomes permanent folklore.
+function createUnsupportedCapabilityError({ platform, capability, reason } = {}) {
+  if (typeof platform !== 'string' || platform.trim() === '') {
+    throw new Error('createUnsupportedCapabilityError requires a non-empty `platform`.');
+  }
+  if (typeof capability !== 'string' || capability.trim() === '') {
+    throw new Error('createUnsupportedCapabilityError requires a non-empty `capability`.');
+  }
+  if (typeof reason !== 'string' || reason.trim() === '') {
+    throw new Error(
+      'createUnsupportedCapabilityError requires a non-empty `reason` stating why this platform cannot serve the capability.'
+    );
+  }
+
+  const error = new Error(
+    `Platform '${platform}' does not support the '${capability}' read capability: ${reason} No request was attempted, and no value was fabricated in its place.`
+  );
+  error.code = UNSUPPORTED_CAPABILITY_CODE;
+  error.platform = platform;
+  error.capability = capability;
+  error.reason = reason;
+  return error;
+}
+
+// Whether an error is a declared unsupported-capability refusal, as opposed to a network
+// failure, a missing credential, or a platform error. Checks the code rather than the
+// message, so a caller never has to pattern-match prose.
+function isUnsupportedCapabilityError(error) {
+  return Boolean(error) && error.code === UNSUPPORTED_CAPABILITY_CODE;
+}
+
+// The capabilities an adapter declares it cannot serve. Returns [] for an adapter that
+// declares nothing (every fully-capable adapter, including shopifyClient.js), so this is
+// safe to call on any adapter.
+function getDeclaredUnsupportedCapabilities(adapterModule) {
+  if (typeof adapterModule !== 'object' || adapterModule === null) return [];
+  const declared = adapterModule[UNSUPPORTED_CAPABILITY_DECLARATION];
+  return Array.isArray(declared) ? declared.slice() : [];
+}
+
 function getCapabilityById(id) {
   return REQUIRED_ADAPTER_CAPABILITIES.find((entry) => entry.id === id);
 }
@@ -323,6 +413,14 @@ function getRuleById(id) {
 // out of scope for a static, read-only contract. Does not guess or fill in anything
 // missing - only reports, same convention as every other validate*Shape() in this
 // project.
+// Also reports which capabilities this adapter actually serves (`supported`) versus which
+// it has DECLARED it cannot (`unsupported`) - see UNSUPPORTED_CAPABILITY_DECLARATION above.
+// A declared capability must still be present as a function: declaring it is a statement
+// about what it will answer, never permission to omit it.
+//
+// The non-object branch below deliberately keeps returning { valid, errors } alone: with no
+// adapter there is no capability set to classify, so a supported/unsupported pair would be
+// two empty arrays asserting nothing. Every real adapter goes through the main path.
 function validateAdapterShape(adapterModule) {
   const errors = [];
 
@@ -336,12 +434,109 @@ function validateAdapterShape(adapterModule) {
     }
   }
 
+  const capabilityIds = REQUIRED_ADAPTER_CAPABILITIES.map((capability) => capability.id);
+  const rawDeclaration = adapterModule[UNSUPPORTED_CAPABILITY_DECLARATION];
+  if (rawDeclaration !== undefined && !Array.isArray(rawDeclaration)) {
+    errors.push(`${UNSUPPORTED_CAPABILITY_DECLARATION} must be an array of required capability ids`);
+  }
+
+  const declared = getDeclaredUnsupportedCapabilities(adapterModule);
+  const unsupported = [];
+  for (const id of declared) {
+    // A declaration naming something that is not a capability of this contract is a
+    // mis-declaration, never silently ignored - it usually means a typo, and a typo here
+    // would quietly re-enable the "silently faked" path this mechanism exists to close.
+    if (!capabilityIds.includes(id)) {
+      errors.push(
+        `${UNSUPPORTED_CAPABILITY_DECLARATION} names '${id}', which is not a required capability (must be one of: ${capabilityIds.join(', ')})`
+      );
+      continue;
+    }
+    if (unsupported.includes(id)) {
+      errors.push(`${UNSUPPORTED_CAPABILITY_DECLARATION} names '${id}' more than once`);
+      continue;
+    }
+    unsupported.push(id);
+  }
+
+  const supported = capabilityIds.filter((id) => !unsupported.includes(id));
+
+  return { valid: errors.length === 0, errors, supported, unsupported };
+}
+
+// ---------------------------------------------------------------------------------
+// OPTIONAL: paginated reads.
+// ---------------------------------------------------------------------------------
+//
+// WHY THIS IS OPTIONAL AND NOT REQUIRED. Every required capability above returns ONE
+// array, bounded by whatever `limit` the caller asked for. That is fine for a tool that
+// wants a sample; it is not fine for monitoring/, which compares two observations and must
+// never mistake "I did not look past the first page" for "these entities were removed".
+//
+// An adapter MAY therefore expose, for any required read capability `X`, a companion
+// `XPage({ businessId, limit, cursor })` returning:
+//
+//   { items: <array, the same normalized shape X returns>, next_cursor: <string|null> }
+//
+// A null/absent `next_cursor` means "that was the last page". The caller pages by handing
+// the previous result's next_cursor back in `cursor`.
+//
+// NOTHING IS INVENTED HERE, AND NO PLATFORM BEHAVIOUR IS ASSUMED. This is a contract an
+// adapter opts into by exporting the function - it is not a claim that any particular
+// platform paginates, nor an instruction to pass a parameter a platform does not have. An
+// adapter whose platform genuinely cannot paginate simply does not export it.
+//
+// NO SHIPPED ADAPTER IMPLEMENTS THIS YET. integrations/adapters/shopifyClient.js issues
+// `products(first: N)` with no pageInfo and no cursor, and the Etsy read adapter serves
+// three capabilities over a client with its own paging model. Adding it to either is an
+// additive, read-only change to that client, deliberately left out of scope here. Until
+// then monitoring/ observes one page and REPORTS that the observation is incomplete, which
+// is what stops the missing entities being read as removals.
+const PAGINATED_READ_SUFFIX = 'Page';
+
+const PAGINATION_CONTRACT_RULE = {
+  id: 'pagination_is_optional_and_explicit',
+  description:
+    'An adapter may expose <capability>Page({ businessId, limit, cursor }) -> { items, next_cursor } for any required read capability. It is never required, never inferred, and never simulated: a caller that finds no such function has observed one page and must report the observation as incomplete rather than treating unseen entities as absent.',
+};
+
+// The companion function name for a required read capability, or null when the capability
+// id is not one this contract defines.
+function paginatedCapabilityName(capabilityId) {
+  return getCapabilityById(capabilityId) ? `${capabilityId}${PAGINATED_READ_SUFFIX}` : null;
+}
+
+// Whether this adapter genuinely offers paginated reads for that capability. Structural
+// only - it never calls anything.
+function supportsPaginatedRead(adapterModule, capabilityId) {
+  const name = paginatedCapabilityName(capabilityId);
+  return Boolean(name) && Boolean(adapterModule) && typeof adapterModule[name] === 'function';
+}
+
+// Validates one page result against the contract above. A malformed page is REFUSED rather
+// than partially consumed: half a page silently accepted is exactly how entities go missing
+// and then read as removed.
+function validatePageResult(result) {
+  const errors = [];
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return { valid: false, errors: ['a paginated read must return { items, next_cursor }'] };
+  }
+  if (!Array.isArray(result.items)) errors.push('items must be an array');
+  const cursor = result.next_cursor;
+  if (cursor !== null && cursor !== undefined && typeof cursor !== 'string') {
+    errors.push('next_cursor must be a string or null');
+  }
   return { valid: errors.length === 0, errors };
 }
 
 module.exports = {
   REQUIRED_ADAPTER_CAPABILITIES,
   ADAPTER_CONTRACT_RULES,
+  UNSUPPORTED_CAPABILITY_CODE,
+  UNSUPPORTED_CAPABILITY_DECLARATION,
+  createUnsupportedCapabilityError,
+  isUnsupportedCapabilityError,
+  getDeclaredUnsupportedCapabilities,
   PUBLISHING_ADAPTER_CAPABILITIES,
   CONTENT_PUBLISHING_ADAPTER_CAPABILITIES,
   PUBLISHING_ADAPTER_KINDS,
@@ -353,6 +548,11 @@ module.exports = {
   getCapabilityById,
   getRuleById,
   validateAdapterShape,
+  PAGINATED_READ_SUFFIX,
+  PAGINATION_CONTRACT_RULE,
+  paginatedCapabilityName,
+  supportsPaginatedRead,
+  validatePageResult,
 };
 
 if (require.main === module) {

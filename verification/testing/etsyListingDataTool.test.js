@@ -287,6 +287,82 @@ const CLEAN_LISTING = {
     });
   });
 
+  // ---------------------------------------------------------------------------------
+  // RESOLVED THROUGH THE ADAPTER REGISTRY, not by requiring a concrete client.
+  // ---------------------------------------------------------------------------------
+  //
+  // No Etsy request is made below: etsyReadClient.getEtsyListings is substituted, so the
+  // chain tool -> adapterRegistry -> etsyReadAdapter -> (stub) runs entirely in process.
+
+  await testAsync('the listing read goes through the registry-resolved adapter, preserving native records', async () => {
+    const etsyReadClient = require('../../integrations/adapters/etsyReadClient');
+    const { retrieveEtsyListingData } = require('../../tools/etsyListingDataTool');
+
+    // The exact normalized records the read client produces - the shape
+    // compliance/etsyComplianceInput.js reads.
+    const listingRecords = [
+      {
+        listing_id: 900,
+        shop_id: 4242,
+        title: 'Fixture Listing',
+        description: 'A fixture.',
+        state: 'active',
+        url: 'https://www.etsy.com/listing/900',
+        tags: ['fixture'],
+        materials: [],
+        price: { amount: 500, divisor: 100, currency_code: 'GBP' },
+        quantity: 10,
+        taxonomy_id: 1,
+        listing_type: 'download',
+        is_digital: true,
+        is_digital_product: true,
+        num_favorers: 0,
+        views: 1,
+        channel: 'etsy',
+      },
+    ];
+
+    let seen;
+    const saved = etsyReadClient.getEtsyListings;
+    etsyReadClient.getEtsyListings = async (args) => {
+      seen = args;
+      return listingRecords;
+    };
+    try {
+      const result = await retrieveEtsyListingData({ businessId: null, limit: 3, offset: 6, state: 'active' });
+      // Etsy's OWN record shape is preserved exactly - .native unwrapped from the shim.
+      assert.deepStrictEqual(result, listingRecords);
+      assert.strictEqual(result[0].channel, 'etsy', 'provenance survives the shim');
+      // Paging reaches the client unchanged; the shim invents none of its own.
+      assert.deepStrictEqual(seen, { businessId: null, limit: 3, offset: 6, state: 'active' });
+    } finally {
+      etsyReadClient.getEtsyListings = saved;
+    }
+  });
+
+  test('the tool resolves its adapter and no longer reads data through the concrete client', () => {
+    const source = require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '..', '..', 'tools', 'etsyListingDataTool.js'),
+      'utf8'
+    );
+    const code = source
+      .split(/\r?\n/)
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+
+    // The platform is a named constant in the source, which is why this checks the call and
+    // the constant separately rather than a string literal inside the call.
+    assert.ok(code.includes('getReadAdapter(PLATFORM)'), 'the adapter must be resolved through the registry');
+    assert.ok(/const PLATFORM = 'etsy';/.test(code), "the resolved platform must be 'etsy'");
+    for (const forbidden of ['etsyReadClient.getEtsyListings', 'etsyReadClient.getEtsyShop', 'etsyReadClient.canRead']) {
+      assert.ok(!code.includes(forbidden), `${forbidden} must no longer be called directly`);
+    }
+    // The two surviving uses are both non-contract and Etsy-specific: the missing-credential
+    // KEY names, and this channel's own provenance constant.
+    assert.ok(code.includes('etsyReadClient.missingReadCredentials'));
+    assert.ok(code.includes('etsyReadClient.ETSY_CHANNEL'));
+  });
+
   test('this test file is registered in the suite runner', () => {
     const { TEST_FILES } = require('./runAllTests');
     assert.ok(TEST_FILES.includes('etsyListingDataTool.test.js'));

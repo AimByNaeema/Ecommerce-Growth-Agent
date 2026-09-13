@@ -20,6 +20,9 @@
 //      not proceed past it.
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 const { runGrowthWorkflow, resumeGrowthWorkflow, STAGE_KEYS } = require('../../agent/core/growthWorkflowOrchestrator');
 const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
@@ -309,10 +312,10 @@ function buildStageInputs() {
             assert.strictEqual(paused.pending_approval.specialist_id, 'analytics_optimization');
             assert.strictEqual(calls, 0, 'the external client must never be reached before approval');
 
-            const decidedRequests = decideApprovalRequest([paused.pending_approval], paused.pending_approval.id, {
+            const decidedRequests = decideApprovalRequest([paused.pending_approval], paused.pending_approval.id, signedDecision([paused.pending_approval], paused.pending_approval.id, {
               decision: 'approved',
               decidedBy: 'owner@example.com',
-            });
+            }));
             const resumed = await resumeGrowthWorkflow(decidedRequests[0], paused._resumeState);
 
             assert.strictEqual(resumed.status, 'completed');
@@ -350,11 +353,11 @@ function buildStageInputs() {
             assert.strictEqual(paused.status, 'workflow_paused');
             assert.strictEqual(paused.plan.length, 7);
 
-            const decidedRequests = decideApprovalRequest([paused.pending_approval], paused.pending_approval.id, {
+            const decidedRequests = decideApprovalRequest([paused.pending_approval], paused.pending_approval.id, signedDecision([paused.pending_approval], paused.pending_approval.id, {
               decision: 'rejected',
               decidedBy: 'owner@example.com',
               notes: 'Not needed right now.',
-            });
+            }));
             const resumed = await resumeGrowthWorkflow(decidedRequests[0], paused._resumeState);
 
             assert.strictEqual(resumed.status, 'stopped');

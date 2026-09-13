@@ -16,6 +16,9 @@
 // Every product id, vendor name, and reference below is an invented placeholder.
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 
 const shopifyClient = require('../../integrations/adapters/shopifyClient');
 const { correctProductVendor } = require('../../integrations/shopifyVendorCorrection');
@@ -84,10 +87,10 @@ function pipeline(content = PASSING_CONTENT, { decision = 'approved', contentRef
   });
   if (gated.status !== 'pending_approval') return gated.requests;
   if (decision === 'pending') return gated.requests;
-  return decideComplianceGatedApproval(gated.requests, 'apr-vendor-1', {
+  return decideComplianceGatedApproval(gated.requests, 'apr-vendor-1', signedDecision(gated.requests, 'apr-vendor-1', {
     decision,
     decidedBy: 'store-owner@example.com (placeholder)',
-  }).requests;
+  })).requests;
 }
 
 async function withMockedShopify({ product = null, throws = null }, fn) {
@@ -214,7 +217,7 @@ function correct(requests, overrides = {}) {
         executionRequest: { compliance: { compliance_status: 'PASS', review_reasons: [] }, compliance_input: complianceInput(PASSING_CONTENT) },
         reason: 'placeholder',
       });
-      const decided = decideApprovalRequest([request], 'apr-vendor-1', { decision: 'approved', decidedBy: 'store-owner@example.com (placeholder)' });
+      const decided = decideApprovalRequest([request], 'apr-vendor-1', signedDecision([request], 'apr-vendor-1', { decision: 'approved', decidedBy: 'store-owner@example.com (placeholder)' }));
       const outcome = await correct(decided);
       assert.strictEqual(outcome.status, 'refused');
       assert.strictEqual(outcome.authorization.failed_check, 'classification_actually_required_approval');

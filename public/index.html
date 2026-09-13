@@ -41,6 +41,10 @@
         Approval Center
         <span class="nav-badge" id="approvalNavBadge" hidden>0</span>
       </button>
+      <button class="nav-item" id="navAutonomy" role="tab" aria-current="false" type="button">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16.5 10a6.5 6.5 0 1 1-2-4.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M16.5 3.5v3h-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Autonomy
+      </button>
       <button class="nav-item" id="navWorkflow" role="tab" aria-current="false" type="button">
         <svg class="nav-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.5" y="2.5" width="6" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11.5" y="12.5" width="6" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 7.5v4a3 3 0 0 0 3 3h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         How it works
@@ -380,6 +384,16 @@
       </div>
 
       <div id="approvalListArea"></div>
+    </section>
+
+    <!-- ============ AUTONOMY PAGE ============ -->
+    <!-- Read-only view of GET /autonomy/state. Nothing on this page turns autonomy on,
+         creates or enables a schedule, starts a cycle, or approves anything. -->
+    <section class="page" id="pageAutonomy">
+      <div class="page-intro">
+        <p>What the autonomous agent is allowed to do right now, what is scheduled, what it has done, and what is waiting for you. This page only reads — autonomy, schedules and approvals are changed deliberately, never from here.</p>
+      </div>
+      <div id="autonomyArea"></div>
     </section>
 
     <!-- ============ HISTORY PAGE ============ -->

@@ -5,12 +5,36 @@ const {
   TOOL_CATEGORIES,
   TOOL_STATUSES,
   TOOL_OPERATIONS,
+  TOOL_PLATFORMS,
   TOOL_REGISTRY,
   getToolById,
   getToolsByCategory,
   getToolsByStatus,
   getToolsByOperation,
+  getToolsByPlatform,
 } = require('../../tools/toolRegistry');
+const { CHANNELS } = require('../../agent/core/channelModel');
+
+// The ONLY platform-bound tools, and exactly which platform(s) each reaches. Hand-written
+// here on purpose: this is the independent check on the registry, so it must not be
+// derived from the registry it is checking. Every entry is grounded in the tool's own
+// implementation - the seven tool files that require() an adapter under
+// integrations/adapters/, plus the three shopify_* corrections whose registry
+// descriptions name the Shopify mutation each one calls.
+const EXPECTED_PLATFORM_BINDINGS = {
+  business_configuration_retrieval: ['shopify'],
+  product_data_retrieval: ['shopify'],
+  collection_data_retrieval: ['shopify'],
+  analytics_data_retrieval: ['shopify'],
+  shopify_vendor_correction: ['shopify'],
+  shopify_inventory_correction: ['shopify'],
+  shopify_collection_membership_update: ['shopify'],
+  etsy_shop_data_retrieval: ['etsy'],
+  etsy_listing_data_retrieval: ['etsy'],
+  // The one genuinely multi-platform tool: tools/customerMarketOpportunityTool.js reads
+  // the Shopify catalogue and the Etsy listings independently in one Promise.all.
+  catalogue_expansion_opportunities: ['shopify', 'etsy'],
+};
 
 const EXPECTED_ORDER = [
   'business_configuration_retrieval',
@@ -227,6 +251,86 @@ test('getToolsByCategory() filters correctly', () => {
 test('getToolsByStatus() returns the correct counts for each status', () => {
   assert.strictEqual(getToolsByStatus('not_implemented').length, TOOL_REGISTRY.length - IMPLEMENTED_IDS.length);
   assert.strictEqual(getToolsByStatus('implemented').length, IMPLEMENTED_IDS.length);
+});
+
+// ---------------------------------------------------------------------------------
+// PLATFORM BINDING - the third axis, read by agent/core/toolPermissions.js's gate.
+// ---------------------------------------------------------------------------------
+
+test('TOOL_PLATFORMS is agent/core/channelModel.js CHANNELS, not a second platform list', () => {
+  assert.deepStrictEqual(TOOL_PLATFORMS, CHANNELS);
+  // Guards against a platform being named here before a real adapter for it exists.
+  assert.deepStrictEqual(TOOL_PLATFORMS, ['shopify', 'etsy']);
+});
+
+test('every entry declares a platforms array naming only platforms with a real adapter', () => {
+  for (const tool of TOOL_REGISTRY) {
+    assert.ok(Array.isArray(tool.platforms), `${tool.id} platforms must be an array`);
+    for (const platform of tool.platforms) {
+      assert.ok(
+        TOOL_PLATFORMS.includes(platform),
+        `${tool.id} names platform '${platform}', which this project has no adapter for`
+      );
+    }
+    assert.strictEqual(
+      new Set(tool.platforms).size,
+      tool.platforms.length,
+      `${tool.id} lists a platform more than once`
+    );
+  }
+});
+
+test('exactly the expected tools are platform-bound, with exactly the expected platforms', () => {
+  const actual = {};
+  for (const tool of TOOL_REGISTRY) {
+    if (tool.platforms.length > 0) actual[tool.id] = tool.platforms;
+  }
+  assert.deepStrictEqual(actual, EXPECTED_PLATFORM_BINDINGS);
+});
+
+test('every other tool is platform-neutral - it reaches no e-commerce platform at all', () => {
+  const neutral = TOOL_REGISTRY.filter((tool) => tool.platforms.length === 0).map((tool) => tool.id);
+  assert.strictEqual(neutral.length, TOOL_REGISTRY.length - Object.keys(EXPECTED_PLATFORM_BINDINGS).length);
+  for (const id of Object.keys(EXPECTED_PLATFORM_BINDINGS)) {
+    assert.ok(!neutral.includes(id), `${id} should be platform-bound, not neutral`);
+  }
+});
+
+test('getToolsByPlatform() returns every tool bound to that platform, including multi-platform ones', () => {
+  const shopify = getToolsByPlatform('shopify').map((tool) => tool.id);
+  const etsy = getToolsByPlatform('etsy').map((tool) => tool.id);
+
+  assert.deepStrictEqual(
+    shopify,
+    Object.keys(EXPECTED_PLATFORM_BINDINGS).filter((id) => EXPECTED_PLATFORM_BINDINGS[id].includes('shopify'))
+      .sort((a, b) => EXPECTED_ORDER.indexOf(a) - EXPECTED_ORDER.indexOf(b))
+  );
+  assert.deepStrictEqual(
+    etsy,
+    Object.keys(EXPECTED_PLATFORM_BINDINGS).filter((id) => EXPECTED_PLATFORM_BINDINGS[id].includes('etsy'))
+      .sort((a, b) => EXPECTED_ORDER.indexOf(a) - EXPECTED_ORDER.indexOf(b))
+  );
+
+  // The multi-platform tool appears under BOTH, which is the point of an array field.
+  assert.ok(shopify.includes('catalogue_expansion_opportunities'));
+  assert.ok(etsy.includes('catalogue_expansion_opportunities'));
+});
+
+test('getToolsByPlatform(null) returns the platform-neutral tools', () => {
+  const neutral = getToolsByPlatform(null).map((tool) => tool.id);
+  assert.deepStrictEqual(getToolsByPlatform(undefined).map((tool) => tool.id), neutral);
+  assert.ok(neutral.includes('keyword_research'));
+  assert.ok(neutral.includes('compliance_check'));
+  assert.ok(!neutral.includes('product_data_retrieval'));
+  for (const tool of getToolsByPlatform(null)) {
+    assert.deepStrictEqual(tool.platforms, []);
+  }
+});
+
+test('getToolsByPlatform() returns [] for a platform this project has no adapter for', () => {
+  for (const unknown of ['amazon', 'ebay', 'woocommerce', 'Shopify', 'SHOPIFY', '']) {
+    assert.deepStrictEqual(getToolsByPlatform(unknown), [], `${unknown} should match no tool`);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

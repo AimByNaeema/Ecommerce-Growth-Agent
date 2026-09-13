@@ -29,7 +29,7 @@
 // a new array with the matching record replaced, the same caller-holds-the-array
 // discipline agent/core/experimentLearningStore.js already established.
 
-const { getClassificationById } = require('./approvalArchitecture');
+const { getClassificationById, verifyApprovalAuthorization } = require('./approvalArchitecture');
 const {
   APPROVAL_REQUEST_STATUSES,
   createEmptyApprovalRequest,
@@ -100,7 +100,26 @@ const DECIDABLE_STATUSES = ['approved', 'rejected'];
 // was needed there. When supplied, a request belonging to a different business is
 // refused before any mutation happens, exactly like every other precondition check
 // below. Omitting it preserves today's exact behavior (no cross-business check).
-function decideApprovalRequest(requests, requestId, { decision, decidedBy, notes = null, expectedBusinessId = null } = {}) {
+// `authorization` is REQUIRED and is the only thing that can make a decision real: it is
+// { nonce, signature }, where the signature is an Ed25519 signature over the challenge this
+// server issued for exactly this request, decision and approver (see
+// approvals/approvalArchitecture.js's verifyApprovalAuthorization).
+//
+// WHY decidedBy IS NO LONGER SUFFICIENT ON ITS OWN. It never was evidence - it is a string
+// this process can write as easily as a person can, which is exactly how an agent could
+// approve its own pending action. It is still required, because a decision must still NAME
+// an accountable person, but it is now a label ON the proof rather than the proof itself:
+// the signature must have been produced for that same approver, so the name cannot be
+// swapped after the fact either.
+//
+// FAILS CLOSED. Verification is attempted before any mutation, and an unverified decision
+// throws - there is no branch anywhere in this function that records a decision without a
+// signature that validated under the configured public key.
+function decideApprovalRequest(
+  requests,
+  requestId,
+  { decision, decidedBy, notes = null, expectedBusinessId = null, authorization = null } = {}
+) {
   const fnName = 'decideApprovalRequest';
 
   requireRequestArray(requests, fnName);
@@ -130,12 +149,32 @@ function decideApprovalRequest(requests, requestId, { decision, decidedBy, notes
     );
   }
 
+  // THE HUMAN-PROVENANCE GATE. Last precondition checked, and the one that cannot be
+  // satisfied from inside this process: it needs a signature produced with a key this
+  // server does not hold. Everything above is a consistency check; this is the proof.
+  const verification = verifyApprovalAuthorization({ request: existing, decision, decidedBy, authorization });
+  if (!verification.verified) {
+    throw new Error(
+      `${fnName} refused: the decision on '${requestId}' is not accompanied by verified human authorization ` +
+        `(${verification.failed_check}). ${verification.reason}`
+    );
+  }
+
   const decided = {
     ...existing,
     status: decision,
     decided_at: new Date().toISOString(),
     decided_by: decidedBy,
     decision_notes: notes,
+    // The verified provenance rides INSIDE execution_request, which
+    // approvals/approvalRequestModel.js already relays "as-is, never rebuilt" - the same
+    // place approvals/complianceApprovalGate.js attaches its compliance summary. The record
+    // schema is deliberately not widened for this: a new top-level field would change a
+    // shape that publishAuthorization.js and the model validator both depend on.
+    execution_request: {
+      ...(existing.execution_request && typeof existing.execution_request === 'object' ? existing.execution_request : {}),
+      approval_provenance: verification.provenance,
+    },
   };
 
   const validation = validateApprovalRequestShape(decided);
@@ -167,6 +206,66 @@ function isApprovalGranted(requests, id) {
   return Boolean(request && request.status === 'approved');
 }
 
+// ---------------------------------------------------------------------------------
+// DURABLE PENDING STATE - the same lifecycle, surviving a restart.
+// ---------------------------------------------------------------------------------
+//
+// The pure, caller-held-array functions above are UNCHANGED and remain the whole lifecycle:
+// createApprovalRequest still makes the pending record, decideApprovalRequest is still the
+// only thing that can move one out of pending, and it still demands a verified Ed25519
+// signature. The three functions below only add durability around them - they compose, they
+// do not replace, and nothing here decides anything.
+//
+// WHY IT IS ADDITIVE RATHER THAN BUILT IN. A caller that holds its own array keeps working
+// exactly as before; a caller that wants its pending approvals to outlive the process opts
+// in by using these. That is the same additive convention expectedBusinessId, auditTracker
+// and businessId already follow throughout this project.
+//
+// STORAGE LIVES IN approvals/approvalStore.js, not here: this module's own contract is to
+// hold no hidden state, and that stays true - every function below takes or returns the
+// state it works on, and the store is the only thing that touches a file.
+
+const approvalStore = require('./approvalStore');
+
+// Creates a pending approval AND persists it, so the decision point survives a restart.
+// Returns the record itself (not the storage envelope), so this is a drop-in for
+// createApprovalRequest at any call site that wants durability.
+function createAndPersistApprovalRequest(options = {}, storeOptions = {}) {
+  const record = createApprovalRequest(options);
+  approvalStore.saveApprovalRecord(record, storeOptions);
+  return record;
+}
+
+// Records a decision through the real decideApprovalRequest - signature verification and
+// all - and persists the decided record.
+//
+// THE DECISION IS MADE FIRST, PERSISTED SECOND. An unverified decision throws before
+// anything is written, so a refused approval leaves the stored state untouched rather than
+// recording an attempt that did not happen.
+//
+// Returns the same new array decideApprovalRequest returns, so this is a drop-in for it.
+function decideAndPersistApprovalRequest(requests, requestId, options = {}, storeOptions = {}) {
+  const updated = decideApprovalRequest(requests, requestId, options);
+  const decided = getApprovalRequestById(updated, requestId);
+  approvalStore.saveApprovalRecord(decided, { ...storeOptions, executionState: 'decided' });
+  return updated;
+}
+
+// Rebuilds the caller-held array after a restart, from durable state alone.
+//
+// Returns REAL approval records - the same shape createApprovalRequest produced, carrying
+// their original identity, execution request, business_id, and (once decided) the verified
+// approval provenance. Every one is re-validated against approvals/approvalRequestModel.js
+// before being handed back, so a file that has been edited into an invalid shape is dropped
+// rather than trusted: reload is a read of durable state, never an opportunity to introduce
+// a record the schema would have refused.
+function loadPendingApprovalRequests(storeOptions = {}) {
+  return approvalStore
+    .listPendingApprovals(storeOptions)
+    .map((envelope) => envelope.approval_request)
+    .filter((record) => validateApprovalRequestShape(record).valid);
+}
+
 module.exports = {
   APPROVAL_REQUEST_STATUSES,
   createApprovalRequest,
@@ -174,6 +273,10 @@ module.exports = {
   getApprovalRequestById,
   getPendingApprovalRequests,
   isApprovalGranted,
+  // Durable pending state (approvals/approvalStore.js).
+  createAndPersistApprovalRequest,
+  decideAndPersistApprovalRequest,
+  loadPendingApprovalRequests,
 };
 
 if (require.main === module) {

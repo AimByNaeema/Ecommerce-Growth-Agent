@@ -28,6 +28,8 @@
 // NO REAL EXTERNAL CALLS: every orchestrator function is replaced outright.
 
 const assert = require('node:assert');
+// Real Ed25519 signing for the HTTP approval flow - see approvalSigningTestKey.js.
+const { signPayloadString } = require('./approvalSigningTestKey');
 const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -44,6 +46,13 @@ const STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-history-persis
 process.env.RUN_HISTORY_STORE_DIR = STORE_DIR;
 const TEST_API_KEY = 'test-agent-api-key-do-not-use-in-production';
 process.env.AGENT_API_KEY = TEST_API_KEY;
+// This suite persists and lists runs under explicit business ids, which
+// security/serverAccessControl.js's business-authorization gate now refuses unless the
+// credential is bound to them. Both ids this suite uses are authorized here so it keeps
+// testing persistence rather than the authorization boundary - and so its own
+// "/history?business_id= returns only that business's runs" assertion still exercises real
+// filtering between two businesses this credential may legitimately see.
+process.env.AGENT_API_KEY_BUSINESS_IDS = 'business-alpha,business-beta';
 process.env.RATE_LIMIT_MAX_REQUESTS = '10000';
 
 const { createApp } = require('../../server');
@@ -98,6 +107,18 @@ function request(port, { method, path: reqPath, body, authenticated = true }) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+// Obtains a REAL signed approval over HTTP: ask the server for the challenge, sign that
+// exact payload with the test private key, return the body with nonce and signature.
+async function signedApprovalBody(port, body) {
+  const query =
+    'approvalId=' + encodeURIComponent(body.approvalId) +
+    '&decision=' + encodeURIComponent(body.decision) +
+    '&decidedBy=' + encodeURIComponent(body.decidedBy);
+  const challengeRes = await request(port, { method: 'GET', path: '/approval-challenge?' + query });
+  const challenge = JSON.parse(challengeRes.raw);
+  return { ...body, nonce: challenge.nonce, signature: signPayloadString(challenge.payload) };
 }
 
 // Each call builds a FRESH app - a new process's worth of in-memory state (new
@@ -259,7 +280,16 @@ function buildCompletedResult(runId) {
         const res = await request(port, {
           method: 'POST',
           path: '/growth-workflow/approve',
-          body: { run_id: runId, approvalId: 'apr-persist-4', decision: 'approved', decidedBy: 'a-named-human' },
+          body: {
+            run_id: runId,
+            approvalId: 'apr-persist-4',
+            decision: 'approved',
+            decidedBy: 'a-named-human',
+            // Present but unverifiable: enough to reach the run-id check, which is what this
+            // test is about, and guaranteed never to authorize a resume.
+            nonce: 'not-a-real-challenge-nonce',
+            signature: Buffer.from('not-a-real-signature').toString('base64'),
+          },
         });
         assert.strictEqual(res.status, 400);
         assert.strictEqual(JSON.parse(res.raw).error, 'Unrecognized or expired run id.');
@@ -292,7 +322,12 @@ function buildCompletedResult(runId) {
           const res = await request(port, {
             method: 'POST',
             path: '/growth-workflow/approve',
-            body: { run_id: runId, approvalId: 'apr-persist-5', decision: 'approved', decidedBy: 'a-named-human' },
+            body: await signedApprovalBody(port, {
+              run_id: runId,
+              approvalId: 'apr-persist-5',
+              decision: 'approved',
+              decidedBy: 'a-named-human',
+            }),
           });
           assert.strictEqual(res.status, 200);
         })

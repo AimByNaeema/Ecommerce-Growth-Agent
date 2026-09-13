@@ -13,18 +13,34 @@
 // entry uses, so a missing credential or an Etsy outage becomes a reported failure rather
 // than an exception escaping into the orchestrator.
 
+// RESOLVED, NOT IMPORTED. The data path now goes through
+// integrations/adapters/adapterRegistry.js, which hands back a contract-checked adapter -
+// for 'etsy' that is integrations/adapters/etsyReadAdapter.js, the thin shim over the same
+// read client this tool used to require directly. Behaviour is unchanged: the shim adds no
+// transport, and it is still GET-only all the way down.
+const { getReadAdapter } = require('../integrations/adapters/adapterRegistry');
+// STILL IMPORTED, DELIBERATELY, FOR ONE NON-CONTRACT THING. missingReadCredentials() names
+// WHICH credential keys are absent, which the read contract does not cover - isConfigured()
+// is a boolean and says nothing about why. That diagnostic is Etsy-specific by nature, so it
+// stays with the Etsy client rather than being forced into a platform-independent contract
+// it does not belong in. No data is read through this import.
 const etsyReadClient = require('../integrations/adapters/etsyReadClient');
 
-// Retrieves the shop record. Returns exactly what getEtsyShop() returns and throws exactly
-// what it throws - never fabricates a shop.
+const PLATFORM = 'etsy';
+
+// Retrieves the shop record. `native` is the shim's verbatim relay of the read client's own
+// normalized shop record - the exact shape this tool has always returned, so every
+// downstream reader of shop_id/shop_name/currency_code is unaffected. Throws exactly what
+// the underlying read throws - never fabricates a shop.
 async function retrieveEtsyShopData(params = {}) {
-  return etsyReadClient.getEtsyShop(params);
+  const shop = await getReadAdapter(PLATFORM).getShopInfo(params);
+  return shop.native;
 }
 
 async function runEtsyShopDataTool(researchParams) {
   const params = researchParams && typeof researchParams === 'object' ? researchParams : {};
   try {
-    if (!etsyReadClient.canRead({ businessId: params.businessId || null })) {
+    if (!getReadAdapter(PLATFORM).isConfigured({ businessId: params.businessId || null })) {
       const missing = etsyReadClient.missingReadCredentials(params.businessId || null);
       return {
         status: 'failed',

@@ -28,6 +28,9 @@
 // approval gate rather than beside it.
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 const { runOrchestratorContract, executeSelectedCapability, resumeApprovedExecution } = require('../../agent/core/orchestratorExecutionContract');
 const { TOOL_CLASSIFICATIONS } = require('../../agent/core/toolPermissions');
 const { decideApprovalRequest } = require('../../approvals/approvalWorkflow');
@@ -255,10 +258,10 @@ function buildAnalyticsExecutionRequest(researchParams) {
             assert.strictEqual(pendingRequest.specialist_id, 'analytics_optimization');
             assert.strictEqual(calls, 0, 'the external client must never be reached before approval');
 
-            const approvedRequests = decideApprovalRequest(response.pending_approvals, pendingRequest.id, {
+            const approvedRequests = decideApprovalRequest(response.pending_approvals, pendingRequest.id, signedDecision(response.pending_approvals, pendingRequest.id, {
               decision: 'approved',
               decidedBy: 'owner@example.com',
-            });
+            }));
             const resumedOutcome = await resumeApprovedExecution(approvedRequests[0]);
 
             assert.strictEqual(resumedOutcome.status, 'success');
@@ -287,11 +290,11 @@ function buildAnalyticsExecutionRequest(researchParams) {
             const gated = await executeSelectedCapability(executionRequest, undefined, runApprovalTracker);
             assert.strictEqual(gated.status, 'approval_required');
 
-            const rejectedRequests = decideApprovalRequest(runApprovalTracker.requests, gated.approval_request_id, {
+            const rejectedRequests = decideApprovalRequest(runApprovalTracker.requests, gated.approval_request_id, signedDecision(runApprovalTracker.requests, gated.approval_request_id, {
               decision: 'rejected',
               decidedBy: 'owner@example.com',
               notes: 'Not needed right now.',
-            });
+            }));
             const resumedOutcome = await resumeApprovedExecution(rejectedRequests[0]);
 
             assert.strictEqual(resumedOutcome.status, 'denied');
@@ -313,10 +316,10 @@ function buildAnalyticsExecutionRequest(researchParams) {
             const gated = await executeSelectedCapability(executionRequest, undefined, runApprovalTracker);
             assert.strictEqual(gated.status, 'approval_required');
 
-            const approvedRequests = decideApprovalRequest(runApprovalTracker.requests, gated.approval_request_id, {
+            const approvedRequests = decideApprovalRequest(runApprovalTracker.requests, gated.approval_request_id, signedDecision(runApprovalTracker.requests, gated.approval_request_id, {
               decision: 'approved',
               decidedBy: 'owner@example.com',
-            });
+            }));
             const resumedOutcome = await resumeApprovedExecution(approvedRequests[0]);
 
             // The orchestrator dispatch itself still "succeeds" (analyticsDataTool.js

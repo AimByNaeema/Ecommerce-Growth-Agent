@@ -38,6 +38,10 @@ process.env.RUN_HISTORY_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'serve
 const VALID_KEY = 'test-agent-api-key-do-not-use-in-production';
 
 const { createApp } = require('../../server');
+const accessControl = require('../../security/serverAccessControl');
+// Writes local run-record fixtures into the throwaway RUN_HISTORY_STORE_DIR above, so the
+// /history enumeration tests have two businesses' runs to distinguish. No network involved.
+const runHistoryStore = require('../../agent/core/runHistoryStore');
 
 let passed = 0;
 let failed = 0;
@@ -359,6 +363,242 @@ async function run() {
       assert.strictEqual(js.status, 200);
       assert.ok(!js.raw.includes(VALID_KEY), 'dashboard.js must not embed the API key');
     });
+  });
+
+  // =================================================================================
+  // BUSINESS AUTHORIZATION - authentication is not authorization.
+  // =================================================================================
+  //
+  // NO EXTERNAL CALL IS MADE BY ANY TEST BELOW. Every request either is refused before a
+  // handler runs, or hits /history, which reads only the throwaway run-history directory
+  // this suite created. No Shopify, Etsy, Gemini or Tavily call is possible on these paths.
+
+  const BUSINESS_IDS_ENV = 'AGENT_API_KEY_BUSINESS_IDS';
+  const AUTHORIZED_BUSINESS = 'authorized-business';
+  const OTHER_BUSINESS = 'someone-elses-business';
+
+  // --- the pure predicate, independent of HTTP ---------------------------------------
+
+  await testAsync('UNIT: the authorized set is parsed from configuration, and validated', () => {
+    const saved = process.env[BUSINESS_IDS_ENV];
+    try {
+      process.env[BUSINESS_IDS_ENV] = 'alpha, beta  gamma';
+      assert.deepStrictEqual(accessControl.getAuthorizedBusinessIds(), ['alpha', 'beta', 'gamma']);
+      // A malformed entry can never become an access grant - it is dropped, not honoured.
+      process.env[BUSINESS_IDS_ENV] = '../escape, ok-one, , bad/slash, ok-one';
+      assert.deepStrictEqual(accessControl.getAuthorizedBusinessIds(), ['ok-one']);
+      // Unset and blank both mean "none authorized by name".
+      delete process.env[BUSINESS_IDS_ENV];
+      assert.deepStrictEqual(accessControl.getAuthorizedBusinessIds(), []);
+      process.env[BUSINESS_IDS_ENV] = '   ';
+      assert.deepStrictEqual(accessControl.getAuthorizedBusinessIds(), []);
+    } finally {
+      if (saved === undefined) delete process.env[BUSINESS_IDS_ENV];
+      else process.env[BUSINESS_IDS_ENV] = saved;
+    }
+  });
+
+  await testAsync('UNIT: FAILS CLOSED - with nothing configured, no business is reachable by name', () => {
+    const saved = process.env[BUSINESS_IDS_ENV];
+    try {
+      delete process.env[BUSINESS_IDS_ENV];
+      // The default (root-.env) business stays reachable: that is the single-business
+      // deployment, and it is what every request naming no business_id means.
+      assert.strictEqual(accessControl.isBusinessAuthorized(null), true);
+      assert.strictEqual(accessControl.isBusinessAuthorized(undefined), true);
+      assert.strictEqual(accessControl.isBusinessAuthorized(''), true);
+      // Every explicit id is refused.
+      for (const id of [AUTHORIZED_BUSINESS, OTHER_BUSINESS, 'anything', '../escape']) {
+        assert.strictEqual(accessControl.isBusinessAuthorized(id), false, `${id} must be refused`);
+      }
+    } finally {
+      if (saved === undefined) delete process.env[BUSINESS_IDS_ENV];
+      else process.env[BUSINESS_IDS_ENV] = saved;
+    }
+  });
+
+  await testAsync('UNIT: only the bound businesses are authorized, and a path-traversal id never is', () => {
+    const saved = process.env[BUSINESS_IDS_ENV];
+    try {
+      process.env[BUSINESS_IDS_ENV] = AUTHORIZED_BUSINESS;
+      assert.strictEqual(accessControl.isBusinessAuthorized(AUTHORIZED_BUSINESS), true);
+      assert.strictEqual(accessControl.isBusinessAuthorized(OTHER_BUSINESS), false);
+      for (const id of ['../' + AUTHORIZED_BUSINESS, AUTHORIZED_BUSINESS + '/..', '..', 'AUTHORIZED-BUSINESS/x']) {
+        assert.strictEqual(accessControl.isBusinessAuthorized(id), false, `${id} must be refused`);
+      }
+    } finally {
+      if (saved === undefined) delete process.env[BUSINESS_IDS_ENV];
+      else process.env[BUSINESS_IDS_ENV] = saved;
+    }
+  });
+
+  // --- over HTTP, on a real business-scoped endpoint ----------------------------------
+
+  await testAsync('AUTHORIZED key + AUTHORIZED business = allowed', async () => {
+    await withServer(
+      async (port) => {
+        const res = await request(port, {
+          method: 'GET',
+          path: `/history?business_id=${AUTHORIZED_BUSINESS}`,
+          headers: authHeaders(),
+        });
+        assert.strictEqual(res.status, 200);
+        assert.ok(Array.isArray(JSON.parse(res.raw).runs));
+      },
+      { env: { [BUSINESS_IDS_ENV]: AUTHORIZED_BUSINESS } }
+    );
+  });
+
+  await testAsync('AUTHORIZED key + a DIFFERENT business = denied, on body and query alike', async () => {
+    await withServer(
+      async (port) => {
+        const viaQuery = await request(port, {
+          method: 'GET',
+          path: `/history?business_id=${OTHER_BUSINESS}`,
+          headers: authHeaders(),
+        });
+        assert.strictEqual(viaQuery.status, 403);
+
+        // The same boundary applies to a POST body - there is no quieter way in.
+        const viaBody = await request(port, {
+          method: 'POST',
+          path: '/growth-workflow',
+          body: { business_id: OTHER_BUSINESS },
+          headers: authHeaders(),
+        });
+        assert.strictEqual(viaBody.status, 403);
+      },
+      { env: { [BUSINESS_IDS_ENV]: AUTHORIZED_BUSINESS } }
+    );
+  });
+
+  await testAsync('an UNKNOWN business is denied, and the refusal reveals nothing', async () => {
+    await withServer(
+      async (port) => {
+        const res = await request(port, {
+          method: 'GET',
+          path: '/history?business_id=never-configured-anywhere',
+          headers: authHeaders(),
+        });
+        assert.strictEqual(res.status, 403);
+        // The refusal must not leak the key, the authorized businesses, or any config.
+        assert.ok(!res.raw.includes(VALID_KEY));
+        assert.ok(!res.raw.includes(AUTHORIZED_BUSINESS), 'a refusal must not enumerate authorized businesses');
+        assert.ok(!res.raw.includes('AGENT_API_KEY'));
+      },
+      { env: { [BUSINESS_IDS_ENV]: AUTHORIZED_BUSINESS } }
+    );
+  });
+
+  await testAsync('a MALFORMED business_id is a 400, and an ABSENT one is the default business', async () => {
+    await withServer(
+      async (port) => {
+        // Non-string in a body -> malformed request, not an authorization decision.
+        const malformed = await request(port, {
+          method: 'POST',
+          path: '/growth-workflow',
+          body: { business_id: 42 },
+          headers: authHeaders(),
+        });
+        assert.strictEqual(malformed.status, 400);
+
+        // Absent -> the server's own root-.env business, unchanged behaviour.
+        const absent = await request(port, { method: 'GET', path: '/history', headers: authHeaders() });
+        assert.strictEqual(absent.status, 200);
+      },
+      { env: { [BUSINESS_IDS_ENV]: AUTHORIZED_BUSINESS } }
+    );
+  });
+
+  await testAsync('AUTHENTICATION STILL COMES FIRST: no key is 401 even for an authorized business', async () => {
+    await withServer(
+      async (port) => {
+        const res = await request(port, { method: 'GET', path: `/history?business_id=${AUTHORIZED_BUSINESS}` });
+        assert.strictEqual(res.status, 401);
+      },
+      { env: { [BUSINESS_IDS_ENV]: AUTHORIZED_BUSINESS } }
+    );
+  });
+
+  // --- /history cannot be used to enumerate another business ---------------------------
+
+  await testAsync('/HISTORY CANNOT ENUMERATE: an unscoped listing returns only what this key may see', async () => {
+    // Local fixtures written straight into this suite's throwaway store - no network.
+    runHistoryStore.saveRunRecord({
+      run_id: 'auth-visible-run',
+      kind: 'growth_workflow',
+      business_id: AUTHORIZED_BUSINESS,
+      created_at: '2026-02-01T00:00:00.000Z',
+    });
+    runHistoryStore.saveRunRecord({
+      run_id: 'auth-foreign-run',
+      kind: 'growth_workflow',
+      business_id: OTHER_BUSINESS,
+      created_at: '2026-02-02T00:00:00.000Z',
+    });
+    runHistoryStore.saveRunRecord({
+      run_id: 'auth-default-run',
+      kind: 'orchestrate',
+      created_at: '2026-02-03T00:00:00.000Z',
+    });
+
+    await withServer(
+      async (port) => {
+        const res = await request(port, { method: 'GET', path: '/history', headers: authHeaders() });
+        assert.strictEqual(res.status, 200);
+        const ids = JSON.parse(res.raw).runs.map((run) => run.run_id);
+
+        // Its own business and the default business are visible...
+        assert.ok(ids.includes('auth-visible-run'));
+        assert.ok(ids.includes('auth-default-run'));
+        // ...and the other customer's run is not, even though no business_id was named.
+        assert.ok(!ids.includes('auth-foreign-run'), 'an unscoped listing must not expose another business');
+        assert.ok(!res.raw.includes(OTHER_BUSINESS), 'not even the other business id may appear');
+      },
+      { env: { [BUSINESS_IDS_ENV]: AUTHORIZED_BUSINESS } }
+    );
+  });
+
+  await testAsync('/HISTORY/:runId of another business is NOT FOUND, identical to an unknown id', async () => {
+    await withServer(
+      async (port) => {
+        const foreign = await request(port, { method: 'GET', path: '/history/auth-foreign-run', headers: authHeaders() });
+        const unknown = await request(port, { method: 'GET', path: '/history/never-existed-at-all', headers: authHeaders() });
+
+        // 404, not 403: a 403 would confirm the run exists, which is the enumeration itself.
+        assert.strictEqual(foreign.status, 404);
+        assert.strictEqual(unknown.status, 404);
+        assert.strictEqual(foreign.raw, unknown.raw, 'the two responses must be indistinguishable');
+        assert.ok(!foreign.raw.includes(OTHER_BUSINESS));
+
+        // Its own run is still readable.
+        const own = await request(port, { method: 'GET', path: '/history/auth-visible-run', headers: authHeaders() });
+        assert.strictEqual(own.status, 200);
+      },
+      { env: { [BUSINESS_IDS_ENV]: AUTHORIZED_BUSINESS } }
+    );
+  });
+
+  await testAsync('WITH NOTHING CONFIGURED: only default-business runs are listed, and none by name', async () => {
+    await withServer(
+      async (port) => {
+        const listed = await request(port, { method: 'GET', path: '/history', headers: authHeaders() });
+        assert.strictEqual(listed.status, 200);
+        const ids = JSON.parse(listed.raw).runs.map((run) => run.run_id);
+        assert.ok(ids.includes('auth-default-run'));
+        assert.ok(!ids.includes('auth-visible-run'), 'an unbound key reaches no business by name');
+        assert.ok(!ids.includes('auth-foreign-run'));
+
+        // And naming any business at all is refused.
+        const named = await request(port, {
+          method: 'GET',
+          path: `/history?business_id=${AUTHORIZED_BUSINESS}`,
+          headers: authHeaders(),
+        });
+        assert.strictEqual(named.status, 403);
+      },
+      { env: { [BUSINESS_IDS_ENV]: '' } }
+    );
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

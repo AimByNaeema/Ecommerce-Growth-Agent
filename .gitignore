@@ -33,6 +33,34 @@ memory/state/sessions/
 # Real business memory, never a template - never commit.
 memory/state/business/
 
+# Durable pending approvals and the actions they gate (approvals/approvalStore.js) - one
+# JSON file per approval under memory/state/approvals/. Each carries a real execution
+# request (objective, tool, business_id) and, once decided, the verified approval
+# provenance. The store refuses to write a credential into one, but the business content
+# and the signed decision are still never committed. Added with that store, the same way
+# the three rules above were added with whatever first wrote real data to their folder.
+memory/state/approvals/
+
+# Persisted monitoring snapshots (monitoring/snapshotStore.js) - one JSON file per capture
+# under memory/state/snapshots/<businessKey>/<platform>/. Each is a real picture of a real
+# store's catalogue, stock and order/customer counts at a moment in time. Same category of
+# data as the records above, ignored for the same reason, and added with the store that
+# first writes to that folder.
+memory/state/snapshots/
+
+# Persisted scheduled jobs (scheduler/scheduleStore.js) - one JSON file per job under
+# memory/state/schedules/<businessKey>/. Each names a real business's recurring work and
+# carries the claim state that stops an occurrence running twice. Same category of data as
+# the records above, ignored for the same reason.
+memory/state/schedules/
+
+# Persisted reliability state (reliability/circuitBreaker.js, reliability/executionVerification.js) -
+# which of a business's actions are currently failing, and which consequential changes have
+# already been applied and verified. Real per-business operational data, and the verification
+# records are what stop a consequential action being applied twice - never committed.
+memory/state/circuits/
+memory/state/verifications/
+
 data/business/*
 !data/business/README.md
 data/products/*

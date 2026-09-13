@@ -562,6 +562,157 @@ async function main() {
     assert.strictEqual(scoreModel.PRODUCT_OPPORTUNITY_SCORE_DIMENSIONS.length, 8);
   });
 
+  // ---------------------------------------------------------------------------------
+  // CHANNEL SELECTION: configuration decides, credentials never do.
+  // ---------------------------------------------------------------------------------
+  //
+  // NO EXTERNAL CALL IS MADE BY ANY TEST BELOW. readShopifyCatalogue/readEtsyCatalogue are
+  // called directly (they are exported precisely so this decision is testable without the
+  // research workflow behind them), and every assertion is about whether an adapter was
+  // reached AT ALL. The adapters' own credential checks are counted with a stub, so a
+  // "zero calls" claim is a counted fact rather than an inference.
+
+  const tool = require('../../tools/customerMarketOpportunityTool');
+  const shopifyClient = require('../../integrations/adapters/shopifyClient');
+  const etsyReadClient = require('../../integrations/adapters/etsyReadClient');
+
+  // Counts every time a channel's adapter is consulted at all. isConfigured() is the FIRST
+  // thing either reader does once it is past the enablement gate, so a count of 0 proves the
+  // gate returned before the adapter was touched.
+  function countingAdapterCalls(fn) {
+    const counts = { shopify: 0, etsy: 0 };
+    const savedShopify = shopifyClient.isConfigured;
+    const savedEtsy = etsyReadClient.canRead;
+    shopifyClient.isConfigured = () => {
+      counts.shopify += 1;
+      return false;
+    };
+    etsyReadClient.canRead = () => {
+      counts.etsy += 1;
+      return false;
+    };
+    return Promise.resolve()
+      .then(() => fn(counts))
+      .finally(() => {
+        shopifyClient.isConfigured = savedShopify;
+        etsyReadClient.canRead = savedEtsy;
+      });
+  }
+
+  await testAsync('SHOPIFY-ONLY CONFIG: Etsy is never called, and Shopify still is', async () => {
+    await countingAdapterCalls(async (counts) => {
+      const limitations = [];
+      const etsy = await tool.readEtsyCatalogue(null, limitations, ['shopify']);
+      assert.deepStrictEqual(etsy, [], 'a disabled channel contributes nothing');
+      assert.strictEqual(counts.etsy, 0, 'a disabled Etsy must make ZERO adapter calls');
+
+      const shopify = await tool.readShopifyCatalogue(null, limitations, ['shopify']);
+      assert.deepStrictEqual(shopify, []);
+      assert.strictEqual(counts.shopify, 1, 'an enabled Shopify is still asked whether it is reachable');
+
+      const disabledNote = limitations.find((entry) => entry.startsWith('etsy is not in'));
+      assert.ok(disabledNote, 'the disabled channel must be reported, never silently skipped');
+      assert.ok(/enabled_platforms/.test(disabledNote), 'the limitation must name the field to set');
+      assert.ok(/never enable a platform/.test(disabledNote));
+    });
+  });
+
+  await testAsync('ETSY-ENABLED CONFIG: Etsy is reached, and can contribute', async () => {
+    await countingAdapterCalls(async (counts) => {
+      const limitations = [];
+      await tool.readEtsyCatalogue(null, limitations, ['shopify', 'etsy']);
+      assert.strictEqual(counts.etsy, 1, 'an enabled Etsy is asked whether it is reachable');
+      // With the stub reporting "not reachable" it degrades honestly rather than throwing.
+      assert.ok(limitations.some((entry) => /Etsy is not connected for reading/.test(entry)));
+      // And it did NOT report the channel as disabled - enabled-but-unreachable is a
+      // different, separately-reported fact.
+      assert.ok(!limitations.some((entry) => entry.startsWith('etsy is not in')));
+    });
+  });
+
+  await testAsync('CREDENTIALS ALONE CANNOT ENABLE A DISABLED PLATFORM', async () => {
+    const savedKeystring = process.env.ETSY_API_KEYSTRING;
+    const savedToken = process.env.ETSY_OAUTH_ACCESS_TOKEN;
+    const savedShopId = process.env.ETSY_SHOP_ID;
+    const savedSecret = process.env.ETSY_SHARED_SECRET;
+    // A fully "connected" Etsy, by credentials alone. Fake values; nothing is ever called.
+    process.env.ETSY_API_KEYSTRING = 'CANARY-keystring-must-not-enable-etsy';
+    process.env.ETSY_OAUTH_ACCESS_TOKEN = 'CANARY-token-must-not-enable-etsy';
+    process.env.ETSY_SHOP_ID = '12345678';
+    process.env.ETSY_SHARED_SECRET = 'CANARY-secret-must-not-enable-etsy';
+    try {
+      await countingAdapterCalls(async (counts) => {
+        const limitations = [];
+        const etsy = await tool.readEtsyCatalogue(null, limitations, ['shopify']);
+        assert.deepStrictEqual(etsy, []);
+        assert.strictEqual(counts.etsy, 0, 'present credentials must not cause a single adapter call');
+        const note = limitations.find((entry) => entry.startsWith('etsy is not in'));
+        assert.ok(note);
+        assert.ok(!/CANARY/.test(note), 'no credential value may appear in a limitation');
+      });
+    } finally {
+      if (savedKeystring === undefined) delete process.env.ETSY_API_KEYSTRING;
+      else process.env.ETSY_API_KEYSTRING = savedKeystring;
+      if (savedToken === undefined) delete process.env.ETSY_OAUTH_ACCESS_TOKEN;
+      else process.env.ETSY_OAUTH_ACCESS_TOKEN = savedToken;
+      if (savedShopId === undefined) delete process.env.ETSY_SHOP_ID;
+      else process.env.ETSY_SHOP_ID = savedShopId;
+      if (savedSecret === undefined) delete process.env.ETSY_SHARED_SECRET;
+      else process.env.ETSY_SHARED_SECRET = savedSecret;
+    }
+  });
+
+  await testAsync('FAIL CLOSED: an empty or unknown enabled list reads nothing at all', async () => {
+    for (const enabledPlatforms of [[], ['amazon'], ['ebay'], ['amazon', 'ebay'], ['Shopify'], null, undefined, 'shopify']) {
+      await countingAdapterCalls(async (counts) => {
+        const limitations = [];
+        const shopify = await tool.readShopifyCatalogue(null, limitations, enabledPlatforms);
+        const etsy = await tool.readEtsyCatalogue(null, limitations, enabledPlatforms);
+        assert.deepStrictEqual(shopify, []);
+        assert.deepStrictEqual(etsy, []);
+        assert.strictEqual(
+          counts.shopify + counts.etsy,
+          0,
+          `enabledPlatforms=${JSON.stringify(enabledPlatforms)} must make ZERO adapter calls`
+        );
+      });
+    }
+  });
+
+  test('isChannelEnabled only ever accepts an exact, canonical platform id', () => {
+    assert.strictEqual(tool.isChannelEnabled('shopify', ['shopify']), true);
+    assert.strictEqual(tool.isChannelEnabled('etsy', ['shopify']), false);
+    for (const bad of [['Shopify'], ['SHOPIFY'], [' shopify'], ['amazon'], [], null, undefined, 'shopify', {}]) {
+      assert.strictEqual(tool.isChannelEnabled('shopify', bad), false, `${JSON.stringify(bad)} must not enable shopify`);
+    }
+  });
+
+  test('resolveEnabledPlatforms reads the business config, never credentials', () => {
+    const limitations = [];
+    // Root-config path: the already-loaded config object is the authority.
+    assert.deepStrictEqual(
+      tool.resolveEnabledPlatforms(null, { enabled_platforms: ['shopify', 'etsy'] }, limitations),
+      ['shopify', 'etsy']
+    );
+    // Canonicalized, and an unknown platform is dropped rather than enabling anything.
+    assert.deepStrictEqual(tool.resolveEnabledPlatforms(null, { enabled_platforms: ['Shopify', 'amazon'] }, limitations), [
+      'shopify',
+    ]);
+    // Absent, empty, and unreadable configs all enable nothing.
+    assert.deepStrictEqual(tool.resolveEnabledPlatforms(null, {}, limitations), []);
+    assert.deepStrictEqual(tool.resolveEnabledPlatforms(null, null, limitations), []);
+    assert.deepStrictEqual(limitations, [], 'the root-config path reports no limitation of its own');
+  });
+
+  test('resolveEnabledPlatforms fails closed and reports when a per-business config cannot be read', () => {
+    const limitations = [];
+    const result = tool.resolveEnabledPlatforms('no-such-business-fixture', null, limitations);
+    assert.deepStrictEqual(result, [], 'an unreadable config must enable nothing');
+    assert.strictEqual(limitations.length, 1);
+    assert.ok(/Enabled platforms could not be read/.test(limitations[0]));
+    assert.ok(/No channel was read/.test(limitations[0]));
+  });
+
   test('this test file is registered in the suite runner', () => {
     const { TEST_FILES } = require('./runAllTests');
     assert.ok(TEST_FILES.includes('customerMarketOpportunity.test.js'));

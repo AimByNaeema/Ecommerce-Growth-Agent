@@ -21,8 +21,17 @@
 // NEVER THROWS - same honest {status, result, error} envelope as every other
 // TOOL_EXECUTORS entry.
 
+// RESOLVED, NOT IMPORTED - see tools/etsyShopDataTool.js's own note. The data path goes
+// through the contract-checked adapter; the client import below survives only for the two
+// Etsy-specific things the platform-independent read contract does not cover.
+const { getReadAdapter } = require('../integrations/adapters/adapterRegistry');
+// Non-contract, Etsy-specific, and no data is read through it: missingReadCredentials()
+// names WHICH credential keys are absent (isConfigured() is only a boolean), and
+// ETSY_CHANNEL is this channel's own provenance constant.
 const etsyReadClient = require('../integrations/adapters/etsyReadClient');
 const { checkEtsyListingCompliance } = require('../compliance/etsyComplianceInput');
+
+const PLATFORM = 'etsy';
 
 // Etsy listing verdict -> this project's tool status vocabulary. Identical mapping to
 // tools/complianceCheckTool.js's, reused rather than reinvented so one verdict never means
@@ -33,8 +42,15 @@ const COMPLIANCE_STATUS_TO_TOOL_STATUS = { PASS: 'success', REVIEW: 'partial', B
 // quota - the caller raises it deliberately when it means to.
 const DEFAULT_LISTING_LIMIT = 25;
 
+// `native` is the shim's verbatim relay of the read client's own normalized listing record -
+// the exact shape this tool has always returned and the exact shape
+// compliance/etsyComplianceInput.js reads (listing_id, title, description, tags, price,
+// quantity, is_digital_product, channel). Mapping back to it keeps every downstream consumer
+// unchanged; the contract-shaped view the shim also produces is deliberately not used here,
+// because this tool is Etsy-specific by design and needs Etsy's own fields.
 async function retrieveEtsyListingData(params = {}) {
-  return etsyReadClient.getEtsyListings(params);
+  const products = await getReadAdapter(PLATFORM).getProducts(params);
+  return products.map((product) => product.native);
 }
 
 // The worst verdict across the listings checked. Worst-wins, so a single BLOCK is never
@@ -50,7 +66,7 @@ async function runEtsyListingDataTool(researchParams) {
   const businessId = params.businessId || null;
 
   try {
-    if (!etsyReadClient.canRead({ businessId })) {
+    if (!getReadAdapter(PLATFORM).isConfigured({ businessId })) {
       const missing = etsyReadClient.missingReadCredentials(businessId);
       return {
         status: 'failed',

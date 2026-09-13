@@ -7,29 +7,39 @@
 // section 3's "Permissions" shared infrastructure component: least-privilege access
 // control, so a specialist only gets the tools its own domain actually owns.
 //
-// ROLE-BASED PERMISSIONS (READ/WRITE/EXECUTE): permission is now two independent
-// gates, both required. (1) CATEGORY ownership (CATEGORY_TO_SPECIALIST/
-// SPECIALIST_TO_CATEGORIES below) - which tool DOMAINS a specialist may touch at all.
+// THREE INDEPENDENT LEAST-PRIVILEGE GATES, ALL REQUIRED:
+// (1) CATEGORY ownership (CATEGORY_TO_SPECIALIST/SPECIALIST_TO_CATEGORIES below) - which
+//     tool DOMAINS a specialist may touch at all.
 // (2) ROLE operation permission (SPECIALIST_ROLE_PERMISSIONS below) - which
-// tools/toolRegistry.js `operation` types ('read'/'write'/'execute') that specialist's
-// role covers. A specialist can be denied a tool it would otherwise own by category if
-// that tool's operation type falls outside its role - e.g. a hypothetical 'write'
-// tool added to the 'research' category would still be denied to Research, whose role
-// is READ-only, catching future mis-assigned tools rather than only checking today's
-// actual tool set. This is a real, additional least-privilege boundary, not a
-// restatement of category ownership.
+//     tools/toolRegistry.js `operation` types ('read'/'write'/'execute') that specialist's
+//     role covers. A specialist can be denied a tool it would otherwise own by category if
+//     that tool's operation type falls outside its role - e.g. a hypothetical 'write'
+//     tool added to the 'research' category would still be denied to Research, whose role
+//     is READ-only, catching future mis-assigned tools rather than only checking today's
+//     actual tool set. This is a real, additional least-privilege boundary, not a
+//     restatement of category ownership.
+// (3) PLATFORM enablement (PLATFORM_GATE_RULE below) - which e-commerce platforms the
+//     BUSINESS has enabled in its own configuration. A tool bound to a platform this
+//     business has not enabled is refused however well-owned and role-permitted it is.
+//     This is the axis that stops an Etsy tool being offered to a Shopify-only business,
+//     and it is the only one of the three that is about the business rather than the
+//     specialist. Opt-in per call (see evaluateToolAccess's `enabledPlatforms`), so it
+//     never silently changes an existing caller's answer.
 //
 // This module makes zero execution decisions of its own - no I/O, no tool calls. The
 // Chief/Orchestrator (agent/core/orchestratorExecutionContract.js) must go through
 // checkToolAccess() before ever invoking a tool executor; there is no separate,
 // unguarded execution path. That is what "do not give the Chief unrestricted
 // execution access" means in practice: every real dispatch is gated here first -
-// availability, then category, then role/operation, then approval, always in that
-// order, always before agent/core/orchestratorExecutionContract.js's TOOL_EXECUTORS is
-// ever read.
+// availability, then category, then role/operation, then platform, then approval, always
+// in that order, always before agent/core/orchestratorExecutionContract.js's
+// TOOL_EXECUTORS is ever read.
 
 const { getToolById } = require('../../tools/toolRegistry');
 const { TOOL_CATEGORIES } = require('../../tools/toolRegistry');
+// The platform vocabulary, reused rather than restated - a platform is only recognizable
+// here once a real adapter for it exists under integrations/adapters/.
+const { isValidChannel } = require('./channelModel');
 const { AUTO_APPROVED_CLASSIFICATIONS, requiresApproval } = require('../../approvals/approvalArchitecture');
 
 // Which TOOL_REGISTRY category each of the 7 approved specialists (see
@@ -250,6 +260,79 @@ function isOperationPermittedForSpecialist(specialistId, operation) {
   return allowedOperations.includes(operation);
 }
 
+// ---------------------------------------------------------------------------------
+// PLATFORM PERMISSION - the third least-privilege axis, after category and role.
+// ---------------------------------------------------------------------------------
+//
+// THE PROBLEM IT EXISTS TO CLOSE. tools/toolRegistry.js's two Etsy reads sit in the
+// 'products' category, so CATEGORY_TO_SPECIALIST granted them to the Product specialist
+// unconditionally - and this module reported them 'allowed' for a business that has no
+// Etsy shop at all. Whether a platform was "on" was answered nowhere in configuration; it
+// was inferred downstream from whichever credentials happened to be present in a .env.
+// That is what this gate replaces.
+//
+// CONFIGURATION IS THE ONLY AUTHORITY, AND CREDENTIALS ARE NEVER CONSULTED. The enabled
+// list comes from the business's own `enabled_platforms` config field (see
+// tools/configValidator.js's readEnabledPlatforms() and
+// configuration/businessRegistry.js's getEnabledPlatforms()). This module still reads no
+// file and no environment variable - it cannot, by design (see this file's header) - so a
+// credential appearing in the wrong .env can no longer enable a platform by accident. A
+// caller resolves the list and passes it in.
+//
+// OPT-IN, SO IT CANNOT SILENTLY CHANGE TODAY'S ANSWERS. `enabledPlatforms` defaults to
+// null, meaning "no platform context supplied, so run no platform check" - byte-for-byte
+// the behavior this module had before the gate existed. That is the same additive
+// convention businessId, auditTracker and decideApprovalRequest()'s expectedBusinessId
+// already follow in this project. A caller that supplies the list gets the gate; a caller
+// that does not is unaffected. Wiring the live request path to supply it is a separate,
+// explicitly-scoped step (agent/core/orchestratorExecutionContract.js and server.js are
+// untouched here).
+//
+// FAIL CLOSED ONCE ENGAGED. When a list IS supplied, a platform-bound tool is denied
+// unless the gate can positively establish the platform is enabled: an empty list, a
+// non-array, a null/blank entry, and any platform this project has no adapter for (not in
+// agent/core/channelModel.js's CHANNELS - e.g. 'amazon', 'ebay' today) all deny.
+const PLATFORM_GATE_RULE = {
+  id: 'platform_gate_requires_any_declared_platform_enabled',
+  description:
+    "A tool whose tools/toolRegistry.js `platforms` array is empty is platform-neutral and always passes this gate. A tool that names one or more platforms passes when AT LEAST ONE of them is enabled for the business - not all of them - because the only multi-platform tool today (catalogue_expansion_opportunities) reads each channel independently and contributes nothing for a channel that is not connected, so requiring every platform would delete a capability that works perfectly well on one.",
+  known_limitation:
+    "This gate decides whether a TOOL may run; it does not reach inside a multi-platform tool's per-channel choices. tools/customerMarketOpportunityTool.js still decides per channel from credential presence, so a business with Etsy credentials present but Etsy absent from enabled_platforms could still have that one tool read Etsy. Closing that needs the tool itself to consume the enabled list, which is a later, separately-scoped step - it is not closed here and is deliberately not described as if it were.",
+};
+
+// Whether ONE platform is enabled for the business whose `enabledPlatforms` list this is.
+// Pure - no I/O, no env, no credential check of any kind.
+//
+// Fails closed on every uncertain input: a platform this project has no adapter for is
+// never "enabled", however it appears in a config file, so a typo or an aspirational
+// entry ('amazon') cannot grant access. isValidChannel() is reused from
+// agent/core/channelModel.js rather than restating the platform list here.
+//
+// EXPECTS CANONICAL IDS, AND DELIBERATELY DOES NOT NORMALIZE. Canonicalizing a config
+// value ('Shopify', ' etsy ') is the CONFIG layer's job and is done once, in
+// tools/configValidator.js's readEnabledPlatforms() - the only sanctioned way to obtain
+// this list (via configuration/businessRegistry.js's getEnabledPlatforms()). So a raw,
+// un-normalized value reaching here is a caller that skipped that path, and treating it
+// as a match would be this gate quietly accepting input it cannot vouch for. It denies
+// instead. That is defense in depth, not a duplicate check: neither layer relies on the
+// other having run.
+function isPlatformEnabledForBusiness({ platform, enabledPlatforms } = {}) {
+  if (!Array.isArray(enabledPlatforms)) return false;
+  if (!isValidChannel(platform)) return false;
+  return enabledPlatforms.some((entry) => isValidChannel(entry) && entry === platform);
+}
+
+// Whether a TOOL's platform binding is permitted, per PLATFORM_GATE_RULE above.
+//
+// `toolPlatforms` absent, not an array, or empty => platform-neutral => always permitted.
+// That is deliberate and load-bearing, not lenience: a tool that reaches no e-commerce
+// platform has nothing for this gate to be about, and treating an absent binding as a
+// denial would refuse every tool shape that predates this field.
+function isToolPlatformPermitted({ toolPlatforms, enabledPlatforms } = {}) {
+  if (!Array.isArray(toolPlatforms) || toolPlatforms.length === 0) return true;
+  return toolPlatforms.some((platform) => isPlatformEnabledForBusiness({ platform, enabledPlatforms }));
+}
+
 // AUTO_APPROVED_CLASSIFICATIONS and requiresApproval() are imported from
 // approvals/approvalArchitecture.js above - that module is now the single source of
 // truth for which classifications may proceed automatically (the
@@ -278,13 +361,14 @@ function isSpecialistPermittedForCategory(specialistId, category) {
 // today happens to already fall inside its owning specialist's role, so there is no
 // real role-denied or approval_required tool to test end-to-end against; this keeps
 // those branches honestly testable without inventing a new tool in the registry.
-function evaluateToolAccess({ specialistId, tool, classification = null }) {
+function evaluateToolAccess({ specialistId, tool, classification = null, enabledPlatforms = null }) {
   if (!tool) {
     return {
       tool_id: null,
       available: false,
       category_permitted: null,
       operation_permitted: null,
+      platform_permitted: null,
       permitted: false,
       operation: null,
       approval_required: null,
@@ -301,6 +385,7 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
       available: false,
       category_permitted: null,
       operation_permitted: null,
+      platform_permitted: null,
       permitted: null,
       operation: tool.operation || null,
       approval_required: null,
@@ -317,6 +402,7 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
       available: true,
       category_permitted: false,
       operation_permitted: null,
+      platform_permitted: null,
       permitted: false,
       operation: tool.operation || null,
       approval_required: null,
@@ -337,12 +423,41 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
       available: true,
       category_permitted: true,
       operation_permitted: false,
+      platform_permitted: null,
       permitted: false,
       operation: tool.operation || null,
       approval_required: null,
       classification: null,
       decision: 'denied',
       reason: `Specialist '${specialistId || '(shared infrastructure)'}'s role does not permit '${tool.operation}' operations (its role allows: ${allowedOperations.join(', ') || 'none'}).`,
+    };
+  }
+
+  // THE PLATFORM GATE - fourth, after category and role, before approval. A tool the
+  // specialist genuinely owns and whose operation its role covers is still refused when it
+  // is bound to a platform this business has not enabled. See PLATFORM_GATE_RULE above.
+  //
+  // Skipped entirely when no platform context was supplied (enabledPlatforms === null),
+  // which is what keeps every existing caller's answer unchanged.
+  const platformContextSupplied = enabledPlatforms !== null && enabledPlatforms !== undefined;
+  const platformPermitted = platformContextSupplied
+    ? isToolPlatformPermitted({ toolPlatforms: tool.platforms, enabledPlatforms })
+    : null;
+  if (platformPermitted === false) {
+    const toolPlatforms = Array.isArray(tool.platforms) ? tool.platforms : [];
+    const enabledList = Array.isArray(enabledPlatforms) ? enabledPlatforms.filter(isValidChannel) : [];
+    return {
+      tool_id: tool.id,
+      available: true,
+      category_permitted: true,
+      operation_permitted: true,
+      platform_permitted: false,
+      permitted: false,
+      operation: tool.operation || null,
+      approval_required: null,
+      classification: null,
+      decision: 'denied',
+      reason: `Tool '${tool.id}' is bound to platform(s) '${toolPlatforms.join(', ')}', and this business has none of them enabled (enabled: ${enabledList.join(', ') || 'none'}). Platform enablement comes from the business's own enabled_platforms configuration - never from which credentials happen to be present.`,
     };
   }
 
@@ -353,6 +468,7 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
       available: true,
       category_permitted: true,
       operation_permitted: true,
+      platform_permitted: platformPermitted,
       permitted: true,
       operation: tool.operation || null,
       approval_required: true,
@@ -367,6 +483,7 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
     available: true,
     category_permitted: true,
     operation_permitted: true,
+    platform_permitted: platformPermitted,
     permitted: true,
     operation: tool.operation || null,
     approval_required: false,
@@ -380,10 +497,10 @@ function evaluateToolAccess({ specialistId, tool, classification = null }) {
 // its classification (TOOL_CLASSIFICATIONS above), then delegates to
 // evaluateToolAccess(). This is what agent/core/orchestratorExecutionContract.js calls
 // before ever executing a tool.
-function checkToolAccess({ specialistId, toolId }) {
+function checkToolAccess({ specialistId, toolId, enabledPlatforms = null }) {
   const tool = getToolById(toolId);
   const classification = tool ? (TOOL_CLASSIFICATIONS[tool.id] || null) : null;
-  return evaluateToolAccess({ specialistId, tool, classification });
+  return evaluateToolAccess({ specialistId, tool, classification, enabledPlatforms });
 }
 
 module.exports = {
@@ -394,8 +511,11 @@ module.exports = {
   AUTO_APPROVED_CLASSIFICATIONS,
   SPECIALIST_ROLE_PERMISSIONS,
   SHARED_INFRASTRUCTURE_ROLE_PERMISSIONS,
+  PLATFORM_GATE_RULE,
   isSpecialistPermittedForCategory,
   isOperationPermittedForSpecialist,
+  isPlatformEnabledForBusiness,
+  isToolPlatformPermitted,
   evaluateToolAccess,
   checkToolAccess,
 };
@@ -421,4 +541,29 @@ if (require.main === module) {
     classification: 'analysis_only',
   });
   console.log(`  Research's role is READ-only - a hypothetical WRITE tool in its own category -> decision: ${roleDenied.decision} (${roleDenied.reason})`);
+
+  console.log('\nPlatform gate (the third least-privilege axis) - a Shopify-only business:');
+  const shopifyOnly = ['shopify'];
+  for (const toolId of ['etsy_shop_data_retrieval', 'product_data_retrieval', 'catalogue_expansion_opportunities', 'keyword_research']) {
+    const result = checkToolAccess({ specialistId: getToolById(toolId).category === 'seo' ? 'seo' : 'product', toolId, enabledPlatforms: shopifyOnly });
+    const bound = getToolById(toolId).platforms;
+    const boundNote = bound.length === 0 ? 'platform-neutral' : bound.join('+');
+    console.log(`  ${toolId} (${boundNote}) -> ${result.decision}`);
+    if (result.decision === 'denied') console.log(`      ${result.reason}`);
+  }
+
+  console.log('\nThe same Etsy tool with NO platform context supplied is unchanged from before this gate existed:');
+  console.log(`  etsy_shop_data_retrieval -> ${checkToolAccess({ specialistId: 'product', toolId: 'etsy_shop_data_retrieval' }).decision}`);
+
+  console.log('\nFail-closed inputs (each denies a platform-bound tool):');
+  for (const [label, enabledPlatforms] of [
+    ['no platform enabled ([])', []],
+    ["a platform with no adapter (['amazon'])", ['amazon']],
+    ['a non-array value', 'shopify'],
+  ]) {
+    const result = checkToolAccess({ specialistId: 'product', toolId: 'product_data_retrieval', enabledPlatforms });
+    console.log(`  ${label} -> ${result.decision}`);
+  }
+
+  console.log(`\n${PLATFORM_GATE_RULE.known_limitation}`);
 }

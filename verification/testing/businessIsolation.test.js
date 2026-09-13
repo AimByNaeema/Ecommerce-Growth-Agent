@@ -15,6 +15,9 @@
 // suites cover).
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -66,10 +69,38 @@ function test(name, fn) {
   }
 }
 
+// A temp business now needs a real business.yaml as well as its .env, because the platform
+// gate has a live caller in the execution path: agent/core/orchestratorExecutionContract.js
+// resolves each request's business's own enabled_platforms and hands them to
+// checkToolAccess. A business with no readable configuration resolves to NO platform
+// enabled - which is the correct fail-closed answer, and would deny the Shopify-bound
+// analytics tool these isolation tests dispatch.
+//
+// This makes the fixture MORE realistic, not more permissive: each business now states its
+// own platform enablement exactly as a real one must, and the isolation these tests are
+// about (one business's data never reaching another's run) is unaffected.
+const TEMP_BUSINESS_YAML = `
+business_name: "Isolation Test Co"
+business_model: "D2C"
+platform: "Shopify"
+product_model: "in-house"
+target_markets: ["US"]
+countries: ["US"]
+currencies: ["USD"]
+product_categories: ["test"]
+customer_segments: ["test"]
+brand:
+  name: "Isolation Test"
+business_goals: ["test"]
+marketing_channels: ["email"]
+enabled_platforms: ["shopify"]
+`;
+
 function withTempBusiness(id, envFileContent, fn) {
   const dir = path.join(BUSINESSES_ROOT, id);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, '.env'), envFileContent);
+  fs.writeFileSync(path.join(dir, 'business.yaml'), TEMP_BUSINESS_YAML);
   return Promise.resolve()
     .then(fn)
     .finally(() => {
@@ -453,6 +484,13 @@ const ANALYTICS_OBJECTIVE = 'analyze store sales performance growth metrics';
   await testAsync(
     'APPROVALS: decideApprovalRequest with expectedBusinessId refuses to decide another business\'s pending request',
     async () => {
+      // Wrapped in real temp businesses like every other case in this file. Since the
+      // platform gate gained a live caller in the execution path, a business with no
+      // readable configuration has NO platform enabled, so the Shopify-bound analytics tool
+      // is denied before the approval gate is ever reached and no pending approval exists to
+      // test isolation on. Giving each business its own real config is the realistic setup,
+      // and the isolation this test is about is unchanged.
+      await withTwoTempBusinesses(BUSINESS_A, BUSINESS_B, async () => {
       await withReclassifiedAnalyticsDataRetrieval('externally_executable', async () => {
         const responseA = await runOrchestratorContract(ANALYTICS_OBJECTIVE, { businessId: BUSINESS_A.id });
         const responseB = await runOrchestratorContract(ANALYTICS_OBJECTIVE, { businessId: BUSINESS_B.id });
@@ -464,20 +502,21 @@ const ANALYTICS_OBJECTIVE = 'analyze store sales performance growth metrics';
 
         assert.throws(
           () =>
-            decideApprovalRequest([requestA], requestA.id, {
+            decideApprovalRequest([requestA], requestA.id, signedDecision([requestA], requestA.id, {
               decision: 'approved',
               decidedBy: 'owner@example.com',
               expectedBusinessId: BUSINESS_B.id,
-            }),
+            })),
           /refused: request .* belongs to business/
         );
 
-        const decided = decideApprovalRequest([requestA], requestA.id, {
+        const decided = decideApprovalRequest([requestA], requestA.id, signedDecision([requestA], requestA.id, {
           decision: 'approved',
           decidedBy: 'owner@example.com',
           expectedBusinessId: BUSINESS_A.id,
-        });
+        }));
         assert.strictEqual(decided[0].status, 'approved');
+      });
       });
     }
   );

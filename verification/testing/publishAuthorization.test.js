@@ -22,6 +22,9 @@
 // Every brand, phrase, identity and reference below is an invented placeholder.
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -78,10 +81,10 @@ function approvedPipeline(content = PASSING_CONTENT, { decision = 'approved', co
     complianceInput: complianceInput(content, contentReference),
   });
   if (gated.status !== 'pending_approval') return gated.requests;
-  return decideComplianceGatedApproval(gated.requests, 'apr-1', {
+  return decideComplianceGatedApproval(gated.requests, 'apr-1', signedDecision(gated.requests, 'apr-1', {
     decision,
     decidedBy: 'store-owner@example.com (placeholder)',
-  }).requests;
+  })).requests;
 }
 
 function authorize(requests, overrides = {}) {
@@ -201,10 +204,10 @@ test('a decision on a classification that never required approval -> false', () 
     },
     reason: 'placeholder',
   });
-  const decided = decideApprovalRequest([request], 'apr-1', {
+  const decided = decideApprovalRequest([request], 'apr-1', signedDecision([request], 'apr-1', {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
-  });
+  }));
   const outcome = authorize(decided);
   assert.strictEqual(outcome.authorized, false);
   assert.strictEqual(outcome.failed_check, 'classification_actually_required_approval');
@@ -228,10 +231,10 @@ test('an approval carrying no content reference authorizes nothing', () => {
     toolId: 'compliance_check',
     complianceInput: { content: PASSING_CONTENT, content_type: 'buying guide', provenance: PROVENANCE },
   });
-  const requests = decideComplianceGatedApproval(gated.requests, 'apr-1', {
+  const requests = decideComplianceGatedApproval(gated.requests, 'apr-1', signedDecision(gated.requests, 'apr-1', {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
-  }).requests;
+  })).requests;
   const outcome = authorize(requests);
   assert.strictEqual(outcome.authorized, false);
   assert.strictEqual(outcome.failed_check, 'approval_matches_content_reference');

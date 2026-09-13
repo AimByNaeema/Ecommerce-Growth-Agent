@@ -54,7 +54,21 @@
 // that no capability here references, because no Product capability consumes
 // store-wide collection data yet. Closing it needs a real new capability, not a
 // tool_ids edit, so it stays visible rather than being attached to an existing
-// capability that does not actually use it.
+// capability that does not actually use it. The same is true of BOTH Etsy reads
+// ('etsy_shop_data_retrieval', 'etsy_listing_data_retrieval'): no capability task below
+// references either one. They reach the Product specialist only through
+// buildEntry()'s category-derived required_tools - which is exactly why a business with
+// no Etsy saw them reported as 'allowed', and exactly what the platform gate in
+// agent/core/toolPermissions.js now refuses.
+//
+// platforms (agent/core/specialistCapabilityModel.js) - another additive,
+// backward-compatible field (default []), and the only PURELY DERIVED one: the union of
+// its tool_ids' own tools/toolRegistry.js `platforms` arrays, computed by
+// derivePlatformsFromToolIds() below. buildTask() accepts no platforms parameter, so a
+// capability cannot claim a platform its tools do not reach, and cannot hide one they do.
+// Six tasks are platform-bound today (product_discovery and the four analytics snapshot
+// tasks carrying analytics_data_retrieval -> ['shopify']; catalogue_expansion_opportunities
+// -> ['etsy', 'shopify']); every other task is [], meaning platform-neutral.
 //
 // live_data_tool_id (agent/core/specialistCapabilityModel.js) - a NEW, additive,
 // backward-compatible field (default null): names a tool_ids entry that can satisfy
@@ -88,7 +102,7 @@
 // follow-up, not an oversight of this pass.
 
 const { getSpecialistById } = require('./specialistRegistry');
-const { getToolsByCategory } = require('../../tools/toolRegistry');
+const { getToolsByCategory, getToolById } = require('../../tools/toolRegistry');
 const { SPECIALIST_TO_CATEGORIES, checkToolAccess } = require('./toolPermissions');
 const { getClassificationById } = require('../../approvals/approvalArchitecture');
 const {
@@ -167,6 +181,25 @@ function fieldIds(fieldsList) {
   return fieldsList.map((field) => field.id);
 }
 
+// The union of the platforms this task's own tools actually reach, read straight off
+// tools/toolRegistry.js's `platforms` arrays. Sorted for a stable, comparable value.
+//
+// DERIVED, AND ONLY DERIVABLE. buildTask() below takes NO platforms parameter, so there
+// is no way to declare one here, and a capability can never claim a platform its tools do
+// not reach (or hide one they do). An unknown tool id contributes nothing rather than
+// throwing - the same honest-gap treatment tool_ids already gets, and
+// agent/core/specialistCapabilityModel.js's entry-level validator is what catches a
+// tool_id that is not in the specialist's required_tools.
+function derivePlatformsFromToolIds(toolIds) {
+  const platforms = new Set();
+  for (const toolId of toolIds) {
+    const tool = getToolById(toolId);
+    if (!tool || !Array.isArray(tool.platforms)) continue;
+    for (const platform of tool.platforms) platforms.add(platform);
+  }
+  return Array.from(platforms).sort();
+}
+
 function buildTask({
   id,
   title,
@@ -185,6 +218,7 @@ function buildTask({
   task.input_contract = { required, optional };
   task.output_contract = { model, fields };
   task.live_data_tool_id = liveDataToolId;
+  task.platforms = derivePlatformsFromToolIds(toolIds);
   return task;
 }
 
@@ -1484,9 +1518,20 @@ if (require.main === module) {
     console.log(`  ${entry.supported_tasks.length} supported task(s), ${entry.required_tools.length} required tool(s): ${entry.required_tools.join(', ') || '(none)'}`);
     for (const task of entry.supported_tasks) {
       const toolNote = task.tool_ids.length > 0 ? task.tool_ids.join(', ') : '(no tool wired yet)';
-      console.log(`    - ${task.id}: tools=[${toolNote}]`);
+      const platformNote = task.platforms.length > 0 ? ` platforms=[${task.platforms.join(', ')}]` : '';
+      console.log(`    - ${task.id}: tools=[${toolNote}]${platformNote}`);
     }
   }
+
+  const platformBound = SPECIALIST_CAPABILITY_REGISTRY.flatMap((entry) =>
+    entry.supported_tasks.filter((task) => task.platforms.length > 0).map((task) => `${entry.id}/${task.id} -> ${task.platforms.join('+')}`)
+  );
+  const taskCount = SPECIALIST_CAPABILITY_REGISTRY.reduce((total, entry) => total + entry.supported_tasks.length, 0);
+  console.log(`\nPlatform binding, DERIVED entirely from each task's own tool_ids (never declared):`);
+  for (const line of platformBound) console.log(`  ${line}`);
+  console.log(`  the other ${taskCount - platformBound.length} of ${taskCount} task(s) are platform-neutral - no tool they use reaches an e-commerce platform.`);
+  console.log('A platform-bound capability is refused for a business that has not enabled that platform');
+  console.log("in its own enabled_platforms configuration - see agent/core/toolPermissions.js's platform gate.");
   console.log('\nEvery field above is reused or derived from agent/core/specialistRegistry.js, tools/toolRegistry.js,');
   console.log('agent/core/toolPermissions.js, and approvals/approvalArchitecture.js - nothing here is a separate source of truth.');
 }

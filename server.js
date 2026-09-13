@@ -41,7 +41,28 @@ const { summarizeExecutionState } = require('./agent/core/resultSummary');
 // approvals/approvalWorkflow.js's real, already-tested pending -> approved/rejected
 // lifecycle (see verification/testing/chiefToApprovalIntegration.test.js) - reused
 // unchanged, never reimplemented here.
-const { decideApprovalRequest, getApprovalRequestById } = require('./approvals/approvalWorkflow');
+// decideAndPersistApprovalRequest is decideApprovalRequest plus the durable write - the
+// SAME verification, then approvals/approvalStore.js. Used by /orchestrate/approve below
+// so an approved correction is recoverable from durable state, which is the only thing
+// integrations/approvedCorrectionDispatch.js will accept as authorization.
+const {
+  decideApprovalRequest,
+  decideAndPersistApprovalRequest,
+  getApprovalRequestById,
+} = require('./approvals/approvalWorkflow');
+// The durable approval store itself, for persisting a pending approval at creation time
+// (see /orchestrate below). Same module the dispatcher reads from - never a second store.
+const approvalStore = require('./approvals/approvalStore');
+// Controlled autonomy: the kill switch and business policy are READ for the read-only state
+// endpoint; the owner's durable-approval resolution, the one-cycle trigger and explicit
+// schedule management each live in their own module (see the /autonomy endpoints below).
+const { readKillSwitch, resolveBusinessPolicy } = require('./agent/core/autonomyPolicy');
+const autonomyApprovals = require('./autonomy/approvalResolution');
+const { triggerAutonomousCycle, checkDurableStorage } = require('./autonomy/cycleTrigger');
+const { createBusinessSchedule, setBusinessScheduleEnabled, listBusinessSchedules } = require('./scheduler/scheduleManagement');
+// The human-provenance surface. issueApprovalChallenge produces the exact string a person
+// signs offline; decideApprovalRequest verifies the returned signature itself.
+const { issueApprovalChallenge } = require('./approvals/approvalArchitecture');
 // The persisted counterpart to orchestratorRuns below - see
 // agent/core/runHistoryStore.js's own header for why this exists and its scope. Every
 // /run, /orchestrate, /growth-workflow and /optimization-cycle result is saved here as
@@ -68,7 +89,12 @@ const commandCenterSessionStore = require('./agent/core/commandCenterSessionStor
 // service, or spend model/API budget goes through both - see security/
 // serverAccessControl.js's own header for why a shared secret was chosen and why it
 // fails closed when AGENT_API_KEY is unset.
-const { requireApiKey, createRateLimiter } = require('./security/serverAccessControl');
+const {
+  requireApiKey,
+  createRateLimiter,
+  requireAuthorizedBusiness,
+  isBusinessAuthorized,
+} = require('./security/serverAccessControl');
 // The per-run tracker factories /ask threads into buildPlanStep, so a conversational
 // question is audited, metered, and budget-limited exactly like every other execution
 // path (see /ask below). Reused unchanged from the shared infrastructure - never
@@ -111,6 +137,11 @@ const analyticsDataTool = require('./tools/analyticsDataTool');
 const { calculateSalesTrend, calculateTopProductsBySales } = require('./agent/core/analyticsMetricsCalculator');
 
 const BUSINESS_CONFIG_PATH = path.join(__dirname, 'configuration', 'business.yaml');
+
+// How many saved runs GET /history reads before authorization filtering, so that removing
+// other businesses' records does not silently shorten the page the caller actually gets.
+// Larger than the 50 returned, bounded so a large store cannot be walked in one request.
+const HISTORY_SCAN_LIMIT = 500;
 
 // Real specialist display name for a dashboard specialist id (SPECIALIST_ID_MAP's
 // keys) - used only for a saved run-history record's human-readable label, never for
@@ -346,7 +377,7 @@ function requireRunState(store, runId) {
 // real decideApprovalRequest(). Identical in kind to what /orchestrate/approve already
 // does; reused, never reimplemented. decideApprovalRequest returns a new array, so it is
 // assigned back onto the tracker the resume path will actually consult.
-function decideRunApproval(state, { approvalId, decision, decidedBy, notes }) {
+function decideRunApproval(state, { approvalId, decision, decidedBy, notes, authorization }) {
   const tracker = state.runApprovalTracker;
   if (!tracker || !Array.isArray(tracker.requests)) {
     return { ok: false, error: 'This run has no approval request to decide.' };
@@ -356,6 +387,7 @@ function decideRunApproval(state, { approvalId, decision, decidedBy, notes }) {
       decision,
       decidedBy: decidedBy.trim(),
       notes: typeof notes === 'string' && notes.trim() ? notes.trim() : null,
+      authorization,
     });
     return { ok: true, decidedRequest: getApprovalRequestById(tracker.requests, approvalId) };
   } catch (err) {
@@ -367,7 +399,7 @@ function decideRunApproval(state, { approvalId, decision, decidedBy, notes }) {
 
 // The four fields every approve endpoint below requires, validated identically so a
 // caller gets the same errors from both orchestrators.
-function validateApprovalDecisionBody({ approvalId, decision, decidedBy }) {
+function validateApprovalDecisionBody({ approvalId, decision, decidedBy, nonce, signature }) {
   if (typeof approvalId !== 'string' || !approvalId.trim()) {
     return { ok: false, error: 'A non-empty "approvalId" string is required.' };
   }
@@ -377,7 +409,37 @@ function validateApprovalDecisionBody({ approvalId, decision, decidedBy }) {
   if (typeof decidedBy !== 'string' || !decidedBy.trim()) {
     return { ok: false, error: 'A non-empty "decidedBy" string is required so every decision is accountable.' };
   }
+  // A decision is only real once it carries a signature produced with a key this server
+  // does not hold. Checked here so every approve endpoint refuses an unsigned decision the
+  // same way, and refuses it before touching any run state.
+  if (typeof nonce !== 'string' || !nonce.trim() || typeof signature !== 'string' || !signature.trim()) {
+    return {
+      ok: false,
+      error:
+        'A signed human approval is required: request a challenge from GET /approval-challenge, sign its payload, ' +
+        'and submit the "nonce" and base64 "signature". A decidedBy name alone is not authorization.',
+    };
+  }
   return { ok: true };
+}
+
+// Finds one pending approval across every run store, so the challenge endpoint below works
+// for all three orchestrators without each needing its own route. Returns the record only -
+// naming a request id confers nothing by itself.
+function findPendingApprovalRecord(runStores, approvalId) {
+  for (const store of runStores) {
+    for (const state of store.values()) {
+      const tracker = state && (state.runApprovalTracker || null);
+      const fromTracker = tracker && Array.isArray(tracker.requests) ? tracker.requests : null;
+      const fromRun = state && Array.isArray(state.pendingApprovals) ? state.pendingApprovals : null;
+      for (const list of [fromTracker, fromRun]) {
+        if (!list) continue;
+        const found = list.find((request) => request && request.id === approvalId);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
 }
 
 function buildBusinessContext(config) {
@@ -1352,7 +1414,13 @@ function createApp() {
   // service, or spend model/API budget. Rate limiting runs BEFORE authentication on
   // purpose: an unauthenticated caller trying to guess AGENT_API_KEY is throttled by
   // the same counter, so the key cannot be brute-forced at full speed.
-  const protect = [createRateLimiter(), requireApiKey];
+  // Rate limit -> authenticate -> authorize the requested business, in that order, on EVERY
+  // protected endpoint. requireAuthorizedBusiness is in the shared chain rather than on the
+  // three routes that happen to read a business_id today, so a future business-scoped
+  // endpoint is covered the day it is added instead of the day someone remembers to guard
+  // it. A request naming no business_id passes straight through - that is the server's own
+  // root-.env business, and the single-business deployment is unchanged.
+  const protect = [createRateLimiter(), requireApiKey, requireAuthorizedBusiness];
 
   // Per-app-instance store for Chief Orchestrator runs that produced at least one
   // pending approval (see /orchestrate below) - keyed by a server-generated run id,
@@ -1838,6 +1906,37 @@ function createApp() {
         pendingApprovals: result.pending_approvals || [],
         plan: result.routing && Array.isArray(result.routing.plan) ? result.routing.plan : [],
       });
+
+      // DURABLE PENDING STATE, WRITTEN AT CREATION TIME.
+      //
+      // THE DEFECT THIS CLOSES. orchestratorRuns above is an in-memory Map, and it was the
+      // ONLY record of a pending approval this endpoint produced. A correction approved
+      // through /orchestrate/approve therefore verified correctly and then refused to
+      // execute, because integrations/approvedCorrectionDispatch.js deliberately accepts
+      // authorization ONLY from stored, server-written state - and nothing had ever been
+      // stored. Observed end to end: apr-1 passed all 8 Ed25519 checks, reached status
+      // 'approved', and still could not execute ("not in durable approval state").
+      //
+      // Written HERE, before a challenge can be issued for this approval, so the durable
+      // record always exists first and the store is never the thing lagging behind.
+      // approvals/approvalStore.js is the existing store and the same one the dispatcher
+      // reads - no second persistence mechanism, and the record itself is unchanged.
+      //
+      // GRANTS NOTHING. The stored record is 'awaiting_decision': persisting a PENDING
+      // approval is not approving it. Only a verified Ed25519 decision moves it on, and
+      // every existing check still applies. A write failure is logged and never allowed to
+      // fail the run - but it does leave that approval unexecutable, which is the correct
+      // fail-closed direction and is exactly what the old behaviour did for every approval.
+      for (const pendingApproval of result.pending_approvals || []) {
+        try {
+          approvalStore.saveApprovalRecord(pendingApproval, { executionState: 'awaiting_decision' });
+        } catch (storeErr) {
+          console.error(
+            `Could not persist pending approval '${pendingApproval && pendingApproval.id}':`,
+            storeErr.message
+          );
+        }
+      }
       // Attaches a `summary` to a shallow copy of each plan step for this HTTP
       // response only - the internal execution-state objects held in
       // orchestratorRuns/result.routing.plan (and agent/core/executionState.js's own
@@ -1889,7 +1988,7 @@ function createApp() {
   // reimplemented. A rejected decision is recorded exactly the same way; it simply
   // never reaches the tool executor (resumeApprovedExecution refuses on its own).
   app.post('/orchestrate/approve', protect, async (req, res) => {
-    const { runId, approvalId, decision, decidedBy, notes } = req.body || {};
+    const { runId, approvalId, decision, decidedBy, notes, nonce, signature } = req.body || {};
 
     if (typeof runId !== 'string' || !runId.trim() || !orchestratorRuns.has(runId)) {
       res.status(400).json({ error: 'Unrecognized or expired orchestrator run id.' });
@@ -1907,14 +2006,37 @@ function createApp() {
       res.status(400).json({ error: 'A non-empty "decidedBy" string is required so every decision is accountable.' });
       return;
     }
+    // Same signed-approval requirement as the other two approve endpoints.
+    if (typeof nonce !== 'string' || !nonce.trim() || typeof signature !== 'string' || !signature.trim()) {
+      res.status(400).json({
+        error:
+          'A signed human approval is required: request a challenge from GET /approval-challenge, sign its payload, ' +
+          'and submit the "nonce" and base64 "signature". A decidedBy name alone is not authorization.',
+      });
+      return;
+    }
 
     const run = orchestratorRuns.get(runId);
     let decidedRequest;
     try {
-      const updatedRequests = decideApprovalRequest(run.pendingApprovals, approvalId, {
+      // THE SAME RECORD, MOVED TO ITS DECIDED STATE IN DURABLE STORAGE.
+      //
+      // decideAndPersistApprovalRequest is decideApprovalRequest plus the store write, in
+      // that order: the Ed25519 verification runs FIRST and throws before anything is
+      // written, so a forged, replayed or expired signature never reaches the store and
+      // can never leave an 'approved' record behind. The persisted record carries the
+      // verified approval_provenance the decision produced, which is what
+      // integrations/approvedCorrectionDispatch.js re-reads and re-checks (status
+      // 'approved' AND provenance.method === 'ed25519_signature') before it will dispatch.
+      //
+      // Nothing here weakens a check: same function, same verification, same single-use
+      // nonce, same fingerprint binding, same execute-once claim downstream. decidedBy
+      // remains a label, never authorization.
+      const updatedRequests = decideAndPersistApprovalRequest(run.pendingApprovals, approvalId, {
         decision,
         decidedBy: decidedBy.trim(),
         notes: typeof notes === 'string' && notes.trim() ? notes.trim() : null,
+        authorization: { nonce, signature },
       });
       run.pendingApprovals = updatedRequests;
       decidedRequest = getApprovalRequestById(updatedRequests, approvalId);
@@ -2059,9 +2181,9 @@ function createApp() {
   // one gated stage and stop - the workflow's remaining stages would never run. Only
   // resumeGrowthWorkflow() continues the pipeline, so it is what this calls.
   app.post('/growth-workflow/approve', protect, async (req, res) => {
-    const { run_id: runId, approvalId, decision, decidedBy, notes } = req.body || {};
+    const { run_id: runId, approvalId, decision, decidedBy, notes, nonce, signature } = req.body || {};
 
-    const bodyCheck = validateApprovalDecisionBody({ approvalId, decision, decidedBy });
+    const bodyCheck = validateApprovalDecisionBody({ approvalId, decision, decidedBy, nonce, signature });
     if (!bodyCheck.ok) {
       res.status(400).json({ error: bodyCheck.error });
       return;
@@ -2072,7 +2194,13 @@ function createApp() {
       return;
     }
 
-    const decisionResult = decideRunApproval(runLookup.state, { approvalId, decision, decidedBy, notes });
+    const decisionResult = decideRunApproval(runLookup.state, {
+      approvalId,
+      decision,
+      decidedBy,
+      notes,
+      authorization: { nonce, signature },
+    });
     if (!decisionResult.ok) {
       res.status(400).json({ error: decisionResult.error });
       return;
@@ -2156,9 +2284,9 @@ function createApp() {
   // 'approved' decision can execute a once-gated Action, and only through the
   // orchestrator's own resumeAfterApproval().
   app.post('/optimization-cycle/approve', protect, async (req, res) => {
-    const { run_id: runId, approvalId, decision, decidedBy, notes } = req.body || {};
+    const { run_id: runId, approvalId, decision, decidedBy, notes, nonce, signature } = req.body || {};
 
-    const bodyCheck = validateApprovalDecisionBody({ approvalId, decision, decidedBy });
+    const bodyCheck = validateApprovalDecisionBody({ approvalId, decision, decidedBy, nonce, signature });
     if (!bodyCheck.ok) {
       res.status(400).json({ error: bodyCheck.error });
       return;
@@ -2169,7 +2297,13 @@ function createApp() {
       return;
     }
 
-    const decisionResult = decideRunApproval(runLookup.state, { approvalId, decision, decidedBy, notes });
+    const decisionResult = decideRunApproval(runLookup.state, {
+      approvalId,
+      decision,
+      decidedBy,
+      notes,
+      authorization: { nonce, signature },
+    });
     if (!decisionResult.ok) {
       res.status(400).json({ error: decisionResult.error });
       return;
@@ -2675,19 +2809,223 @@ function createApp() {
   // "Run a Specialist"/"Chief Orchestrator" results survive a page refresh or server
   // restart (public/index.html's History page). Never executes anything; a bad/unknown
   // id is an honest 404, never a fabricated result.
+  // The human's half of the approval handshake: hands back the EXACT string to sign for one
+  // specific pending decision. Nothing secret is returned - the payload is a public
+  // description of the action, and holding it confers nothing without the private key.
+  //
+  // The nonce is generated server-side (never accepted from the caller) and is single-use,
+  // so a signature obtained here authorizes exactly one decision and cannot be replayed.
+  app.get('/approval-challenge', protect, (req, res) => {
+    const approvalId = req.query && typeof req.query.approvalId === 'string' ? req.query.approvalId.trim() : '';
+    const decision = req.query && typeof req.query.decision === 'string' ? req.query.decision.trim() : '';
+    const decidedBy = req.query && typeof req.query.decidedBy === 'string' ? req.query.decidedBy.trim() : '';
+
+    if (!approvalId) {
+      res.status(400).json({ error: 'A non-empty "approvalId" is required.' });
+      return;
+    }
+    if (decision !== 'approved' && decision !== 'rejected') {
+      res.status(400).json({ error: 'A "decision" of "approved" or "rejected" is required.' });
+      return;
+    }
+    if (!decidedBy) {
+      res.status(400).json({ error: 'A non-empty "decidedBy" is required so the challenge is bound to one approver.' });
+      return;
+    }
+
+    // A durable approval queued by the autonomous cycle is held in no in-memory run map. It is
+    // found in durable storage instead - scoped to exactly the requested business, and only
+    // while still pending - and receives the SAME challenge from the same function.
+    const record =
+      findPendingApprovalRecord([orchestratorRuns, growthWorkflowRuns, optimizationCycleRuns], approvalId) ||
+      autonomyApprovals.findPendingAutonomousApproval(approvalId, { businessId: autonomyBusinessId(req.query && req.query.business_id) });
+    if (!record) {
+      res.status(404).json({ error: 'No pending approval with that id is held by this server.' });
+      return;
+    }
+
+    try {
+      res.json(issueApprovalChallenge({ request: record, decision, decidedBy }));
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // CONTROLLED AUTONOMY (autonomy/, scheduler/). Every endpoint below sits behind `protect`
+  // (API key, rate limit, business authorization). None of them enables autonomy: the
+  // AGENT_AUTONOMY_ENABLED kill switch and each business's own `autonomy` block remain the
+  // only switches, and every job still passes agent/core/autonomyPolicy.js. They add no
+  // decision logic - each calls the module that owns the concern.
+  // -------------------------------------------------------------------------
+  function autonomyBusinessId(value) {
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+  }
+
+  const AUTONOMY_RUN_KINDS = ['autonomous_cycle', 'autonomous_approval_resolution'];
+
+  // Read-only: what the owner needs to see about autonomy for one business.
+  app.get('/autonomy/state', protect, (req, res) => {
+    const businessId = autonomyBusinessId(req.query && req.query.business_id);
+    try {
+      const policy = resolveBusinessPolicy(businessId);
+      const recentRuns = runHistoryStore
+        .listRunRecordSummaries({ limit: HISTORY_SCAN_LIMIT, businessId })
+        .filter((run) => run && AUTONOMY_RUN_KINDS.includes(run.kind) && (run.business_id || null) === businessId)
+        .slice(0, 20);
+      res.json({
+        business_id: businessId,
+        kill_switch: readKillSwitch().state,
+        storage: checkDurableStorage(),
+        business_autonomy: policy.ok
+          ? {
+              readable: true,
+              enabled: policy.autonomy.enabled === true,
+              daily_token_budget: policy.autonomy.daily_token_budget,
+              daily_run_budget: policy.autonomy.daily_run_budget,
+            }
+          : { readable: false, enabled: false, reason_code: policy.reason_code },
+        enabled_platforms: policy.ok ? policy.enabled_platforms : [],
+        schedules: listBusinessSchedules({ businessId }),
+        recent_runs: recentRuns,
+        pending_approvals: autonomyApprovals.listPendingAutonomousApprovals({ businessId }),
+      });
+    } catch (err) {
+      res.status(502).json({ error: 'Could not read the autonomy state right now. Please try again shortly.' });
+    }
+  });
+
+  app.get('/autonomy/schedules', protect, (req, res) => {
+    const businessId = autonomyBusinessId(req.query && req.query.business_id);
+    try {
+      res.json({ business_id: businessId, schedules: listBusinessSchedules({ businessId }) });
+    } catch (err) {
+      res.status(502).json({ error: 'Could not read schedules right now. Please try again shortly.' });
+    }
+  });
+
+  function scheduleRefusalStatus(reasonCode) {
+    if (reasonCode === 'schedule_exists') return 409;
+    if (reasonCode === 'schedule_not_found') return 404;
+    return 400;
+  }
+
+  // The owner creates a schedule explicitly. It is always saved DISABLED.
+  app.post('/autonomy/schedules', protect, (req, res) => {
+    const body = req.body || {};
+    try {
+      const result = createBusinessSchedule({
+        businessId: autonomyBusinessId(body.business_id),
+        jobId: body.job_id,
+        schedule: body.schedule,
+        task: body.task,
+      });
+      if (!result.ok) {
+        res.status(scheduleRefusalStatus(result.reason_code)).json({ error: result.reason, reason_code: result.reason_code, errors: result.errors });
+        return;
+      }
+      res.status(201).json({ job: result.job });
+    } catch (err) {
+      res.status(502).json({ error: 'Could not save the schedule right now. Please try again shortly.' });
+    }
+  });
+
+  app.post('/autonomy/schedules/:jobId/enabled', protect, (req, res) => {
+    const body = req.body || {};
+    try {
+      const result = setBusinessScheduleEnabled({
+        businessId: autonomyBusinessId(body.business_id),
+        jobId: req.params.jobId,
+        enabled: body.enabled,
+      });
+      if (!result.ok) {
+        res.status(scheduleRefusalStatus(result.reason_code)).json({ error: result.reason, reason_code: result.reason_code });
+        return;
+      }
+      res.json({ job: result.job });
+    } catch (err) {
+      res.status(502).json({ error: 'Could not update the schedule right now. Please try again shortly.' });
+    }
+  });
+
+  const RESOLUTION_HTTP_STATUS = {
+    invalid_request: 400,
+    approval_not_found: 404,
+    approval_not_pending: 409,
+    already_completed: 409,
+    circuit_open: 503,
+    approval_verification_failed: 400,
+  };
+
+  // The owner decides an approval the autonomous cycle queued: GET /approval-challenge with
+  // its approvalId (and business_id), sign the payload, then submit nonce + signature here.
+  app.post('/autonomy/approvals/decide', protect, async (req, res) => {
+    const body = req.body || {};
+    try {
+      const result = await autonomyApprovals.resolveAutonomousApproval({
+        approvalId: body.approvalId,
+        businessId: autonomyBusinessId(body.business_id),
+        decision: body.decision,
+        decidedBy: body.decidedBy,
+        notes: body.notes,
+        authorization: { nonce: body.nonce, signature: body.signature },
+      });
+      if (!result.ok) {
+        res.status(RESOLUTION_HTTP_STATUS[result.reason_code] || 400).json({ error: result.reason, reason_code: result.reason_code });
+        return;
+      }
+      res.json({
+        run_id: result.run_id,
+        approval_request: result.approval_request,
+        execution: result.execution,
+        verification: result.verification ? { status: result.verification.status, reason_code: result.verification.reason_code } : null,
+      });
+    } catch (err) {
+      res.status(502).json({ error: 'The approval could not be resolved right now. Please try again shortly.' });
+    }
+  });
+
+  // Runs ONE cycle for one business - for an owner-chosen external scheduler to call. Refuses
+  // unless storage is durable, the kill switch is on and the business has enabled autonomy.
+  app.post('/autonomy/cycle', protect, async (req, res) => {
+    const body = req.body || {};
+    try {
+      const result = await triggerAutonomousCycle({ businessId: autonomyBusinessId(body.business_id) });
+      const status = result.triggered ? 200 : result.reason_code === 'storage_not_durable' ? 503 : 409;
+      res.status(status).json(result);
+    } catch (err) {
+      res.status(502).json({ error: 'The autonomous cycle could not run right now. Please try again shortly.' });
+    }
+  });
+
   app.get('/history', protect, (req, res) => {
     // Optional business scoping: /growth-workflow and /optimization-cycle both accept a
     // business_id, so their saved records carry one, and a caller working on one business
     // must be able to list only that business's runs rather than every business's. Omitted
     // -> the full listing, exactly as before. Unattributed /run and /orchestrate records
     // are never returned for a business-scoped request (see listRunRecordSummaries).
+    // A business_id here is already authorized by `protect`'s requireAuthorizedBusiness -
+    // an unauthorized one never reaches this handler. Type validation stays because a
+    // non-string is a malformed request (400), not an authorization failure (403).
     const businessId = req.query && typeof req.query.business_id === 'string' ? req.query.business_id : null;
     if (req.query && req.query.business_id !== undefined && typeof req.query.business_id !== 'string') {
       res.status(400).json({ error: 'If provided, "business_id" must be a string.' });
       return;
     }
     try {
-      res.json({ runs: runHistoryStore.listRunRecordSummaries({ limit: 50, businessId }) });
+      // THE UNSCOPED LISTING IS THE ENUMERATION RISK, AND IT IS CLOSED HERE. Asking for a
+      // business you may not have is refused by the middleware - but asking for NO business
+      // used to return every business's runs in one page, which reaches the same data
+      // without ever naming it. So the result is filtered to what this credential may see:
+      // its own default-business records, plus any business it is explicitly authorized for.
+      //
+      // Filtered AFTER the read because runHistoryStore's own filter takes a single id and
+      // treats null as "no filter" - it cannot express "records with no business_id", and
+      // teaching it to is a change to a module outside this boundary's scope. A wider scan
+      // window than the returned page keeps the filtering from silently shortening results.
+      const scanned = runHistoryStore.listRunRecordSummaries({ limit: HISTORY_SCAN_LIMIT, businessId });
+      const visible = scanned.filter((run) => isBusinessAuthorized(run && run.business_id)).slice(0, 50);
+      res.json({ runs: visible });
     } catch (err) {
       res.status(502).json({ error: 'Could not read saved run history right now. Please try again shortly.' });
     }
@@ -2702,6 +3040,14 @@ function createApp() {
       return;
     }
     if (!record) {
+      res.status(404).json({ error: 'No saved run found for this id.' });
+      return;
+    }
+    // A run id is guessable and is not a capability. A record belonging to a business this
+    // credential may not reach is reported as NOT FOUND rather than forbidden: a 403 here
+    // would confirm the run exists, which is exactly the enumeration this check exists to
+    // prevent. The response is byte-identical to a genuinely unknown id.
+    if (!isBusinessAuthorized(record.business_id)) {
       res.status(404).json({ error: 'No saved run found for this id.' });
       return;
     }

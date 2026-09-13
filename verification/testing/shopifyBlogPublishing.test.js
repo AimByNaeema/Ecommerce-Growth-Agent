@@ -23,6 +23,9 @@
 // or blog id appears in it.
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -116,10 +119,10 @@ function pipeline(content = PASSING_CONTENT, { decision = 'approved', contentRef
   });
   if (gated.status !== 'pending_approval') return gated.requests;
   if (decision === 'pending') return gated.requests;
-  return decideComplianceGatedApproval(gated.requests, 'apr-1', {
+  return decideComplianceGatedApproval(gated.requests, 'apr-1', signedDecision(gated.requests, 'apr-1', {
     decision,
     decidedBy: 'store-owner@example.com (placeholder)',
-  }).requests;
+  })).requests;
 }
 
 // Replaces the client's mutation and counts every call. No configuration can reach a real
@@ -437,10 +440,10 @@ async function withStubbedTransport({ scopes, articleResult = null, userErrors =
         },
         reason: 'placeholder',
       });
-      const decided = decideApprovalRequest([request], 'apr-1', {
+      const decided = decideApprovalRequest([request], 'apr-1', signedDecision([request], 'apr-1', {
         decision: 'approved',
         decidedBy: 'store-owner@example.com (placeholder)',
-      });
+      }));
       const outcome = await publish(decided);
       assert.strictEqual(outcome.status, 'refused');
       assert.strictEqual(outcome.authorization.failed_check, 'classification_actually_required_approval');

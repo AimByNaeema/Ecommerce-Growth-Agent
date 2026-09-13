@@ -65,12 +65,389 @@ function requiresApproval(classificationId) {
   return !classificationId || !AUTO_APPROVED_CLASSIFICATIONS.includes(classificationId);
 }
 
+// ===================================================================================
+// HUMAN APPROVAL PROVENANCE - a decision must be PROVED human, not merely claimed.
+// ===================================================================================
+//
+// THE HOLE THIS CLOSES. approvals/approvalWorkflow.js's decideApprovalRequest() used to
+// accept any non-empty `decidedBy` STRING as evidence of an accountable human decision.
+// A string is not evidence: the agent runs in this process, so it could write
+// "store-owner@example.com" as easily as a person could, and approve its own pending
+// action. Every downstream guarantee - approvals/publishAuthorization.js's nine checks,
+// the compliance gate, the audit trail - rests on that decision being real, so this was
+// the single load-bearing assumption in the whole chain with nothing behind it.
+//
+// WHAT MAKES PROVENANCE GENUINE HERE. The approver signs the decision with an Ed25519
+// private key that EXISTS ONLY OUTSIDE THIS PROCESS. The server is configured with the
+// PUBLIC key alone, which can verify a signature but cannot produce one. An agent that can
+// read every file and environment variable this process can read therefore still cannot
+// forge an approval - not because it is forbidden to, but because it does not possess and
+// cannot derive the key. That is the difference between a policy and a proof.
+//
+// NO NEW DEPENDENCY, NO EXTERNAL SERVICE. Ed25519 sign/verify is in Node's built-in
+// crypto. Nothing here calls out to anything; verification is local, offline and
+// deterministic. The human's signing step is equally dependency-free (see
+// APPROVAL_SIGNING_INSTRUCTIONS below).
+//
+// THE PRIVATE KEY IS NEVER GENERATED, STORED, LOGGED OR TRANSMITTED BY THIS PROJECT.
+// There is deliberately no key-generation function anywhere in this codebase: generating
+// the keypair here would mean the private half existed in this process, which is precisely
+// what must never happen. The operator generates it themselves, keeps it off this machine,
+// and configures only the public half.
+//
+// THE HONEST LIMIT, STATED PLAINLY. This raises forgery from "write a string" to "produce
+// an Ed25519 signature over this exact decision without the key" - which is infeasible. It
+// does NOT defend against code that subverts the verifier itself (monkey-patching crypto,
+// pushing a hand-built record into the server-held array). That is a different threat -
+// arbitrary code execution inside the trust boundary - and no in-process check can answer
+// it. What this does guarantee is that an agent following its own tools, however
+// autonomous, cannot approve its own action.
+
+const crypto = require('node:crypto');
+
+// The configuration naming the verification key. PUBLIC half only - the name says so, and
+// getConfiguredApprovalPublicKey() refuses a private key outright (see below).
+const APPROVAL_PUBLIC_KEY_ENV = 'APPROVAL_PUBLIC_KEY';
+
+// How long a signing challenge stays valid. Short by design: a challenge is meant to be
+// signed and returned in one sitting, and a narrow window limits how long a captured
+// payload is worth anything. Overridable for a deployment with a slower human loop.
+const DEFAULT_CHALLENGE_TTL_MS = 10 * 60 * 1000;
+const CHALLENGE_TTL_ENV = 'APPROVAL_CHALLENGE_TTL_MS';
+
+// The payload format version, carried in the signed string itself. A future format change
+// therefore cannot be replayed against this one: the version is part of what was signed.
+const APPROVAL_PAYLOAD_VERSION = 'ecom-approval-v1';
+
+// What the operator actually does. Written here, next to the verification, so the two can
+// never drift apart. No project file ever runs the first command.
+const APPROVAL_SIGNING_INSTRUCTIONS = [
+  '1. ONCE, on a machine that is NOT this server, generate the keypair:',
+  "     node -e \"const c=require('crypto');const{publicKey,privateKey}=c.generateKeyPairSync('ed25519');" +
+    "require('fs').writeFileSync('approval-private.pem',privateKey.export({type:'pkcs8',format:'pem'}));" +
+    "console.log(publicKey.export({type:'spki',format:'pem'}))\"",
+  `2. Put the printed PUBLIC key in the server's ${APPROVAL_PUBLIC_KEY_ENV}. Keep approval-private.pem off this machine.`,
+  '3. To approve, request a challenge, then sign the EXACT payload string it returns:',
+  "     node -e \"const c=require('crypto'),f=require('fs');" +
+    "console.log(c.sign(null,Buffer.from(process.argv[1],'utf8')," +
+    "c.createPrivateKey(f.readFileSync('approval-private.pem'))).toString('base64'))\" '<payload>'",
+  '4. Paste the printed base64 signature into the approval form.',
+];
+
+// Deterministic JSON: object keys sorted at every depth, so the same execution request
+// always produces the same fingerprint regardless of key insertion order. Without this a
+// signature would verify or fail depending on how an object happened to be built.
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+}
+
+// A stable fingerprint of the exact action being approved.
+//
+// `approval_provenance` is EXCLUDED because it is written into the execution request only
+// AFTER a decision is verified - including it would make the fingerprint unverifiable the
+// moment it was recorded. Everything else the caller will later re-run is covered, so an
+// approval is bound to one specific action: change the objective, the tool, the content or
+// the business, and the signature no longer matches.
+function computeExecutionFingerprint(executionRequest) {
+  const source = executionRequest && typeof executionRequest === 'object' ? executionRequest : {};
+  const covered = {};
+  for (const key of Object.keys(source)) {
+    if (key === 'approval_provenance') continue;
+    covered[key] = source[key];
+  }
+  return crypto.createHash('sha256').update(stableStringify(covered)).digest('hex');
+}
+
+// The exact string a human signs. Every field that makes this decision THIS decision is in
+// it, separated by a character that cannot appear in a hex digest or an ISO timestamp, so
+// two different decisions can never produce the same payload.
+function buildApprovalPayload({ requestId, decision, decidedBy, executionFingerprint, nonce, issuedAt }) {
+  return [
+    APPROVAL_PAYLOAD_VERSION,
+    requestId,
+    decision,
+    decidedBy,
+    executionFingerprint,
+    nonce,
+    issuedAt,
+  ].join('\n');
+}
+
+// Reads the configured verification key. Returns null when unset - callers FAIL CLOSED on
+// null rather than proceeding unverified.
+//
+// REFUSES A PRIVATE KEY. If someone pastes the private half in by mistake, this throws
+// instead of quietly working: it would mean the signing key is sitting in the server's
+// environment, which defeats the entire mechanism, and a silent success would hide that.
+function getConfiguredApprovalPublicKey() {
+  const raw = process.env[APPROVAL_PUBLIC_KEY_ENV];
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const material = raw.includes('-----BEGIN') ? raw.replace(/\\n/g, '\n') : raw.trim();
+
+  if (material.includes('PRIVATE KEY')) {
+    throw new Error(
+      `${APPROVAL_PUBLIC_KEY_ENV} contains a PRIVATE key. Only the public half may ever be configured here - ` +
+        'the private key must never be stored on, or reachable from, this server.'
+    );
+  }
+
+  try {
+    const key = crypto.createPublicKey(material.includes('-----BEGIN') ? material : `-----BEGIN PUBLIC KEY-----\n${material}\n-----END PUBLIC KEY-----`);
+    if (key.asymmetricKeyType !== 'ed25519') {
+      throw new Error(`${APPROVAL_PUBLIC_KEY_ENV} must be an Ed25519 public key, got '${key.asymmetricKeyType}'.`);
+    }
+    return key;
+  } catch (err) {
+    if (/must be an Ed25519/.test(err.message)) throw err;
+    throw new Error(`${APPROVAL_PUBLIC_KEY_ENV} is not a readable public key: ${err.message}`);
+  }
+}
+
+function getChallengeTtlMs() {
+  const parsed = Number(process.env[CHALLENGE_TTL_ENV]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_CHALLENGE_TTL_MS;
+}
+
+// Issued challenges, by nonce. In memory and per process, the same deliberate stance
+// approvals/approvalWorkflow.js and audit/auditTrail.js already take (no persistence engine
+// has been chosen - CLAUDE.md rule 15). A restart invalidates outstanding challenges, which
+// fails CLOSED: the human simply requests a new one.
+//
+// Holding the challenge server-side is what makes replay detectable at all - the nonce is
+// consumed on first successful use and can never authorize a second decision.
+const ISSUED_CHALLENGES = new Map();
+
+function pruneExpiredChallenges(now) {
+  for (const [nonce, challenge] of ISSUED_CHALLENGES) {
+    if (challenge.expires_at_ms <= now) ISSUED_CHALLENGES.delete(nonce);
+  }
+}
+
+// Creates the one-time challenge a human signs for ONE specific pending decision.
+//
+// The nonce is generated here, with crypto.randomBytes - never supplied by the caller, so a
+// caller cannot choose a nonce it has a signature for already.
+function issueApprovalChallenge({ request, decision, decidedBy } = {}) {
+  if (!request || typeof request !== 'object') {
+    throw new Error('issueApprovalChallenge requires the pending approval `request` record.');
+  }
+  if (decision !== 'approved' && decision !== 'rejected') {
+    throw new Error("issueApprovalChallenge requires `decision` to be 'approved' or 'rejected'.");
+  }
+  if (typeof decidedBy !== 'string' || decidedBy.trim() === '') {
+    throw new Error('issueApprovalChallenge requires a non-empty `decidedBy`.');
+  }
+
+  const now = Date.now();
+  pruneExpiredChallenges(now);
+
+  const nonce = crypto.randomBytes(32).toString('base64url');
+  const issuedAt = new Date(now).toISOString();
+  const executionFingerprint = computeExecutionFingerprint(request.execution_request);
+  const payload = buildApprovalPayload({
+    requestId: request.id,
+    decision,
+    decidedBy: decidedBy.trim(),
+    executionFingerprint,
+    nonce,
+    issuedAt,
+  });
+
+  const challenge = {
+    nonce,
+    request_id: request.id,
+    decision,
+    decided_by: decidedBy.trim(),
+    execution_fingerprint: executionFingerprint,
+    issued_at: issuedAt,
+    expires_at: new Date(now + getChallengeTtlMs()).toISOString(),
+    expires_at_ms: now + getChallengeTtlMs(),
+    payload,
+    consumed: false,
+  };
+  ISSUED_CHALLENGES.set(nonce, challenge);
+
+  // The payload is what the human signs; nothing secret is in it, and no key material is
+  // returned or recorded anywhere.
+  return {
+    nonce,
+    request_id: challenge.request_id,
+    decision: challenge.decision,
+    decided_by: challenge.decided_by,
+    execution_fingerprint: executionFingerprint,
+    issued_at: issuedAt,
+    expires_at: challenge.expires_at,
+    payload,
+    signing_instructions: APPROVAL_SIGNING_INSTRUCTIONS,
+  };
+}
+
+const APPROVAL_VERIFICATION_CHECKS = [
+  'public_key_configured',
+  'authorization_supplied',
+  'challenge_issued_by_this_server',
+  'challenge_not_already_used',
+  'challenge_not_expired',
+  'challenge_matches_this_decision',
+  'payload_matches_challenge',
+  'signature_verifies_under_public_key',
+];
+
+function refuseVerification(failedCheck, reason) {
+  return { verified: false, failed_check: failedCheck, reason, provenance: null };
+}
+
+// THE GATE. Decides whether a decision carries genuine human provenance.
+//
+// Returns { verified, failed_check, reason, provenance } - never throws for an ordinary
+// refusal, because a refused approval is a normal outcome, not a programming error.
+//
+// Every check fails CLOSED: there is no branch that returns verified:true without a
+// signature that validated under the configured public key over the exact challenge this
+// server issued for this exact request and decision.
+//
+// A SIGNATURE IS CONSUMED ON SUCCESS. The nonce is marked used before returning, so the
+// same signed approval can never authorize a second decision - replay is refused by
+// 'challenge_not_already_used' on every subsequent attempt.
+function verifyApprovalAuthorization({ request, decision, decidedBy, authorization } = {}) {
+  let publicKey;
+  try {
+    publicKey = getConfiguredApprovalPublicKey();
+  } catch (err) {
+    return refuseVerification('public_key_configured', err.message);
+  }
+  if (!publicKey) {
+    return refuseVerification(
+      'public_key_configured',
+      `No ${APPROVAL_PUBLIC_KEY_ENV} is configured, so no human approval can be verified and none is accepted. ` +
+        'Approvals fail closed until the verification key is configured.'
+    );
+  }
+
+  if (!authorization || typeof authorization !== 'object' || Array.isArray(authorization)) {
+    return refuseVerification(
+      'authorization_supplied',
+      'A human approval must carry a signed `authorization` ({ nonce, signature }). A decidedBy string is not authorization.'
+    );
+  }
+  const { nonce, signature } = authorization;
+  if (typeof nonce !== 'string' || nonce.trim() === '' || typeof signature !== 'string' || signature.trim() === '') {
+    return refuseVerification('authorization_supplied', 'The `authorization` must carry a non-empty `nonce` and `signature`.');
+  }
+
+  const challenge = ISSUED_CHALLENGES.get(nonce);
+  if (!challenge) {
+    // Covers an invented nonce, one from a previous process, and one already pruned.
+    return refuseVerification(
+      'challenge_issued_by_this_server',
+      'No approval challenge with that nonce was issued by this server (or it has expired). Request a new challenge and sign that.'
+    );
+  }
+  if (challenge.consumed) {
+    return refuseVerification('challenge_not_already_used', 'That approval challenge has already been used. A signed approval authorizes exactly one decision.');
+  }
+  if (challenge.expires_at_ms <= Date.now()) {
+    ISSUED_CHALLENGES.delete(nonce);
+    return refuseVerification('challenge_not_expired', 'That approval challenge has expired. Request a new challenge and sign that.');
+  }
+
+  // The challenge is bound to one request, one decision and one approver. A signature
+  // obtained for a different decision cannot be redirected at this one.
+  if (
+    !request ||
+    challenge.request_id !== request.id ||
+    challenge.decision !== decision ||
+    challenge.decided_by !== (typeof decidedBy === 'string' ? decidedBy.trim() : decidedBy)
+  ) {
+    return refuseVerification(
+      'challenge_matches_this_decision',
+      'That approval challenge was issued for a different request, decision or approver, so it does not authorize this one.'
+    );
+  }
+
+  // The action itself must not have changed since the challenge was issued.
+  const currentFingerprint = computeExecutionFingerprint(request.execution_request);
+  const expectedPayload = buildApprovalPayload({
+    requestId: request.id,
+    decision,
+    decidedBy: challenge.decided_by,
+    executionFingerprint: currentFingerprint,
+    nonce,
+    issuedAt: challenge.issued_at,
+  });
+  if (expectedPayload !== challenge.payload) {
+    return refuseVerification(
+      'payload_matches_challenge',
+      'The action being approved has changed since this challenge was issued, so the signature no longer covers it. Request a new challenge.'
+    );
+  }
+
+  let signatureValid = false;
+  try {
+    signatureValid = crypto.verify(null, Buffer.from(challenge.payload, 'utf8'), publicKey, Buffer.from(signature, 'base64'));
+  } catch (err) {
+    // A malformed signature is a failed verification, not a server error.
+    signatureValid = false;
+  }
+  if (!signatureValid) {
+    return refuseVerification(
+      'signature_verifies_under_public_key',
+      'The approval signature did not verify under the configured approval public key.'
+    );
+  }
+
+  challenge.consumed = true;
+
+  return {
+    verified: true,
+    failed_check: null,
+    reason: null,
+    // Recorded on the approval record. Carries no key material and no signature secret -
+    // the signature itself is kept so a later reader can re-verify, which is only possible
+    // with the public key and proves nothing on its own.
+    provenance: {
+      method: 'ed25519_signature',
+      payload_version: APPROVAL_PAYLOAD_VERSION,
+      request_id: request.id,
+      decision,
+      decided_by: challenge.decided_by,
+      execution_fingerprint: currentFingerprint,
+      nonce,
+      issued_at: challenge.issued_at,
+      verified_at: new Date().toISOString(),
+      signature,
+      checks: APPROVAL_VERIFICATION_CHECKS.slice(),
+    },
+  };
+}
+
+// Test/operational helper: forgets every outstanding challenge. Exported so a suite can
+// isolate itself; it can only ever make verification FAIL (an unknown nonce), never pass.
+function clearIssuedApprovalChallenges() {
+  ISSUED_CHALLENGES.clear();
+}
+
 module.exports = {
   ACTION_CLASSIFICATIONS,
   APPROVAL_POLICY_RULES,
   AUTO_APPROVED_CLASSIFICATIONS,
   getClassificationById,
   requiresApproval,
+  // Human approval provenance.
+  APPROVAL_PUBLIC_KEY_ENV,
+  APPROVAL_PAYLOAD_VERSION,
+  APPROVAL_SIGNING_INSTRUCTIONS,
+  APPROVAL_VERIFICATION_CHECKS,
+  CHALLENGE_TTL_ENV,
+  computeExecutionFingerprint,
+  buildApprovalPayload,
+  getConfiguredApprovalPublicKey,
+  issueApprovalChallenge,
+  verifyApprovalAuthorization,
+  clearIssuedApprovalChallenges,
 };
 
 if (require.main === module) {

@@ -53,9 +53,10 @@
 // in-memory and returned to the caller; it is never written to memory/state/ (no
 // storage mechanism has been chosen yet).
 
+const fs = require('fs');
 const path = require('path');
 const { TOOL_REGISTRY, getToolsByCategory, getToolById } = require('../../tools/toolRegistry');
-const { loadBusinessConfig } = require('../../tools/configValidator');
+const { loadBusinessConfig, readEnabledPlatforms } = require('../../tools/configValidator');
 const { readDailyContentUnitsTarget } = require('./contentCadencePolicy');
 const { getSpecialistById } = require('./specialistRegistry');
 const { getSpecialistCapabilityRegistry, getSpecialistCapabilityById } = require('./specialistCapabilityRegistry');
@@ -82,7 +83,28 @@ const { createToolResultCache, getCachedResult, setCachedResult } = require('./t
 const { checkArrayFieldBounds, checkPlanStepBounds } = require('./executionBounds');
 const { createUsageTracker, checkUsageLimits, recordUsage, MODEL_CALL_TOOL_IDS, EXTERNAL_API_TOOL_IDS, RESEARCH_TOOL_IDS } = require('./usageLimits');
 const { createUsageLedger, appendUsageEvent, summarizeUsage } = require('../../usage/usageTracker');
-const { isValidBusinessId } = require('../../configuration/businessRegistry');
+const { isValidBusinessId, getEnabledPlatforms } = require('../../configuration/businessRegistry');
+const {
+  isCorrectionTool,
+  buildCorrectionComplianceInput,
+  executeApprovedCorrection,
+} = require('../../integrations/approvedCorrectionDispatch');
+// The real compliance engine, used ONLY to compute a correction's verdict from its own
+// described action at approval time and to summarise it for the approver - see the
+// approval_required branch below. No verdict is ever accepted from a caller, and the same
+// engine is re-run independently at execution time by
+// approvals/complianceApprovalGate.js's verifyComplianceForApprovalRequest.
+const { evaluateCompliance, summarizeComplianceForApproval } = require('../../compliance/complianceEngine');
+// THE MUTATION-INTENT GATE (agent/core/mutationIntent.js). One definition of "does this
+// request actually ask to change something", consulted at every point below where a
+// mutation tool could be selected or dispatched. See that module's header for the real
+// production-validation defect it closes and why word-overlap scoring cannot close it.
+const {
+  filterToolCandidatesByIntent,
+  maySelectMutationTool,
+  classifyRequestIntent,
+  mutationIntentRefusalReason,
+} = require('./mutationIntent');
 // The Memory layer's own connection into this run flow (agent/core/memoryStore.js's
 // business-isolated storage + agent/core/memoryRecordModel.js's verified/approved
 // gate) - see agent/core/memoryContextRetrieval.js's own header for the full scope
@@ -334,9 +356,18 @@ function identifyRequiredCapability(objective) {
     return null;
   }
 
+  // GATE 1 OF 3: a mutation tool is not even a CANDIDATE unless this objective states an
+  // explicit instruction to change something. Without this, the correction tools' own
+  // nouns ("vendor", "inventory", "product", "shopify") let them outscore the read tool
+  // for a plainly read-only request - the measured defect in mutationIntent.js's header.
+  // Non-mutation tools are untouched, so every other objective scores exactly as before.
+  const selectableTools = maySelectMutationTool(objective)
+    ? TOOL_REGISTRY
+    : TOOL_REGISTRY.filter((tool) => !isCorrectionTool(tool.id));
+
   let best = null;
   let bestScore = 0;
-  for (const tool of TOOL_REGISTRY) {
+  for (const tool of selectableTools) {
     const toolWords = tokenize(`${tool.id} ${tool.title} ${tool.description} ${tool.category}`);
     let score = 0;
     for (const word of toolWords) {
@@ -596,6 +627,145 @@ async function runExecutor(toolId, executionRequest, runTokenTracker, classifica
 // and runOrchestratorContract below) is passed straight through to the executor -
 // only ai_reasoning_completion's executor actually uses it, to enforce
 // agent/core/tokenControls.js's run budget before ever calling Claude.
+// ---------------------------------------------------------------------------------
+// THE LIVE CALLER FOR THE PLATFORM GATE.
+// ---------------------------------------------------------------------------------
+//
+// agent/core/toolPermissions.js's platform gate has existed since the capability/platform
+// binding phase, but it is opt-in: it engages only when a caller supplies enabledPlatforms.
+// Nothing in the execution path supplied it, so the gate was inert in production - a tool
+// bound to a platform a business has not enabled was still dispatched. This resolver is
+// that missing caller.
+//
+// CONFIGURATION IS THE ONLY AUTHORITY, exactly as configuration/business.example.yaml
+// states. Nothing here reads a credential, and a credential never enables a platform.
+//
+// FAILS CLOSED. A business whose configuration cannot be read resolves to [] - no platform
+// enabled - which denies every platform-bound tool. That is the honest reading of "we
+// cannot tell whether this platform is permitted", and it is the same direction every other
+// gate in this architecture fails.
+//
+// CACHED BY FILE MTIME, not for the process lifetime: the config is re-read whenever it
+// actually changes, so an operator editing business.yaml takes effect on the next dispatch
+// without a restart, and a test that writes a config mid-run is not served a stale answer.
+const enabledPlatformsCache = new Map();
+
+function resolveEnabledPlatformsForBusiness(businessId) {
+  const key = typeof businessId === 'string' && businessId.trim() !== '' ? businessId.trim() : null;
+  const configPath = key === null ? BUSINESS_CONFIG_PATH : path.join(__dirname, '..', '..', 'configuration', 'businesses', key, 'business.yaml');
+
+  let mtimeMs = null;
+  try {
+    mtimeMs = fs.statSync(configPath).mtimeMs;
+  } catch (err) {
+    // No readable configuration file - deny every platform-bound tool.
+    enabledPlatformsCache.delete(key);
+    return [];
+  }
+
+  const cached = enabledPlatformsCache.get(key);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.platforms;
+
+  let platforms;
+  try {
+    platforms = key === null ? readEnabledPlatforms(loadBusinessConfig(configPath)) : getEnabledPlatforms(key);
+  } catch (err) {
+    platforms = [];
+  }
+  enabledPlatformsCache.set(key, { mtimeMs, platforms });
+  return platforms;
+}
+
+// The id for the next approval this run creates.
+//
+// `id_prefix` is optional and additive: a tracker that carries one (runOrchestratorContract
+// sets it to that run's own id) produces '<runId>-apr-N', and a tracker without one
+// produces 'apr-N' exactly as before. Sequence is per-run either way, so an id still reads
+// as "the Nth approval of this run" rather than an opaque token.
+//
+// Sanitised to approvals/approvalStore.js's own filename-safe character set here rather
+// than being silently mangled there, so the id in the challenge, the signature and the
+// stored filename cannot diverge.
+function approvalIdFor(runApprovalTracker) {
+  const sequence = (runApprovalTracker && Array.isArray(runApprovalTracker.requests) ? runApprovalTracker.requests.length : 0) + 1;
+  const rawPrefix = runApprovalTracker && typeof runApprovalTracker.id_prefix === 'string' ? runApprovalTracker.id_prefix.trim() : '';
+  const prefix = rawPrefix.replace(/[^a-zA-Z0-9_-]/g, '');
+  return prefix ? `${prefix}-apr-${sequence}` : `apr-${sequence}`;
+}
+
+// The execution request a pending approval must carry for `toolId` - the ONE place this is
+// decided, so every producer of an approval (this contract's own approval branch, and
+// autonomy/autonomousCycle.js when it queues a durable approval) attaches exactly the same
+// thing and refuses in exactly the same cases.
+//
+// COMPLIANCE RIDES ON A CORRECTION'S APPROVAL, OR IT NEVER BECOMES EXECUTABLE.
+// approvals/publishAuthorization.js refuses to authorize a mutation whose compliance cannot
+// be RE-VERIFIED from the request's own content, so the input is computed here from the
+// action's own parameters (buildCorrectionComplianceInput) and evaluated for real. It is
+// attached BEFORE the approval record is built, so it is inside what the human's signature
+// covers. A BLOCK creates no approval at all. A non-correction tool is returned unchanged.
+//
+// Returns { ok: true, executionRequest } or
+// { ok: false, status, reason, audit_type, audit_status, compliance_status? }.
+function prepareApprovalExecutionRequest(toolId, executionRequest) {
+  if (!isCorrectionTool(toolId)) {
+    return { ok: true, executionRequest };
+  }
+
+  const complianceInput = buildCorrectionComplianceInput(toolId, executionRequest);
+  if (!complianceInput) {
+    return {
+      ok: false,
+      status: 'denied',
+      audit_type: 'error',
+      audit_status: 'denied',
+      reason:
+        `The request for '${toolId}' does not state the parameters this correction writes, so its ` +
+        'compliance could not be evaluated and no approval was created. Nothing was substituted.',
+    };
+  }
+
+  let complianceResult;
+  try {
+    complianceResult = evaluateCompliance(complianceInput);
+  } catch (err) {
+    return {
+      ok: false,
+      status: 'error',
+      audit_type: 'error',
+      audit_status: 'error',
+      reason: `Compliance could not be evaluated for '${toolId}', so no approval was created: ${err.message}`,
+    };
+  }
+
+  // BLOCK IS ABSOLUTE - the same refusal approvals/complianceApprovalGate.js makes.
+  if (complianceResult.status === 'BLOCK') {
+    return {
+      ok: false,
+      status: 'denied',
+      audit_type: 'approval',
+      audit_status: 'blocked',
+      compliance_status: 'BLOCK',
+      reason:
+        `Compliance returned BLOCK for '${toolId}', so no approval request was created and nothing ` +
+        `can execute. Blocking findings: ${complianceResult.findings
+          .filter((finding) => finding && finding.severity === 'block')
+          .map((finding) => finding.rule_id)
+          .join(', ') || '(none named)'}.`,
+    };
+  }
+
+  // PASS and REVIEW both continue to the existing human-approval path, unchanged.
+  return {
+    ok: true,
+    executionRequest: {
+      ...executionRequest,
+      compliance: summarizeComplianceForApproval(complianceResult),
+      compliance_input: complianceInput,
+    },
+  };
+}
+
 async function executeSelectedCapability(
   executionRequest,
   runTokenTracker = { tokensUsedThisRun: 0 },
@@ -608,6 +778,8 @@ async function executeSelectedCapability(
   const access = checkToolAccess({
     specialistId: executionRequest.specialist_id,
     toolId: executionRequest.tool_id,
+    // THE PLATFORM GATE, ENGAGED FOR REAL. See resolveEnabledPlatformsForBusiness below.
+    enabledPlatforms: resolveEnabledPlatformsForBusiness(executionRequest.business_id),
   });
 
   if (access.decision === 'unavailable') {
@@ -638,6 +810,46 @@ async function executeSelectedCapability(
     return { status: 'denied', data: null, error: access.reason, classification: null };
   }
 
+  // GATE 3 OF 3: THE TOOL-LEVEL PRECONDITION, independent of the router.
+  //
+  // Gates 1 and 2 stop a mutation tool being SELECTED. This one stops it being acted on
+  // at all, however it got here - a caller that builds an executionRequest by hand, a
+  // future routing path, or a routing bug that outlives this fix. A mutation tool with
+  // no explicit instruction to mutate is refused before the approval request below is
+  // created, which matters: without this, a read-only objective produces a real pending
+  // approval to change live store data, and the only thing standing between that and a
+  // mutation is a human noticing that the request should never have existed. Refusing
+  // here means it never reaches them.
+  //
+  // Placed AFTER the availability and permission checks so those keep reporting their
+  // own specific reasons first (existing behaviour unchanged), and BEFORE the approval
+  // branch so nothing consequential is ever queued.
+  //
+  // DELIBERATELY NOT REPEATED IN resumeApprovedExecution: by then a human has signed an
+  // Ed25519 approval over that exact execution fingerprint, which is a far stronger
+  // authorization than anything re-derived from objective text - and re-deriving it
+  // there would let a phrasing quirk void a cryptographically approved action. The
+  // request can only have been created here in the first place, so this is the point
+  // where it is actually preventable.
+  if (isCorrectionTool(access.tool_id) && !maySelectMutationTool(executionRequest.objective)) {
+    const reason = mutationIntentRefusalReason(access.tool_id, executionRequest.objective);
+    appendAuditEvent(runAuditTracker, {
+      type: 'error',
+      toolId: access.tool_id,
+      specialistId: executionRequest.specialist_id,
+      classification: access.classification,
+      status: 'denied',
+      summary: reason,
+    });
+    return {
+      status: 'denied',
+      data: null,
+      error: reason,
+      classification: access.classification,
+      mutation_intent: classifyRequestIntent(executionRequest.objective),
+    };
+  }
+
   if (access.decision === 'approval_required') {
     // Real, trackable pending request - see approvals/approvalWorkflow.js. Never
     // executes here; execution only ever happens via resumeApprovedExecution() below,
@@ -645,12 +857,64 @@ async function executeSelectedCapability(
     // call has happened (CLAUDE.md rule 7 - never silently perform a consequential
     // action). The id is deterministic per run (no randomness), matching every other
     // record in this project.
+    // COMPLIANCE RIDES ON A CORRECTION'S APPROVAL, OR IT NEVER BECOMES EXECUTABLE.
+    //
+    // approvals/publishAuthorization.js refuses to authorize a mutation whose compliance
+    // cannot be RE-VERIFIED from the request's own content. An approval created here with
+    // no compliance input therefore verified cryptographically and then failed at
+    // execution - which is exactly what happened to the first real controlled write.
+    //
+    // The verdict is COMPUTED from the action's own description (see
+    // buildCorrectionComplianceInput), never supplied: there is no parameter here a caller
+    // could use to claim one, and storing it is not what makes it trusted - the input is
+    // stored so the engine can be run again independently at execution time and disagree.
+    //
+    // Attached BEFORE the approval record is built, so it is inside what the human's
+    // signature covers: computeExecutionFingerprint spans the whole execution request, so
+    // compliance input added after a challenge was issued would break that signature.
+    const prepared = prepareApprovalExecutionRequest(access.tool_id, executionRequest);
+    if (!prepared.ok) {
+      appendAuditEvent(runAuditTracker, {
+        type: prepared.audit_type,
+        toolId: access.tool_id,
+        specialistId: executionRequest.specialist_id,
+        ...(prepared.status === 'error' ? {} : { classification: access.classification }),
+        status: prepared.audit_status,
+        summary: prepared.reason,
+      });
+      return {
+        status: prepared.status,
+        data: null,
+        error: prepared.reason,
+        classification: access.classification,
+        ...(prepared.compliance_status ? { compliance_status: prepared.compliance_status } : {}),
+      };
+    }
+    const approvalExecutionRequest = prepared.executionRequest;
+
     const approvalRequest = createApprovalRequest({
-      id: `apr-${runApprovalTracker.requests.length + 1}`,
+      // GLOBALLY UNIQUE ACROSS RUNS, because this id is now a durable filename.
+      //
+      // THE DEFECT THIS CLOSES. Every run starts its own tracker, so the first approval of
+      // EVERY run was 'apr-1'. That was harmless while approvals lived only in memory, but
+      // approvals/approvalStore.js keys a file by this id - so a later run silently
+      // overwrote an earlier run's stored approval, and the earlier signature was left
+      // bound to an execution request no longer in the store.
+      //
+      // The prefix is the run's OWN existing id (runOrchestratorContract's runId, already
+      // unique and already used for the audit trail and usage ledger) - not a new
+      // identifier, and not a random one, so an approval id still says which run produced
+      // it. A caller that supplies no prefix keeps the old sequence exactly, which is what
+      // keeps growthWorkflowOrchestrator and optimizationCycleOrchestrator unchanged.
+      //
+      // ONE ID, EVERYWHERE. This same value flows into the execution request, the
+      // fingerprint the human signs, the challenge, the durable record, the approve
+      // endpoint and the audit trail - there is no second identifier to keep in step.
+      id: approvalIdFor(runApprovalTracker),
       classification: access.classification,
       specialistId: executionRequest.specialist_id,
       toolId: access.tool_id,
-      executionRequest,
+      executionRequest: approvalExecutionRequest,
       reason: access.reason,
     });
     runApprovalTracker.requests.push(approvalRequest);
@@ -706,7 +970,16 @@ async function resumeApprovedExecution(
   runAuditTracker = null,
   runToolResultCache = null,
   runUsageTracker = null,
-  runUsageLedger = null
+  runUsageLedger = null,
+  // OPTIONAL, AND DELIBERATELY CARRIES NOTHING FORGEABLE. The three Shopify corrections
+  // need the server-held approval context their integration modules require, which the
+  // ordinary executor contract does not pass. This parameter supplies only LOCATORS (which
+  // durable store to read, plus the run's audit tracker) - never an approval record, never a
+  // status, never an approver. integrations/approvedCorrectionDispatch.js loads the real
+  // record from approvals/approvalStore.js and authorizes from THAT, so there is nothing
+  // here a caller could manufacture. Omitted, every existing call site behaves exactly as
+  // before.
+  approvalContext = null
 ) {
   if (!decidedApprovalRequest || typeof decidedApprovalRequest !== 'object') {
     return {
@@ -748,6 +1021,11 @@ async function resumeApprovedExecution(
   const access = checkToolAccess({
     specialistId: decidedApprovalRequest.specialist_id,
     toolId: decidedApprovalRequest.tool_id,
+    // Re-checked at resume time exactly like availability and specialist permission are:
+    // an approval never outlives the business's own platform configuration.
+    enabledPlatforms: resolveEnabledPlatformsForBusiness(
+      (decidedApprovalRequest.execution_request && decidedApprovalRequest.execution_request.business_id) || null
+    ),
   });
 
   if (access.decision === 'unavailable' || access.decision === 'denied') {
@@ -763,6 +1041,33 @@ async function resumeApprovedExecution(
       data: null,
       error: access.reason,
       classification: null,
+    };
+  }
+
+  // THE THREE APPROVED CORRECTIONS. They have no TOOL_EXECUTORS entry because their
+  // integration functions need the approval context above; they are dispatched here, and
+  // only here, and only on this path - which is reached only for a record whose status is
+  // already 'approved', i.e. one that passed the Ed25519 gate.
+  if (isCorrectionTool(access.tool_id)) {
+    const outcome = await executeApprovedCorrection(decidedApprovalRequest, {
+      storeDir: approvalContext && approvalContext.storeDir,
+      auditTracker: runAuditTracker,
+    });
+    appendAuditEvent(runAuditTracker, {
+      type: outcome.status === 'success' ? 'execution' : 'error',
+      toolId: access.tool_id,
+      specialistId: decidedApprovalRequest.specialist_id || null,
+      classification: access.classification,
+      status: outcome.status,
+      summary: outcome.status === 'success'
+        ? `Approved correction '${access.tool_id}' completed (${outcome.correction_status}).`
+        : `Approved correction '${access.tool_id}' did not execute: ${outcome.error}`,
+    });
+    return {
+      status: outcome.status,
+      data: outcome.data,
+      error: outcome.error,
+      classification: access.classification,
     };
   }
 
@@ -883,9 +1188,40 @@ function validateResult(outcome) {
 // another specialist's real intent signal on its own. Product's own
 // id/title/description/ROUTING_SYNONYMS.product are completely unchanged - only its
 // weight classification moved.
+// READ-ONLY ROUTING COVERAGE (real production validation): the catalogue-diagnostic
+// vocabulary a store owner actually types was in NO specialist's routing text at all.
+// agent/core/specialistRegistry.js's Product description is "Product catalog analysis
+// and opportunity research." - it never says "vendor" or "inventory", even though
+// Product owns product_data_retrieval, whose records carry exactly those two fields.
+// Measured before this entry, against the real store:
+//
+//   "Report inventory and vendor issues"        -> scored 0 EVERYWHERE -> clarification
+//   "Analyze my Shopify products for vendor
+//    and inventory"                             -> "inventory" split off as its own
+//                                                  clause, scored 0 -> clarification
+//   "Check inventory problems."                 -> shared_infrastructure:compliance,
+//                                                  on the bare word "problems"
+//
+// Same bug class and same additive fix as the "shopify"/"products", "business",
+// "orders" and offer-vocabulary entries above: routing vocabulary only, and Product's
+// real id/title/description are untouched.
+//
+// WHY THESE THREE AND NOT MORE. "vendor"/"vendors" is a Shopify product FIELD - only a
+// product has one - so it cannot belong to another specialist. "inventory" is the
+// weaker of the two (Analytics legitimately reports on stock as well), so it is added
+// at the default weight of 1, where Analytics' own goal vocabulary - "sales",
+// "revenue", "performance", "orders" - still outscores it at weight 2 on a genuine
+// analytics request. Verified against the full corpus: no existing route moved.
+//
+// THIS CHANGES WHICH SPECIALIST IS CHOSEN, NEVER WHETHER A MUTATION IS ELIGIBLE. Tool
+// selection inside the chosen specialist still runs through
+// filterToolCandidatesByIntent (agent/core/mutationIntent.js), so a read-only request
+// routed here still has every correction tool removed from its candidate list before
+// scoring. Naming a vendor or an inventory is how you say WHAT to look at; it remains
+// incapable of saying "change it".
 const ROUTING_SYNONYMS = {
   analytics_optimization: ['analyze', 'analysis', 'business', 'ecommerce', 'commerce', 'orders'],
-  product: ['shopify', 'products'],
+  product: ['shopify', 'products', 'vendor', 'vendors', 'inventory'],
   seo: ['keywords'],
   listing: ['listings', 'titles'],
   // Same bug class and same additive fix as the "shopify"/"products", "business" and
@@ -1598,11 +1934,27 @@ async function buildPlanStep(
         ? `Routed clause "${currentTask}" to specialist '${target.id}'.`
         : `Routed clause "${currentTask}" to shared infrastructure '${target.id}'.`,
   });
-  const candidateToolIds = capabilityEntry
+  const rawCandidateToolIds = capabilityEntry
     ? capabilityEntry.required_tools
     : target.type === 'shared_infrastructure'
       ? getToolsByCategory(target.id).map((tool) => tool.id)
       : [];
+
+  // GATE 2 OF 3: the same mutation-intent gate on the path the live orchestrator
+  // actually uses. The Product specialist legitimately owns the three correction tools
+  // alongside its read tools (specialistCapabilityRegistry.js's required_tools), so
+  // scoring a read-only clause against that list reproduces the same defect gate 1
+  // closes on the legacy path - measured: "Check my Shopify products for vendor
+  // mismatches" scored shopify_vendor_correction 9 to product_data_retrieval 2.
+  //
+  // Classified on currentTask, not the whole objective, because currentTask is the
+  // single clause this step is routing, and planRouting has already split a compound
+  // request into clauses. So "Analyze the catalogue and fix the vendor on X" still
+  // reaches the correction tool through its own unambiguous "fix ..." clause, while the
+  // "Analyze ..." clause cannot. A forcedSelection from a deliberately-sequenced caller
+  // is checked below against this same filtered list, so it cannot route around the gate
+  // either.
+  const candidateToolIds = filterToolCandidatesByIntent(rawCandidateToolIds, currentTask);
 
   // Tool/capability word-overlap scoring is deliberately based on this step's OWN
   // clause (currentTask) rather than the full, possibly multi-clause `objective`.
@@ -2437,7 +2789,10 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   // plain mutable accumulator the caller holds, never module-level state (see
   // approvals/approvalWorkflow.js's own header on why this project never holds hidden
   // state). Every approval_required outcome anywhere in this plan appends to it.
-  const runApprovalTracker = { requests: [] };
+  // id_prefix makes this run's approval ids unique across runs - see approvalIdFor above.
+  // Reuses runId, which this run already created for its audit trail and usage ledger, so
+  // an approval, its audit events and its usage events all name the same run.
+  const runApprovalTracker = { requests: [], id_prefix: runId };
   // One tool-result cache per run, same caller-held-state pattern as the trackers
   // above (see agent/core/toolResultCache.js) - an identical tool call anywhere later
   // in this same plan reuses its first result instead of re-executing and
@@ -2560,6 +2915,8 @@ module.exports = {
   gatherMinimumContext,
   runExecutor,
   executeSelectedCapability,
+  prepareApprovalExecutionRequest,
+  resolveEnabledPlatformsForBusiness,
   resumeApprovedExecution,
   validateResult,
   scoreRoutingTargets,

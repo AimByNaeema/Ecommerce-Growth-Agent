@@ -10,6 +10,9 @@ const {
   SHARED_INFRASTRUCTURE_ROLE_PERMISSIONS,
   isSpecialistPermittedForCategory,
   isOperationPermittedForSpecialist,
+  PLATFORM_GATE_RULE,
+  isPlatformEnabledForBusiness,
+  isToolPlatformPermitted,
   evaluateToolAccess,
   checkToolAccess,
 } = require('../../agent/core/toolPermissions');
@@ -322,6 +325,274 @@ test('every TOOL_CLASSIFICATIONS value is a real classification id from approval
   for (const [toolId, classification] of Object.entries(TOOL_CLASSIFICATIONS)) {
     assert.ok(getClassificationById(classification), `TOOL_CLASSIFICATIONS.${toolId} = '${classification}' is not a real classification id`);
   }
+});
+
+// ---------------------------------------------------------------------------------
+// THE PLATFORM GATE - the third least-privilege axis, after category and role.
+// ---------------------------------------------------------------------------------
+//
+// NO NETWORK, NO CREDENTIAL, NO ADAPTER is touched by any test below: the gate is pure
+// and reads only the list it is handed. The ETSY_* env vars set in the headline test are
+// deliberate canaries proving exactly that - the decision must not move when credentials
+// appear.
+
+// --- the acceptance case: a Shopify-only business cannot reach Etsy tools -------------
+
+test('ACCEPTANCE: a Shopify-only business is DENIED both Etsy tools, even with Etsy credentials present', () => {
+  const saved = {
+    ETSY_API_KEYSTRING: process.env.ETSY_API_KEYSTRING,
+    ETSY_OAUTH_ACCESS_TOKEN: process.env.ETSY_OAUTH_ACCESS_TOKEN,
+    ETSY_OAUTH_REFRESH_TOKEN: process.env.ETSY_OAUTH_REFRESH_TOKEN,
+    ETSY_SHOP_ID: process.env.ETSY_SHOP_ID,
+    ETSY_SHARED_SECRET: process.env.ETSY_SHARED_SECRET,
+  };
+  // Fully "connected" Etsy credentials - fake values, never used to call anything.
+  process.env.ETSY_API_KEYSTRING = 'CANARY-etsy-keystring-must-not-enable-etsy';
+  process.env.ETSY_OAUTH_ACCESS_TOKEN = 'CANARY-etsy-access-token-must-not-enable-etsy';
+  process.env.ETSY_OAUTH_REFRESH_TOKEN = 'CANARY-etsy-refresh-token-must-not-enable-etsy';
+  process.env.ETSY_SHOP_ID = '12345678';
+  process.env.ETSY_SHARED_SECRET = 'CANARY-etsy-shared-secret-must-not-enable-etsy';
+
+  try {
+    for (const toolId of ['etsy_shop_data_retrieval', 'etsy_listing_data_retrieval']) {
+      // Product is the specialist that genuinely OWNS these tools by category and role -
+      // so category and role both pass, and only the platform gate can refuse them. That
+      // is the whole point: this is not a re-test of category ownership.
+      const owned = checkToolAccess({ specialistId: 'product', toolId });
+      assert.strictEqual(owned.decision, 'allowed', `${toolId} should be category/role-permitted for product`);
+
+      const result = checkToolAccess({ specialistId: 'product', toolId, enabledPlatforms: ['shopify'] });
+      assert.strictEqual(result.decision, 'denied', `${toolId} must be denied for a Shopify-only business`);
+      assert.strictEqual(result.permitted, false);
+      assert.strictEqual(result.platform_permitted, false);
+      // The earlier gates are reported as having passed, so the reason is unambiguous.
+      assert.strictEqual(result.category_permitted, true);
+      assert.strictEqual(result.operation_permitted, true);
+      assert.ok(/etsy/.test(result.reason), 'the reason must name the platform the tool is bound to');
+      assert.ok(
+        /never from which credentials happen to be present/.test(result.reason),
+        'the reason must state that credentials do not grant enablement'
+      );
+      // The canary must never surface in a refusal.
+      assert.ok(!/CANARY/.test(result.reason), 'no credential value may appear in the reason');
+    }
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("a Shopify-only business keeps every Shopify-bound tool it already owns", () => {
+  for (const toolId of ['product_data_retrieval', 'collection_data_retrieval']) {
+    const result = checkToolAccess({ specialistId: 'product', toolId, enabledPlatforms: ['shopify'] });
+    assert.strictEqual(result.decision, 'allowed', `${toolId} should stay allowed`);
+    assert.strictEqual(result.platform_permitted, true);
+  }
+});
+
+test('an Etsy-only business is the mirror image: Etsy tools allowed, Shopify tools denied', () => {
+  assert.strictEqual(
+    checkToolAccess({ specialistId: 'product', toolId: 'etsy_shop_data_retrieval', enabledPlatforms: ['etsy'] }).decision,
+    'allowed'
+  );
+  assert.strictEqual(
+    checkToolAccess({ specialistId: 'product', toolId: 'product_data_retrieval', enabledPlatforms: ['etsy'] }).decision,
+    'denied'
+  );
+});
+
+// --- platform-neutral tools are never affected ---------------------------------------
+
+test('platform-neutral tools stay available under ANY enabled set, including none at all', () => {
+  const neutral = [
+    ['research', 'market_research'],
+    ['seo', 'keyword_research'],
+    ['listing', 'listing_content_generation'],
+    ['marketing', 'marketing_analysis'],
+    ['social_advertising', 'social_content_planning'],
+    ['analytics_optimization', 'analytics'],
+    [null, 'ai_reasoning_completion'],
+  ];
+  for (const enabledPlatforms of [[], ['shopify'], ['etsy'], ['shopify', 'etsy']]) {
+    for (const [specialistId, toolId] of neutral) {
+      assert.deepStrictEqual(getToolById(toolId).platforms, [], `${toolId} should be platform-neutral`);
+      const result = checkToolAccess({ specialistId, toolId, enabledPlatforms });
+      assert.strictEqual(
+        result.decision,
+        'allowed',
+        `${toolId} should stay allowed with enabledPlatforms=${JSON.stringify(enabledPlatforms)}`
+      );
+      assert.strictEqual(result.platform_permitted, true);
+    }
+  }
+});
+
+// --- the one multi-platform tool (PLATFORM_GATE_RULE: ANY, not ALL) -------------------
+
+test('a multi-platform tool is allowed when EITHER of its platforms is enabled, denied when neither is', () => {
+  const toolId = 'catalogue_expansion_opportunities';
+  assert.deepStrictEqual(getToolById(toolId).platforms, ['shopify', 'etsy']);
+
+  for (const enabledPlatforms of [['shopify'], ['etsy'], ['shopify', 'etsy']]) {
+    assert.strictEqual(
+      checkToolAccess({ specialistId: 'product', toolId, enabledPlatforms }).decision,
+      'allowed',
+      `should be allowed with ${JSON.stringify(enabledPlatforms)}`
+    );
+  }
+  assert.strictEqual(checkToolAccess({ specialistId: 'product', toolId, enabledPlatforms: [] }).decision, 'denied');
+});
+
+test('PLATFORM_GATE_RULE documents the ANY semantics and does not overstate what it closes', () => {
+  assert.strictEqual(PLATFORM_GATE_RULE.id, 'platform_gate_requires_any_declared_platform_enabled');
+  assert.ok(/AT LEAST ONE/.test(PLATFORM_GATE_RULE.description));
+  // The residual gap must stay declared rather than quietly dropped.
+  assert.ok(/customerMarketOpportunityTool/.test(PLATFORM_GATE_RULE.known_limitation));
+});
+
+// --- fail closed ---------------------------------------------------------------------
+
+test('FAIL CLOSED: a platform-bound tool is denied for every uncertain enabled-platform value', () => {
+  const badValues = [
+    [],
+    ['amazon'],
+    ['ebay'],
+    ['woocommerce'],
+    ['Shopify'],
+    ['SHOPIFY'],
+    [''],
+    [null],
+    [undefined],
+    [42],
+    ['shopify ', ' shopify'],
+    'shopify',
+    {},
+    0,
+    NaN,
+  ];
+  for (const enabledPlatforms of badValues) {
+    const result = checkToolAccess({ specialistId: 'product', toolId: 'product_data_retrieval', enabledPlatforms });
+    assert.strictEqual(
+      result.decision,
+      'denied',
+      `enabledPlatforms=${JSON.stringify(enabledPlatforms)} must deny a platform-bound tool`
+    );
+    assert.strictEqual(result.platform_permitted, false);
+  }
+});
+
+test('an unrecognized platform can never be enabled, however it is written in config', () => {
+  for (const platform of ['amazon', 'ebay', 'woocommerce', 'wordpress', '', null, undefined, 42]) {
+    assert.strictEqual(
+      isPlatformEnabledForBusiness({ platform, enabledPlatforms: [platform] }),
+      false,
+      `${JSON.stringify(platform)} must never count as enabled`
+    );
+  }
+  // Listing an unknown platform alongside a real one grants only the real one.
+  assert.strictEqual(isPlatformEnabledForBusiness({ platform: 'shopify', enabledPlatforms: ['amazon', 'shopify'] }), true);
+  assert.strictEqual(isPlatformEnabledForBusiness({ platform: 'etsy', enabledPlatforms: ['amazon', 'shopify'] }), false);
+});
+
+test('isToolPlatformPermitted() treats an absent or empty tool binding as platform-neutral', () => {
+  for (const toolPlatforms of [undefined, null, [], 'shopify', {}]) {
+    assert.strictEqual(
+      isToolPlatformPermitted({ toolPlatforms, enabledPlatforms: [] }),
+      true,
+      `toolPlatforms=${JSON.stringify(toolPlatforms)} must be treated as unrestricted`
+    );
+  }
+  assert.strictEqual(isToolPlatformPermitted({ toolPlatforms: ['etsy'], enabledPlatforms: [] }), false);
+});
+
+// --- the gate is opt-in: omitting the list changes nothing ----------------------------
+
+test('REGRESSION GUARD: omitting enabledPlatforms reproduces the pre-gate decision for EVERY tool', () => {
+  const specialistIds = [null, ...Object.keys(SPECIALIST_ROLE_PERMISSIONS)];
+  for (const tool of TOOL_REGISTRY) {
+    for (const specialistId of specialistIds) {
+      const omitted = checkToolAccess({ specialistId, toolId: tool.id });
+      const explicitNull = checkToolAccess({ specialistId, toolId: tool.id, enabledPlatforms: null });
+      const explicitUndefined = checkToolAccess({ specialistId, toolId: tool.id, enabledPlatforms: undefined });
+      assert.deepStrictEqual(explicitNull, omitted, `${tool.id}/${specialistId}: null must behave as omitted`);
+      assert.deepStrictEqual(explicitUndefined, omitted, `${tool.id}/${specialistId}: undefined must behave as omitted`);
+      // With no platform context there is no platform verdict to report - never a
+      // silently permissive `true`.
+      if (omitted.decision === 'allowed' || omitted.decision === 'approval_required') {
+        assert.strictEqual(omitted.platform_permitted, null, `${tool.id}: platform_permitted must be null when unchecked`);
+      }
+    }
+  }
+});
+
+// --- ordering: the platform gate runs AFTER category and role ------------------------
+
+test('a category-denied tool still reports the CATEGORY reason, not the platform one', () => {
+  // seo does not own the 'products' category, and product_data_retrieval is Shopify-bound.
+  const result = checkToolAccess({ specialistId: 'seo', toolId: 'product_data_retrieval', enabledPlatforms: [] });
+  assert.strictEqual(result.decision, 'denied');
+  assert.strictEqual(result.category_permitted, false);
+  assert.strictEqual(result.platform_permitted, null, 'the platform gate must not have run');
+  assert.ok(/not permitted to use tools in category/.test(result.reason));
+});
+
+test('a role-denied tool still reports the ROLE reason, not the platform one', () => {
+  const result = evaluateToolAccess({
+    specialistId: 'research',
+    tool: { id: 'hypothetical_write_tool', status: 'implemented', category: 'research', operation: 'write', platforms: ['etsy'] },
+    classification: 'analysis_only',
+    enabledPlatforms: [],
+  });
+  assert.strictEqual(result.decision, 'denied');
+  assert.strictEqual(result.operation_permitted, false);
+  assert.strictEqual(result.platform_permitted, null, 'the platform gate must not have run');
+  assert.ok(/does not permit 'write' operations/.test(result.reason));
+});
+
+test('an unavailable tool is still unavailable, whatever the enabled platforms say', () => {
+  const result = checkToolAccess({ specialistId: null, toolId: 'memory_retrieval', enabledPlatforms: ['shopify'] });
+  assert.strictEqual(result.decision, 'unavailable');
+  assert.strictEqual(result.platform_permitted, null);
+});
+
+test('the platform gate runs BEFORE approval - a gated Shopify write is denied, never approval_required', () => {
+  // shopify_vendor_correction is externally_executable, so with Shopify enabled it must
+  // reach the approval gate; with Shopify disabled it must never get that far.
+  const enabled = checkToolAccess({ specialistId: 'product', toolId: 'shopify_vendor_correction', enabledPlatforms: ['shopify'] });
+  assert.strictEqual(enabled.decision, 'approval_required');
+  assert.strictEqual(enabled.platform_permitted, true);
+
+  const disabled = checkToolAccess({ specialistId: 'product', toolId: 'shopify_vendor_correction', enabledPlatforms: ['etsy'] });
+  assert.strictEqual(disabled.decision, 'denied');
+  assert.strictEqual(disabled.approval_required, null);
+});
+
+test('this module reads no credential and no file to decide a platform - the gate is pure', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', '..', 'agent', 'core', 'toolPermissions.js'),
+    'utf8'
+  );
+  // Comment lines are stripped first: this file documents WHERE the enabled list comes
+  // from (configuration/businessRegistry.js) on purpose, and naming a module in prose is
+  // the opposite of depending on it. Only real code may be judged here.
+  const code = source
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+
+  for (const forbidden of ['process.env', 'readFileSync', 'existsSync', 'businessRegistry', 'configValidator']) {
+    assert.ok(!code.includes(forbidden), `agent/core/toolPermissions.js must not reference ${forbidden} in code`);
+  }
+  // Its only requires stay the three it already had, plus the platform vocabulary.
+  const requires = (code.match(/require\('[^']+'\)/g) || []).sort();
+  assert.deepStrictEqual(requires, [
+    "require('../../approvals/approvalArchitecture')",
+    "require('../../tools/toolRegistry')",
+    "require('../../tools/toolRegistry')",
+    "require('./channelModel')",
+  ]);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

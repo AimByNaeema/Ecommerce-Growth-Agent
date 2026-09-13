@@ -11,6 +11,7 @@
     specialists: { nav: 'navSpecialists', page: 'pageSpecialists', title: 'Run a Specialist', subtitle: 'Run one specialist directly against a specific objective you write.' },
     orchestrator: { nav: 'navOrchestrator', page: 'pageOrchestrator', title: 'Chief Orchestrator', subtitle: 'Give the Chief a goal — it decides which specialist(s) to use.' },
     approvals: { nav: 'navApprovals', page: 'pageApprovals', title: 'Approval Center', subtitle: 'Every human sign-off the Chief has requested this session.' },
+    autonomy: { nav: 'navAutonomy', page: 'pageAutonomy', title: 'Autonomy', subtitle: 'Read-only: whether autonomy is on, what is scheduled, recent cycles, and what is waiting for your approval.' },
     workflow: { nav: 'navWorkflow', page: 'pageWorkflow', title: 'How AVENLY AI works', subtitle: 'Your AI sales team, and where you stay in control.' },
     history: { nav: 'navHistory', page: 'pageHistory', title: 'History', subtitle: 'Saved results from past runs, stored on the server - these survive a refresh.' },
   };
@@ -30,6 +31,7 @@
     pageSubtitleEl.textContent = entry.subtitle;
     if (name === 'approvals') renderApprovalList();
     if (name === 'workflow') loadWorkflow();
+    if (name === 'autonomy') loadAutonomy();
     if (name === 'history') renderHistoryList();
     // loadOverview() is declared further down this file (function declarations are
     // hoisted), and is also called once at the bottom for the initial page load,
@@ -545,6 +547,44 @@
     }
   }
 
+
+  // ---------------------------------------------------------------------------------
+  // SIGNED HUMAN APPROVAL
+  // ---------------------------------------------------------------------------------
+  //
+  // The server will not accept a decision without an Ed25519 signature produced with a key
+  // it does not hold. This walks the person through it: ask the server for the exact
+  // payload to sign, show it, take back the base64 signature they produced offline.
+  //
+  // NO PRIVATE KEY IS EVER ENTERED HERE, held here, or sent anywhere. The signing happens
+  // entirely on the approver's own machine; this page only ever sees the public payload and
+  // the resulting signature.
+  async function collectSignedApproval({ approvalId, decision, decidedBy }) {
+    const params =
+      'approvalId=' + encodeURIComponent(approvalId) +
+      '&decision=' + encodeURIComponent(decision) +
+      '&decidedBy=' + encodeURIComponent(decidedBy);
+
+    let challenge;
+    try {
+      const res = await apiFetch('/approval-challenge?' + params);
+      challenge = await res.json().catch(function () { return {}; });
+      if (!res.ok) return { ok: false, error: challenge.error || 'Could not obtain an approval challenge.' };
+    } catch (err) {
+      return { ok: false, error: 'Could not reach the server for an approval challenge.' };
+    }
+
+    var instructions = (challenge.signing_instructions || []).join('\n\n');
+    var signature = window.prompt(
+      'SIGN THIS APPROVAL\n\n' +
+        'On the machine holding your approval private key, sign this EXACT payload and paste the base64 signature below.\n\n' +
+        '--- payload ---\n' + challenge.payload + '\n--- end payload ---\n\n' +
+        instructions + '\n\nBase64 signature:'
+    );
+    if (!signature || !signature.trim()) return { ok: false, error: 'Approval cancelled - no signature was provided.' };
+    return { ok: true, nonce: challenge.nonce, signature: signature.trim() };
+  }
+
   function attachApprovalPanel(card, header, body, approval, runId, stepTitle) {
     const panel = document.createElement('div');
     panel.className = 'approval-panel';
@@ -579,6 +619,17 @@
     async function decide(decision) {
       approveBtn.disabled = true;
       rejectBtn.disabled = true;
+      const signed = await collectSignedApproval({
+        approvalId: approval.approval_request_id,
+        decision,
+        decidedBy: 'naeema',
+      });
+      if (!signed.ok) {
+        approveBtn.disabled = false;
+        rejectBtn.disabled = false;
+        panel.querySelector('.approval-reason').textContent = signed.error;
+        return;
+      }
       try {
         const res = await apiFetch('/orchestrate/approve', {
           method: 'POST',
@@ -589,6 +640,8 @@
             decision,
             decidedBy: 'naeema',
             notes: notesField.value.trim() || undefined,
+            nonce: signed.nonce,
+            signature: signed.signature,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -1109,6 +1162,20 @@
     approveBtn.disabled = true;
     rejectBtn.disabled = true;
 
+    // Same signed-approval handshake as the run panel - the server accepts no decision
+    // without it, so the Approval Center cannot be a quieter way to approve.
+    const signed = await collectSignedApproval({
+      approvalId: entry.approvalId,
+      decision,
+      decidedBy: 'naeema',
+    });
+    if (!signed.ok) {
+      approveBtn.disabled = false;
+      rejectBtn.disabled = false;
+      window.alert(signed.error);
+      return;
+    }
+
     try {
       const res = await apiFetch('/orchestrate/approve', {
         method: 'POST',
@@ -1119,6 +1186,8 @@
           decision,
           decidedBy: 'naeema',
           notes: (notesField && notesField.value.trim()) || undefined,
+          nonce: signed.nonce,
+          signature: signed.signature,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -3314,6 +3383,55 @@
   // Performance detail = the Analytics & Optimization specialist, which is what actually
   // produces a deeper store-performance result in this system.
   wireOverviewLink('perfDetailsLink', () => openSpecialistOnRunPage('analytics'));
+
+  /* ==========================================================================
+     Autonomy page: a READ-ONLY view of GET /autonomy/state. Nothing here turns
+     autonomy on, creates or enables a schedule, starts a cycle, or approves
+     anything - those remain deliberate owner actions on the server.
+     ========================================================================== */
+  async function loadAutonomy() {
+    const area = document.getElementById('autonomyArea');
+    if (!area) return;
+    area.innerHTML = '<p class="empty-result">Loading autonomy state…</p>';
+    let data;
+    try {
+      const res = await apiFetch('/autonomy/state');
+      data = await res.json();
+      if (!res.ok) throw new Error((data && data.error) || 'Could not load the autonomy state.');
+    } catch (err) {
+      area.innerHTML = '<p class="empty-result">' + escapeHtml(err.message || 'Could not load the autonomy state.') + '</p>';
+      return;
+    }
+
+    const fact = (title, text) =>
+      '<div class="gate-explainer-item"><div class="gate-explainer-title">' + escapeHtml(title) +
+      '</div><div class="gate-explainer-text">' + escapeHtml(text) + '</div></div>';
+    const list = (items, render, empty) =>
+      Array.isArray(items) && items.length
+        ? '<ul>' + items.map((item) => '<li>' + escapeHtml(render(item)) + '</li>').join('') + '</ul>'
+        : '<div class="session-note">' + escapeHtml(empty) + '</div>';
+
+    const autonomy = data.business_autonomy || {};
+    const killSwitch = data.kill_switch === 'on' ? 'On' : data.kill_switch === 'malformed' ? 'Malformed — treated as off' : 'Off';
+    const businessAutonomy = autonomy.readable === false
+      ? 'Configuration unreadable (' + (autonomy.reason_code || 'unknown') + ')'
+      : autonomy.enabled ? 'Enabled in this business’s configuration' : 'Not enabled in this business’s configuration';
+    const storage = data.storage && data.storage.durable ? 'Durable — cycles may run here' : 'Not durable — cycles are refused here';
+
+    area.innerHTML =
+      '<div class="gate-explainer">' +
+      fact('Kill switch', killSwitch) +
+      fact('Business autonomy', businessAutonomy) +
+      fact('Storage', storage) +
+      fact('Enabled platforms', (data.enabled_platforms || []).join(', ') || 'None') +
+      '</div>' +
+      '<h3>Schedules</h3>' +
+      list(data.schedules, (job) => job.job_id + ' — ' + (job.enabled ? 'enabled' : 'disabled') + ' — ' + ((job.task && job.task.tool_id) || '') + (job.last_status ? ' — last: ' + job.last_status : ''), 'No schedules have been created for this business.') +
+      '<h3>Waiting for your approval</h3>' +
+      list(data.pending_approvals, (item) => item.approval_id + ' — ' + item.tool_id + (item.compliance_status ? ' — compliance ' + item.compliance_status : '') + (item.reason ? ' — ' + item.reason : ''), 'Nothing from the autonomous cycle is waiting for your approval.') +
+      '<h3>Recent autonomous runs</h3>' +
+      list(data.recent_runs, (run) => (run.created_at ? run.created_at + ' — ' : '') + (run.kind || '') + ' — ' + (run.status || '') + (run.summary ? ' — ' + run.summary : ''), 'No autonomous cycle has run for this business yet.');
+  }
 
   // Initial load: Overview starts as the active page (see index.html's
   // `pageOverview` carrying the `active` class by default), so it must hydrate

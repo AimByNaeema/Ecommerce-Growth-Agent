@@ -17,6 +17,9 @@
 // Every brand, phrase, identity and draft below is an invented placeholder.
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -128,10 +131,10 @@ test('compliance REVIEW reaches a human AND carries its reasons onto the request
 
 test('REVIEW NEVER SILENTLY BECOMES PASS - not even once a human approves it', () => {
   const outcome = gate(REVIEW_CONTENT);
-  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', {
+  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', signedDecision(outcome.requests, 'apr-compliance-1', {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
-  });
+  }));
   assert.strictEqual(decided.ok, true);
   assert.strictEqual(decided.decided_request.status, 'approved');
   // The human decision changed the APPROVAL. It did not change the COMPLIANCE verdict.
@@ -177,10 +180,10 @@ test('BLOCK cannot be smuggled in by hand-building a pending request around it',
   assert.strictEqual(verification.ok, false);
   assert.strictEqual(verification.compliance_result.status, 'BLOCK');
 
-  const decided = decideComplianceGatedApproval([forged], forged.id, {
+  const decided = decideComplianceGatedApproval([forged], forged.id, signedDecision([forged], forged.id, {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
-  });
+  }));
   assert.strictEqual(decided.ok, false, 'a BLOCK must not be approvable by any route');
   assert.strictEqual(decided.decided_request, null);
   assert.strictEqual(isAuthorizedForPublishing(forged), false);
@@ -201,11 +204,11 @@ test('HUMAN APPROVAL IS NOT COMPLIANCE PASS: a PASS decides nothing on its own',
 
 test('the two verdicts are stored separately and neither overwrites the other', () => {
   const outcome = gate(PASSING_CONTENT);
-  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', {
+  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', signedDecision(outcome.requests, 'apr-compliance-1', {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
     notes: 'Read it first.',
-  });
+  }));
   const record = decided.decided_request;
   // Human decision on the record itself; compliance verdict inside execution_request.
   assert.strictEqual(record.status, 'approved');
@@ -236,10 +239,10 @@ test('A FORGED compliance PASS IS REJECTED: the verdict is recomputed from the c
   assert.ok(verification.reason.includes("claims compliance status 'PASS'"));
   assert.ok(verification.reason.includes("produces 'REVIEW'"));
 
-  const decided = decideComplianceGatedApproval([request], request.id, {
+  const decided = decideComplianceGatedApproval([request], request.id, signedDecision([request], request.id, {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
-  });
+  }));
   assert.strictEqual(decided.ok, false);
   assert.strictEqual(decided.decided_request, null);
   // And the record is left exactly as it was - a refused decision changes nothing.
@@ -261,7 +264,7 @@ test('a record with no compliance input cannot be verified, so it cannot be deci
   assert.strictEqual(verification.ok, false);
   assert.ok(verification.reason.includes('cannot be re-verified'));
   assert.strictEqual(
-    decideComplianceGatedApproval([request], request.id, { decision: 'approved', decidedBy: 'x@example.com' }).ok,
+    decideComplianceGatedApproval([request], request.id, signedDecision([request], request.id, { decision: 'approved', decidedBy: 'x@example.com' })).ok,
     false
   );
 });
@@ -275,10 +278,10 @@ test('A FORGED APPROVAL IS REJECTED: an already-approved record cannot be re-dec
     decided_by: 'definitely-a-real-human@example.com (forged)',
     decided_at: new Date().toISOString(),
   };
-  const decided = decideComplianceGatedApproval([forged], forged.id, {
+  const decided = decideComplianceGatedApproval([forged], forged.id, signedDecision([forged], forged.id, {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
-  });
+  }));
   assert.strictEqual(decided.ok, false);
   assert.ok(decided.reason.includes("already 'approved', not 'pending'"));
 });
@@ -286,10 +289,10 @@ test('A FORGED APPROVAL IS REJECTED: an already-approved record cannot be re-dec
 test('A DECISION CANNOT BE MADE ANONYMOUSLY: decidedBy is required and recorded', () => {
   const outcome = gate(PASSING_CONTENT);
   for (const decidedBy of [undefined, null, '', '   ']) {
-    const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', {
+    const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', signedDecision(outcome.requests, 'apr-compliance-1', {
       decision: 'approved',
       decidedBy,
-    });
+    }));
     assert.strictEqual(decided.ok, false, `decidedBy '${decidedBy}' must be refused`);
     assert.ok(decided.reason.includes('decidedBy'));
   }
@@ -300,10 +303,10 @@ test('A DECISION CANNOT BE MADE ANONYMOUSLY: decidedBy is required and recorded'
 test('an invalid decision value is refused by the existing lifecycle, not reinterpreted', () => {
   const outcome = gate(PASSING_CONTENT);
   for (const decision of ['maybe', 'pending', 'published', undefined]) {
-    const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', {
+    const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', signedDecision(outcome.requests, 'apr-compliance-1', {
       decision,
       decidedBy: 'store-owner@example.com (placeholder)',
-    });
+    }));
     assert.strictEqual(decided.ok, false, `decision '${decision}' must be refused`);
   }
 });
@@ -325,11 +328,11 @@ test('THE EXISTING APPROVAL LIFECYCLE IS REUSED, never reimplemented', () => {
 test('AUDIT IS PRESERVED: pending, decided and refused decisions are all recorded', () => {
   const tracker = createAuditTracker('run-compliance-approval-1');
   const outcome = gate(PASSING_CONTENT, { auditTracker: tracker });
-  decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', {
+  decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', signedDecision(outcome.requests, 'apr-compliance-1', {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
     auditTracker: tracker,
-  });
+  }));
   const events = getEventsByType(tracker, 'approval');
   assert.strictEqual(events.length, 2);
   assert.strictEqual(events[0].status, 'pending');
@@ -345,11 +348,11 @@ test('AUDIT records a BLOCK that never became a request, and a refused decision'
   const forgeTracker = createAuditTracker('run-compliance-approval-3');
   const request = gate(REVIEW_CONTENT).approval_request;
   request.execution_request.compliance.compliance_status = 'PASS';
-  decideComplianceGatedApproval([request], request.id, {
+  decideComplianceGatedApproval([request], request.id, signedDecision([request], request.id, {
     decision: 'approved',
     decidedBy: 'x@example.com',
     auditTracker: forgeTracker,
-  });
+  }));
   assert.strictEqual(getEventsByType(forgeTracker, 'approval')[0].status, 'refused');
 });
 
@@ -405,10 +408,10 @@ test('NOTHING PUBLISHES: no external client or integration is reachable from the
 
 test('APPROVED IS NOT PUBLISHED: an approval only authorizes a future publishing step', () => {
   const outcome = gate(PASSING_CONTENT);
-  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', {
+  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', signedDecision(outcome.requests, 'apr-compliance-1', {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
-  });
+  }));
   assert.strictEqual(decided.decided_request.status, 'approved');
   // Authorized, and explicitly only that.
   assert.strictEqual(isAuthorizedForPublishing(decided.decided_request), true);
@@ -423,11 +426,11 @@ test('APPROVED IS NOT PUBLISHED: an approval only authorizes a future publishing
 
 test('REJECTED IS NOT PUBLISHED, and authorizes nothing', () => {
   const outcome = gate(PASSING_CONTENT);
-  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', {
+  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', signedDecision(outcome.requests, 'apr-compliance-1', {
     decision: 'rejected',
     decidedBy: 'store-owner@example.com (placeholder)',
     notes: 'Not this one.',
-  });
+  }));
   assert.strictEqual(decided.ok, true);
   assert.strictEqual(decided.decided_request.status, 'rejected');
   assert.strictEqual(isAuthorizedForPublishing(decided.decided_request), false);
@@ -458,10 +461,10 @@ test('THE ONLY EXTERNALLY-EXECUTING TOOLS ARE THE THREE GATED SHOPIFY CORRECTION
 
 test('isAuthorizedForPublishing requires every condition, every time it is asked', () => {
   const outcome = gate(PASSING_CONTENT);
-  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', {
+  const decided = decideComplianceGatedApproval(outcome.requests, 'apr-compliance-1', signedDecision(outcome.requests, 'apr-compliance-1', {
     decision: 'approved',
     decidedBy: 'store-owner@example.com (placeholder)',
-  }).decided_request;
+  })).decided_request;
   assert.strictEqual(isAuthorizedForPublishing(decided), true);
 
   // Each condition removed in turn revokes the authorization.

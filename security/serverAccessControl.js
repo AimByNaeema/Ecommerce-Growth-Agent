@@ -36,6 +36,10 @@
 // per-process - honest limitations, documented rather than hidden.
 
 const crypto = require('node:crypto');
+// The businessId format/path-traversal guard, reused rather than restated - the same
+// validation configuration/businessRegistry.js already applies before an id can reach the
+// filesystem. isValidBusinessId() is a pure regex test and performs no I/O.
+const { isValidBusinessId } = require('../configuration/businessRegistry');
 
 // Reads the configured shared secret at call time (not module load) so a test can set
 // it before createApp() runs - the same convention
@@ -80,6 +84,123 @@ function requireApiKey(req, res, next) {
   const suppliedKey = extractBearerToken(req);
   if (!suppliedKey || !safeCompare(suppliedKey, configuredKey)) {
     res.status(401).json({ error: 'Valid credentials are required.' });
+    return;
+  }
+
+  next();
+}
+
+// ---------------------------------------------------------------------------------
+// BUSINESS AUTHORIZATION - which businesses the authenticated credential may reach.
+// ---------------------------------------------------------------------------------
+//
+// THE HOLE THIS CLOSES. requireApiKey above authenticates "whoever holds the key" and
+// stops there. Several endpoints take a `business_id` straight from the request
+// (/growth-workflow and /optimization-cycle in the body, /history in the query), and that
+// id selects which business's configuration, credentials and saved runs are used. With one
+// shared key and no further check, ANY authenticated caller could name ANY business and be
+// served it. Authentication was being treated as authorization.
+//
+// CLIENT-SUPPLIED IDENTITY IS NEVER AUTHORITY. A business_id in a request says only which
+// business is being ASKED for. Whether the credential may have it is decided here, against
+// configuration the caller cannot influence.
+//
+// THE DEFAULT BUSINESS, AND WHY IT STAYS REACHABLE. A request that names no business_id
+// means the server's own root-.env business - what every single-business deployment (and
+// this project's own dashboard, which sends no business_id anywhere) has always used. That
+// remains reachable by an authenticated key, so this boundary is purely additive: it
+// constrains EXPLICIT business ids, which is exactly where the cross-customer risk is.
+// Removing default access as well would be a separate, deliberate decision about how a
+// multi-tenant deployment addresses its own root configuration.
+//
+// FAILS CLOSED WHEN UNCONFIGURED. With AGENT_API_KEY_BUSINESS_IDS unset, the authorized set
+// is EMPTY and every explicit business_id is refused - a deployment that has not said which
+// businesses its key may reach can reach none of them by name. The insecure state is
+// unreachable by omission, the same discipline getConfiguredApiKey()'s 503 already applies.
+const AUTHORIZED_BUSINESS_IDS_ENV = 'AGENT_API_KEY_BUSINESS_IDS';
+
+// The businesses this credential may address by name. Comma- or whitespace-separated in the
+// environment; read at call time (not module load) so a test can set it before createApp().
+//
+// An entry that is not a syntactically valid businessId is DROPPED rather than accepted -
+// it could never name a real business anyway (configuration/businessRegistry.js would refuse
+// it), and silently honouring a malformed entry is how a typo becomes an access grant.
+// Duplicates collapse. Order is not significant.
+function getAuthorizedBusinessIds() {
+  const raw = process.env[AUTHORIZED_BUSINESS_IDS_ENV];
+  if (typeof raw !== 'string' || raw.trim() === '') return [];
+  const authorized = [];
+  for (const entry of raw.split(/[,\s]+/)) {
+    const candidate = entry.trim();
+    if (candidate === '') continue;
+    if (!isValidBusinessId(candidate)) continue;
+    if (!authorized.includes(candidate)) authorized.push(candidate);
+  }
+  return authorized;
+}
+
+// Whether the authenticated credential may access this business.
+//
+//   null / undefined / '' -> the default (root-.env) business: always authorized.
+//   anything else         -> must be a valid businessId AND present in the authorized set.
+//
+// Pure: no I/O beyond reading its own env var, and it never consults credentials - holding
+// a business's Shopify token has never been, and is not here, a reason to be allowed to
+// address that business.
+function isBusinessAuthorized(businessId) {
+  if (businessId === null || businessId === undefined) return true;
+  if (typeof businessId !== 'string' || businessId.trim() === '') return true;
+  const candidate = businessId.trim();
+  if (!isValidBusinessId(candidate)) return false;
+  return getAuthorizedBusinessIds().includes(candidate);
+}
+
+// The business_id a request is asking for, from wherever the route carries it. Body first
+// (the POST endpoints), then query (/history). Returns undefined when the request names
+// none - which is the default business, not an error.
+//
+// Reads ONLY these two well-known locations: a header or a path segment is deliberately not
+// consulted, so there is no second, quieter way to select a business.
+function requestedBusinessId(req) {
+  if (req.body && typeof req.body === 'object' && 'business_id' in req.body) return req.body.business_id;
+  if (req.query && typeof req.query === 'object' && 'business_id' in req.query) return req.query.business_id;
+  return undefined;
+}
+
+// Express middleware: refuses a request naming a business this credential may not reach.
+// Applied to every protected endpoint (see server.js's `protect` chain), so a route cannot
+// be business-scoped without passing this gate - a new endpoint is covered the day it is
+// added rather than the day someone remembers to guard it.
+//
+// Runs AFTER requireApiKey: authenticate, then authorize. A request with no valid credential
+// is refused before this is ever reached, so a 403 here always means "authenticated, but not
+// for that business".
+//
+// THE ERROR NAMES NOTHING. It does not echo the requested id, does not list the authorized
+// businesses, and carries no credential - a refusal must not become a way to discover which
+// other businesses exist on this server.
+function requireAuthorizedBusiness(req, res, next) {
+  const requested = requestedBusinessId(req);
+
+  if (requested === undefined || requested === null) {
+    next();
+    return;
+  }
+
+  if (typeof requested !== 'string') {
+    res.status(400).json({ error: 'If provided, "business_id" must be a string.' });
+    return;
+  }
+
+  // An empty/whitespace string is the default business, matching every existing route's own
+  // `business_id || null` normalization - not a malformed id.
+  if (requested.trim() === '') {
+    next();
+    return;
+  }
+
+  if (!isBusinessAuthorized(requested)) {
+    res.status(403).json({ error: 'This credential is not authorized for the requested business.' });
     return;
   }
 
@@ -147,4 +268,9 @@ module.exports = {
   extractBearerToken,
   requireApiKey,
   createRateLimiter,
+  AUTHORIZED_BUSINESS_IDS_ENV,
+  getAuthorizedBusinessIds,
+  isBusinessAuthorized,
+  requestedBusinessId,
+  requireAuthorizedBusiness,
 };

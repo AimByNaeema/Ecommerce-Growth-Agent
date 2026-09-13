@@ -10,6 +10,9 @@
 // tests). Every id and reference below is an invented placeholder.
 
 const assert = require('node:assert');
+// Real Ed25519 approval signatures - see approvalSigningTestKey.js. Verification itself is
+// never mocked: every decision below is signed for real and checked by the real gate.
+const { signedDecision } = require('./approvalSigningTestKey');
 
 const shopifyClient = require('../../integrations/adapters/shopifyClient');
 const { planInventoryCorrections, correctInventoryDeficit } = require('../../integrations/shopifyInventoryCorrection');
@@ -144,10 +147,10 @@ function pipeline(content = PASSING_CONTENT, { decision = 'approved', contentRef
   });
   if (gated.status !== 'pending_approval') return gated.requests;
   if (decision === 'pending') return gated.requests;
-  return decideComplianceGatedApproval(gated.requests, 'apr-inventory-1', {
+  return decideComplianceGatedApproval(gated.requests, 'apr-inventory-1', signedDecision(gated.requests, 'apr-inventory-1', {
     decision,
     decidedBy: 'store-owner@example.com (placeholder)',
-  }).requests;
+  })).requests;
 }
 
 async function withMockedShopify({ throws = null, rereadAvailable = 0 }, fn) {

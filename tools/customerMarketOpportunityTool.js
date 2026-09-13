@@ -36,11 +36,17 @@
 // entry uses.
 
 const path = require('path');
-const { loadBusinessConfig } = require('./configValidator');
+const { loadBusinessConfig, readEnabledPlatforms } = require('./configValidator');
+const businessRegistry = require('../configuration/businessRegistry');
 const productDataRetrievalTool = require('./productDataRetrievalTool');
 const etsyListingDataTool = require('./etsyListingDataTool');
-const etsyReadClient = require('../integrations/adapters/etsyReadClient');
-const shopifyClient = require('../integrations/adapters/shopifyClient');
+// RESOLVED, NOT IMPORTED - see tools/businessConfigurationRetrieval.js's own note. This is
+// the one tool that reads TWO platforms, so it is also the one where the registry earns the
+// most: the per-channel readers below no longer name a concrete client, and each channel's
+// availability is asked through the same contract capability (isConfigured) rather than
+// through two differently-named client functions (shopifyClient.isConfigured vs
+// etsyReadClient.canRead).
+const { getReadAdapter } = require('../integrations/adapters/adapterRegistry');
 const {
   runCustomerMarketOpportunityResearch,
   DEFAULT_TOP_LIMIT,
@@ -58,8 +64,15 @@ function asArray(value) {
 
 // The business's own Shopify products, projected to the fields the scope engine reads.
 // Each keeps channel: 'shopify'.
-async function readShopifyCatalogue(businessId, limitations) {
-  if (!shopifyClient.isConfigured({ businessId })) {
+async function readShopifyCatalogue(businessId, limitations, enabledPlatforms) {
+  // ENABLEMENT IS CHECKED FIRST, BEFORE THE ADAPTER IS EVEN RESOLVED. A disabled channel
+  // must make ZERO adapter calls - not a call whose result is discarded - so this returns
+  // before getReadAdapter() is reached.
+  if (!isChannelEnabled('shopify', enabledPlatforms)) {
+    limitations.push(channelDisabledLimitation('shopify', enabledPlatforms));
+    return [];
+  }
+  if (!getReadAdapter('shopify').isConfigured({ businessId })) {
     limitations.push('Shopify is not configured, so no Shopify product contributed to the customer context.');
     return [];
   }
@@ -96,8 +109,16 @@ async function readShopifyCatalogue(businessId, limitations) {
 }
 
 // The business's own Etsy listings, read-only. Each keeps channel: 'etsy'.
-async function readEtsyCatalogue(businessId, limitations) {
-  if (!etsyReadClient.canRead({ businessId })) {
+async function readEtsyCatalogue(businessId, limitations, enabledPlatforms) {
+  // Enablement first, for the same reason as readShopifyCatalogue above: a disabled Etsy
+  // makes zero adapter calls, however complete its credentials happen to be.
+  if (!isChannelEnabled('etsy', enabledPlatforms)) {
+    limitations.push(channelDisabledLimitation('etsy', enabledPlatforms));
+    return [];
+  }
+  // getReadAdapter('etsy').isConfigured() is etsyReadClient.canRead() under the shim - the
+  // same read-path credential check as before, now asked by its contract name.
+  if (!getReadAdapter('etsy').isConfigured({ businessId })) {
     limitations.push('Etsy is not connected for reading, so no Etsy listing contributed to the customer context.');
     return [];
   }
@@ -134,6 +155,63 @@ function readBusinessConfig(limitations) {
   }
 }
 
+// ---------------------------------------------------------------------------------
+// WHICH CHANNELS THIS BUSINESS MAY BE READ FROM - configuration, never credentials.
+// ---------------------------------------------------------------------------------
+//
+// THE BEHAVIOUR THIS REPLACES. Each channel reader used to decide for itself by asking the
+// adapter "are your credentials present?" - so a platform was effectively enabled by a key
+// appearing in a .env file. That meant a business could be read from a channel nobody had
+// decided it sells on, and there was no configuration anywhere that could say otherwise.
+//
+// THE ONE AUTHORITY is the business's own `enabled_platforms` config field, read through the
+// project's single reader (tools/configValidator.js's readEnabledPlatforms(), or
+// configuration/businessRegistry.js's getEnabledPlatforms() when a businessId addresses a
+// per-business config). Both canonicalize case/whitespace and DROP any platform this project
+// has no adapter for, so an unknown or aspirational entry ('amazon') can never enable
+// anything - it simply is not in the returned list, and the check below then refuses it.
+//
+// CREDENTIALS ARE STILL REQUIRED, JUST NO LONGER SUFFICIENT. An enabled channel is still
+// asked whether it is actually reachable (isConfigured) before any read. The two questions
+// are now separate and both must pass, in that order: permitted first, reachable second.
+//
+// FAIL CLOSED, AND SAY SO. A config stating nothing yields an empty list, which enables
+// nothing. That is the honest reading of silence, but silence would be an invisible outage -
+// so channelDisabledLimitation() below names the exact field to set rather than letting the
+// run quietly return an empty catalogue.
+function resolveEnabledPlatforms(businessId, businessConfig, limitations) {
+  // A businessId addresses that business's own config directory; without one, the root
+  // configuration/business.yaml this tool already loaded IS the business config, so it is
+  // reused rather than read a second time.
+  if (!businessId) {
+    return readEnabledPlatforms(businessConfig);
+  }
+  try {
+    return businessRegistry.getEnabledPlatforms(businessId);
+  } catch (err) {
+    // An unreadable per-business config enables nothing - it is never treated as "assume the
+    // usual platforms", which would be the credential-inference behaviour in a new disguise.
+    limitations.push(
+      `Enabled platforms could not be read for business '${businessId}': ${err.message} No channel was read.`
+    );
+    return [];
+  }
+}
+
+function isChannelEnabled(platform, enabledPlatforms) {
+  return Array.isArray(enabledPlatforms) && enabledPlatforms.includes(platform);
+}
+
+function channelDisabledLimitation(platform, enabledPlatforms) {
+  const enabled = Array.isArray(enabledPlatforms) && enabledPlatforms.length > 0 ? enabledPlatforms.join(', ') : 'none';
+  return (
+    `${platform} is not in this business's enabled_platforms configuration (enabled: ${enabled}), ` +
+    `so no ${platform} request was attempted and no ${platform} record contributed to the customer context. ` +
+    'Platform enablement comes from configuration alone - present credentials never enable a platform. ' +
+    `To include ${platform}, add it to enabled_platforms in the business configuration.`
+  );
+}
+
 async function runCustomerMarketOpportunityTool(researchParams) {
   const params = researchParams && typeof researchParams === 'object' ? researchParams : {};
   const businessId = params.businessId || null;
@@ -142,10 +220,15 @@ async function runCustomerMarketOpportunityTool(researchParams) {
   try {
     const businessConfig = readBusinessConfig(limitations);
 
-    // Both channels are read independently and neither can break the other.
+    // Which channels this business is PERMITTED to be read from, resolved once, from
+    // configuration alone. Every channel reader below is gated on it.
+    const enabledPlatforms = resolveEnabledPlatforms(businessId, businessConfig, limitations);
+
+    // Both channels are read independently and neither can break the other. A channel that
+    // is not enabled returns immediately, having called no adapter at all.
     const [shopify, etsy] = await Promise.all([
-      readShopifyCatalogue(businessId, limitations),
-      readEtsyCatalogue(businessId, limitations),
+      readShopifyCatalogue(businessId, limitations, enabledPlatforms),
+      readEtsyCatalogue(businessId, limitations, enabledPlatforms),
     ]);
     const catalogue = shopify.concat(etsy);
 
@@ -187,7 +270,18 @@ async function runCustomerMarketOpportunityTool(researchParams) {
   }
 }
 
-module.exports = { SHOPIFY_SAMPLE_LIMIT, ETSY_SAMPLE_LIMIT, readShopifyCatalogue, readEtsyCatalogue, runCustomerMarketOpportunityTool };
+module.exports = {
+  SHOPIFY_SAMPLE_LIMIT,
+  ETSY_SAMPLE_LIMIT,
+  // Exported for the same reason readShopifyCatalogue/readEtsyCatalogue already are: the
+  // channel-selection decision is the security-relevant part of this tool, and it must be
+  // testable without running the research workflow behind it (which spends real model calls).
+  resolveEnabledPlatforms,
+  isChannelEnabled,
+  readShopifyCatalogue,
+  readEtsyCatalogue,
+  runCustomerMarketOpportunityTool,
+};
 
 if (require.main === module) {
   console.log('Smart E-Commerce Growth AI Agent - customer_market_opportunity_research (read-only):\n');
