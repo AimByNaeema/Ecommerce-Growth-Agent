@@ -105,9 +105,21 @@ const {
   maySelectMutationTool,
   classifyRequestIntent,
   hasExplicitMutationIntent,
-  MUTATION_VERBS,
   mutationIntentRefusalReason,
 } = require('./mutationIntent');
+// What each clause of an objective ASKS FOR - see agent/core/objectiveInterpretation.js and
+// resolveObjectiveIntent below.
+const {
+  tokens: interpretationTokens,
+  singularForm,
+  isInstructionWord,
+  refersBack,
+  collectSafetyConstraints,
+  isConnectedPlatformName,
+  interpretClause,
+  unrelatedNounPhrase,
+  endsInPrepositionalPhrase,
+} = require('./objectiveInterpretation');
 // The Memory layer's own connection into this run flow (agent/core/memoryStore.js's
 // business-isolated storage + agent/core/memoryRecordModel.js's verified/approved
 // gate) - see agent/core/memoryContextRetrieval.js's own header for the full scope
@@ -1412,12 +1424,22 @@ function protectFileFormatLists(objective) {
 // whole clause between two specialists. A sentence end is a stronger boundary than a comma,
 // so it is applied first; the instruction parser then sees every sentence. The terminator is
 // kept on the clause, which is how a list item knows its sentence has ended.
-function splitIntoClauses(objective) {
+function splitIntoClauseUnits(objective) {
   return protectFileFormatLists(objective)
     .split(/(?<=[.!?])\s+/)
-    .flatMap((sentence) => sentence.split(CLAUSE_SPLIT_REGEX))
-    .map((clause) => clause.trim())
-    .filter((clause) => clause.length > 0);
+    .flatMap((sentence, sentenceIndex) =>
+      sentence
+        .split(CLAUSE_SPLIT_REGEX)
+        .map((clause) => clause.trim())
+        .filter((clause) => clause.length > 0)
+        // The sentence index lets a list item continue only the clause before it in the SAME
+        // sentence (see objectiveInterpretation.interpretClause).
+        .map((text) => ({ text, sentence: sentenceIndex }))
+    );
+}
+
+function splitIntoClauses(objective) {
+  return splitIntoClauseUnits(objective).map((unit) => unit.text);
 }
 
 // Routes a single clause: unmatched (nothing scored), matched (exactly one target has
@@ -1538,8 +1560,8 @@ function attemptClauseRecovery(routedClauses) {
         const mergedResult = routeClause(mergedText);
         if (mergedResult.status === 'unmatched') return false;
 
-        routedClauses[neighborIndex] = { text: mergedText, result: mergedResult };
-        routedClauses[i] = { text: mergedText, result: { status: 'absorbed' } };
+        routedClauses[neighborIndex] = { text: mergedText, sentence: neighbor.sentence, result: mergedResult };
+        routedClauses[i] = { text: mergedText, sentence: routedClauses[i].sentence, result: { status: 'absorbed' } };
         return true;
       };
 
@@ -1558,393 +1580,310 @@ function attemptClauseRecovery(routedClauses) {
   return routedClauses;
 }
 
-// OBJECTIVE INSTRUCTION PARSING - one objective, four kinds of language.
+// OBJECTIVE-LEVEL INTENT - one objective, one business task.
 //
-// An owner writes ONE business objective in plain sentences:
+// An owner writes ONE objective in plain sentences. Routing every comma/"and" fragment by word
+// overlap asked each fragment to name a capability on its own, so ordinary answer language
+// ("Identify the most important actions needed to increase sales", "explain each issue", "show
+// the actual issue") dead-ended the whole request, and a consequential request whose NOUN routed
+// ("Delete my worst products") was silently planned as a read. Word lists were patched three
+// times; each new phrasing found the next gap. The fix is to decide what each clause ASKS FOR
+// before routing, then resolve the objective as a whole:
 //
-//   "Review the SEO findings from my Shopify products. Show me the 10 products with the
-//    highest-priority SEO issues, explain each issue and recommend the exact improvement.
-//    Do not make any changes."
-//
-// CLAUSE_SPLIT_REGEX splits on commas/"and", and word-overlap routing then asked every
-// fragment to name a capability - so "explain each issue" was reported as an unknown
-// capability. A first fix recognised a fixed list of framing words; ordinary answer words
-// outside it ("each", "exact", "improvement") broke it again in production. Patching words
-// does not scale, so a fragment that did not route is now PARSED for what kind of language
-// it is:
-//
-//   A. TASK        - what to work on. Routed by the existing scorer (routeClause).
-//   B. FRAMING     - how to present the answer: an output directive (explain, describe,
-//                    show, list, identify, recommend, prioritise, compare, summarise, tell
-//                    me, give me, ...) whose object refers only to the objective's own
-//                    subject matter or to generic parts of an answer.
-//   C. SAFETY      - a constraint on the whole run ("do not make any changes", "read-only").
-//   D. NEW ACTION  - anything else that did not route: a genuine additional or unsupported
-//                    request. It still stops the plan for clarification, exactly as before.
-//
-// B and C never select or add a capability; they stay attached to the objective, which
-// every plan step already receives in full (buildPlanStep's `objective`).
-//
-// WHY B CANNOT SWALLOW A REAL SECOND REQUEST. A fragment is framing only when ALL hold:
-//   1. it opens with an output directive - "do the dance", "launch ads", "we need help"
-//      do not;
-//   2. it carries no mutation intent (mutationIntent.js) - "show me how to fix each issue"
-//      is not framing;
-//   3. every remaining word is GROUNDED: a function word, a number, a generic
-//      answer-structure word (each, top, exact, issue, improvement, reason ...), or a word
-//      the objective's own routed task clauses already use. An object that introduces new
-//      subject matter - "compare prices with Amazon", "explain the flibbertigibbet
-//      dance", "recommend and apply the improvement" - is not grounded and stays D.
-// The word classes below are closed GRAMMATICAL classes (communication verbs, function
-// words, parts of an answer), not phrases or synonyms; subject matter is never listed - it
-// can only be grounded by the objective itself.
-//
-// And only when at least one clause routed to a real capability: a message made only of
-// framing or constraints ("Do not make any changes.") still asks what to work on.
+//   1. Each clause is classified by its speech act (agent/core/objectiveInterpretation.js):
+//      safety / inform / goal / scope / produce / change / unsupported action / unsupported
+//      platform - from sentence structure and the three tool operations, never subject words.
+//   2. TASK clauses select specialists: a produce or change request that routed (unchanged
+//      behaviour, still gated downstream), and a read-type clause whose words DISTINCTIVELY
+//      name a specialist - generic routing words, instruction verbs and parts of an answer do
+//      not count, so "compare the results" or "rank the problems" cannot add a step. A read-type
+//      clause that names no specialist but names a declared CAPABILITY ("increase sales" ->
+//      Analytics' sales capability) selects that capability's specialist.
+//   3. Every other read-type clause is FRAMING or SCOPE of the task - unless it introduces a
+//      noun phrase unrelated to both the system and the objective, which still asks.
+//   4. An unsupported action or platform stops the plan with a reason that names it, and the
+//      AI re-segmentation fallback is not attempted (it could only re-route the same nouns).
+// An objective with no task clause keeps the original per-clause outcome, so a message made
+// only of framing or constraints ("Do not make any changes.") still asks what to work on.
 
-// C. Safety constraints. Stripped before B is parsed; they only ever narrow a run.
-const SAFETY_CONSTRAINT_REGEX =
-  /\b(?:do\s+not|don['’]?t|never|without)\s+(?:make|making|change|changing|modify|modifying|edit|editing|update|updating|touch|touching|alter|altering|write|writing)(?:\s+(?:any|anything|a|the))?(?:\s+(?:changes?|anything|edits?|updates?|modifications?|writes?))?\b|\bno\s+changes?\b|\bread[\s-]?only\b/gi;
+// Every word this system itself declares: routing text, capability ids/titles/descriptions,
+// tool titles/descriptions and the goal vocabulary. Derived, never hand-listed - a new
+// capability widens what an objective may talk about automatically.
+const SYSTEM_VOCABULARY = (() => {
+  const words = new Set();
+  const add = (text) => {
+    for (const word of String(text || '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)) {
+      if (word.length > 1) {
+        words.add(word);
+        words.add(singularForm(word));
+      }
+    }
+  };
+  for (const target of ROUTING_TARGETS) add(target.text);
+  for (const specialist of getSpecialistCapabilityRegistry()) {
+    for (const task of specialist.supported_tasks) add(`${task.id.replace(/_/g, ' ')} ${task.title} ${task.description}`);
+  }
+  for (const tool of TOOL_REGISTRY) add(`${tool.id.replace(/_/g, ' ')} ${tool.title} ${tool.description}`);
+  for (const word of GOAL_ROUTING_WORDS) add(word);
+  for (const word of GENERIC_ROUTING_WORDS) add(word);
+  return words;
+})();
 
-// B. Communication/presentation verbs - the verb of an instruction about the answer.
-const OUTPUT_DIRECTIVE_VERBS = new Set([
-  'explain', 'describe', 'show', 'list', 'identify', 'recommend', 'suggest', 'prioritise',
-  'prioritize', 'rank', 'sort', 'order', 'compare', 'summarise', 'summarize', 'outline',
-  'detail', 'highlight', 'include', 'provide', 'present', 'clarify', 'justify', 'specify',
-  'note', 'flag', 'tell', 'give', 'point', 'break', 'walk', 'mention', 'share', 'return',
-]);
-
-// Words that open a fragment without being its verb ("and explain", "please list").
-const FRAGMENT_OPENERS = new Set(['and', 'also', 'then', 'please', 'finally', 'plus', 'so', 'next', 'lastly']);
-
-// Function words: determiners, pronouns, prepositions, auxiliaries, quantifiers.
-const FUNCTION_WORDS = new Set([
-  'the', 'a', 'an', 'of', 'for', 'to', 'and', 'or', 'in', 'on', 'at', 'by', 'with', 'from',
-  'into', 'about', 'as', 'than', 'per', 'me', 'us', 'my', 'our', 'your', 'their', 'them',
-  'it', 'its', 'this', 'that', 'these', 'those', 'each', 'every', 'all', 'any', 'both',
-  'which', 'what', 'why', 'how', 'where', 'who', 'when', 'whether', 'should', 'could',
-  'would', 'can', 'will', 'must', 'be', 'is', 'are', 'was', 'were', 'been', 'do', 'does',
-  'done', 'i', 'we', 'you', 'they', 'so', 'then', 'also', 'please', 'just', 'only', 'there',
-  'here', 'more', 'most', 'less', 'least', 'up', 'out', 'down', 'through', 'one', 'if',
-  'own', 'same', 'other', 'others',
-]);
-
-// Parts and qualities of an answer - never a business subject in their own right.
-const ANSWER_STRUCTURE_WORDS = new Set([
-  'top', 'bottom', 'highest', 'lowest', 'high', 'low', 'biggest', 'smallest', 'largest',
-  'best', 'worst', 'main', 'key', 'major', 'minor', 'critical', 'important', 'urgent',
-  'exact', 'exactly', 'specific', 'concrete', 'detailed', 'brief', 'short', 'clear',
-  'simple', 'full', 'complete', 'quick', 'first', 'next', 'last', 'ranked', 'priority',
-  'level', 'issue', 'problem', 'finding', 'result', 'reason', 'cause', 'impact', 'effect',
-  'improvement', 'recommendation', 'suggestion', 'step', 'action', 'option', 'alternative',
-  'opportunity', 'example', 'detail', 'summary', 'explanation', 'overview', 'breakdown',
-  'list', 'table', 'bullet', 'point', 'number', 'count', 'score', 'comparison', 'difference',
-  'risk', 'benefit', 'way', 'order', 'item', 'entry',
-]);
-
-function rawWords(text) {
-  return String(text || '').toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 0);
+function isSystemWord(word) {
+  const lower = String(word || '').toLowerCase();
+  return SYSTEM_VOCABULARY.has(lower) || SYSTEM_VOCABULARY.has(singularForm(lower));
 }
 
-// Singular form for grounding only ("issues" grounds "issue", "priorities" grounds
-// "priority"). Never used for routing scores.
-function singularForm(word) {
-  if (word.length > 4 && word.endsWith('ies')) return `${word.slice(0, -3)}y`;
-  if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss')) return word.slice(0, -1);
-  return word;
-}
-
-function splitSentences(text) {
-  return String(text || '').split(/(?<=[.!?;:])\s+/).map((part) => part.trim()).filter((part) => part.length > 0);
-}
-
-// PHRASE STRUCTURE OF A FRAMING FRAGMENT. Checking the object word by word against closed
-// lists failed on ordinary descriptive language - "show the actual issue" was rejected on
-// "actual" - and the comma/"and" split cut coordinated list items ("..., why it matters, and
-// the recommended improvement") off from the verb that governs them. The object is parsed
-// by structure instead:
-//
-//   LIST ITEMS inherit the directive. A fragment opening with a determiner, possessive or
-//   question word has no verb of its own; directly after a framing fragment in the SAME
-//   sentence it is the next item of that directive's list. A fragment opening with any other
-//   word ("book a photoshoot", "we need help", "apply the improvement") never inherits.
-//
-//   NOUN PHRASES are judged by their HEAD. Conjunctions and prepositions end a phrase. An
-//   unrecognised word is accepted only as a MODIFIER: it must be followed, inside the same
-//   phrase, by a grounded head word (an answer part, or a word the routed task already
-//   uses). "the actual issue", "the recommended improvement", "the likely impact" pass;
-//   "the flibbertigibbet dance", "prices with Amazon" and "... and apply it" have no grounded
-//   head and fail. A modifier is also refused when it is a capitalised proper noun (a new
-//   named subject - "the Amazon pricing issue"), a word that routes to a capability of its
-//   own (another specialist's subject), or a change verb.
-//
-//   QUESTION COMPLEMENTS ("why it matters", "how they affect it") describe the established
-//   subject only when they REFER BACK with a pronoun and add at most two plain words that are
-//   neither a named subject, a routable subject nor a change verb. "what the flibbertigibbet
-//   dance is" does not refer back and is judged as an ordinary phrase - and fails.
-const LIST_ITEM_OPENERS = new Set([
-  'the', 'a', 'an', 'each', 'every', 'its', 'their', 'any', 'all',
-  'why', 'how', 'what', 'which', 'where', 'when', 'whether',
-]);
-const QUESTION_WORDS = new Set(['why', 'how', 'what', 'which', 'where', 'when', 'whether']);
-const REFERRING_PRONOUNS = new Set(['it', 'its', 'they', 'them', 'their', 'this', 'that', 'these', 'those']);
-// Distributive determiners refer back to a set the objective already established ("each
-// product", "every listing").
-const DISTRIBUTIVE_REFERENCES = new Set(['each', 'every']);
-
-function refersBackToSubject(text) {
-  return phraseTokens(text).some((token) => REFERRING_PRONOUNS.has(token.lower) || DISTRIBUTIVE_REFERENCES.has(token.lower));
-}
-const PHRASE_BREAKS = new Set(['and', 'or', 'but', 'then', 'with', 'for', 'from', 'to', 'of', 'in', 'on', 'at', 'by', 'about', 'into', 'than', 'per', 'as']);
-const MAX_QUESTION_COMPLEMENT_WORDS = 2;
-
-function phraseTokens(text) {
-  return String(text || '')
-    .split(/[^A-Za-z0-9]+/)
-    .filter((word) => word.length > 0)
-    .map((word, index) => ({ lower: word.toLowerCase(), capitalised: index > 0 && /^[A-Z]/.test(word) }));
-}
-
-// The NOUNS among GENERIC_ROUTING_WORDS: generic e-commerce subjects ("product", "business",
-// "data") that list documents as naming no specialist on their own. In a framing phrase they
-// refer to the established subject ("for each product", "how it affects each product") rather
-// than introducing one. The generic VERBS in that list ("check", "help", "analyze") are left
-// out on purpose - "check business data" stays a task.
-const GENERIC_SUBJECT_NOUNS = new Set(
-  [...GENERIC_ROUTING_WORDS].filter((word) => !['analyze', 'analyse', 'help', 'check'].includes(word))
-);
-
-function isGroundedWord(lower, groundingWords) {
-  const singular = singularForm(lower);
-  return (
-    /^\d+$/.test(lower) ||
-    FUNCTION_WORDS.has(lower) ||
-    OUTPUT_DIRECTIVE_VERBS.has(lower) ||
-    ANSWER_STRUCTURE_WORDS.has(lower) ||
-    ANSWER_STRUCTURE_WORDS.has(singular) ||
-    GENERIC_SUBJECT_NOUNS.has(singular) ||
-    groundingWords.has(singular)
+// Routing words shared with a target that actually say WHICH target: not generic, not an
+// instruction verb, not a part of an answer, and not the name of the connected platform (which
+// says where to look - "my Shopify sales" is about sales, not about the Product catalogue).
+function distinctiveRoutingWords(clauseText, target) {
+  const clauseWords = new Set(tokenize(clauseText));
+  // Shared infrastructure is a context provider (CLAUDE.md section 3): it is asked for by NAME
+  // ("my business configuration", "a compliance check"), never inferred from description words
+  // that overlap ordinary language ("where my revenue is coming from" -> memory on "from").
+  if (target.type === 'shared_infrastructure' && !target.id.split('_').every((word) => clauseWords.has(word))) {
+    return [];
+  }
+  // A target's own name and declared remit ("research" for Research, "opportunity research" for
+  // Product - specialistCapabilityRegistry.js) always identify it, even where the same word is
+  // also an instruction verb or a part of an answer.
+  const remit = target.type === 'specialist' ? (getSpecialistCapabilityById(target.id) || {}).description : '';
+  // ...and so does the target's declared routing vocabulary (ROUTING_SYNONYMS: "orders" for
+  // Analytics), even where a word doubles as a part of an answer ("in order of priority").
+  const synonyms = target.type === 'specialist' ? ROUTING_SYNONYMS[target.id] || [] : [];
+  const nameWords = new Set(tokenize(`${target.id.replace(/_/g, ' ')} ${target.title} ${remit || ''} ${synonyms.join(' ')}`));
+  return [...new Set(tokenize(target.text))].filter(
+    (word) =>
+      clauseWords.has(word) &&
+      !GENERIC_ROUTING_WORDS.has(word) &&
+      !isConnectedPlatformName(word) &&
+      (nameWords.has(word) || !isInstructionWord(word))
   );
 }
 
-function isGroundedHead(lower, groundingWords) {
-  return isGroundedWord(lower, groundingWords) && !FUNCTION_WORDS.has(lower) && !/^\d+$/.test(lower);
+// routeClause restricted to distinctive evidence. A specialist with distinctive evidence is
+// preferred over shared infrastructure (a context provider, CLAUDE.md section 3).
+function distinctiveRoute(clauseText) {
+  const scored = scoreRoutingTargets(clauseText).filter((entry) => distinctiveRoutingWords(clauseText, entry.target).length > 0);
+  const specialists = scored.filter((entry) => entry.target.type === 'specialist');
+  const pool = specialists.length > 0 ? specialists : scored;
+  if (pool.length === 0) return null;
+  const tied = pool.filter((entry) => entry.score === pool[0].score);
+  return tied.length === 1
+    ? { status: 'matched', target: tied[0].target }
+    : { status: 'ambiguous', candidates: tied.map((entry) => entry.target) };
 }
 
-// A word that may only MODIFY a grounded head: never a named subject, a subject some
-// capability routes on, or a change verb.
-function isAcceptableModifier(token, groundingWords) {
-  if (token.capitalised) return false;
-  if (MUTATION_VERBS.includes(token.lower)) return false;
-  return scoreRoutingTargets(token.lower).length === 0 || groundingWords.has(singularForm(token.lower));
-}
-
-// Returns the words that make the object a NEW subject ([] when it is framing).
-function ungroundedObjectWords(objectTokens, groundingWords) {
-  const first = objectTokens.find((token) => !FUNCTION_WORDS.has(token.lower) || QUESTION_WORDS.has(token.lower));
-  if (first && QUESTION_WORDS.has(first.lower) && objectTokens.some((token) => REFERRING_PRONOUNS.has(token.lower))) {
-    const plain = objectTokens.filter((token) => !isGroundedWord(token.lower, groundingWords));
-    const refused = plain.filter((token) => !isAcceptableModifier(token, groundingWords));
-    if (refused.length === 0 && plain.length <= MAX_QUESTION_COMPLEMENT_WORDS) return [];
-  }
-
-  const problems = [];
-  let phrase = [];
-  const closePhrase = () => {
-    phrase.forEach((token, index) => {
-      if (isGroundedWord(token.lower, groundingWords)) return;
-      const hasHeadAfter = phrase.slice(index + 1).some((later) => isGroundedHead(later.lower, groundingWords));
-      if (!hasHeadAfter || !isAcceptableModifier(token, groundingWords)) problems.push(token.lower);
+// A read-type clause that names no specialist may still name a declared capability ("increase
+// sales" -> analytics_optimization's `sales`). The specialist declaring the most capabilities
+// named by the clause wins; a tie selects nothing. When the objective already has a task on
+// the store, only capabilities that read a connected store platform are eligible, so answer
+// language ("summarise the trends") cannot pull in unrelated market research.
+function capabilityFallbackTarget(clauseText, { storeScopedOnly }) {
+  const words = new Set(
+    tokenize(clauseText).map(singularForm).filter((word) => !GENERIC_ROUTING_WORDS.has(word) && !isInstructionWord(word))
+  );
+  if (words.size === 0) return null;
+  const counts = [];
+  for (const specialist of getSpecialistCapabilityRegistry()) {
+    const named = specialist.supported_tasks.filter((task) => {
+      if (storeScopedOnly && !(Array.isArray(task.platforms) && task.platforms.length > 0)) return false;
+      const names = new Set(tokenize(`${task.id.replace(/_/g, ' ')} ${task.title}`).map(singularForm));
+      return [...words].some((word) => names.has(word));
     });
-    phrase = [];
-  };
-  for (const token of objectTokens) {
-    if (PHRASE_BREAKS.has(token.lower)) closePhrase();
-    else phrase.push(token);
+    if (named.length > 0) counts.push({ id: specialist.id, count: named.length });
   }
-  closePhrase();
-  return problems;
+  if (counts.length === 0) return null;
+  counts.sort((a, b) => b.count - a.count);
+  if (counts.length > 1 && counts[1].count === counts[0].count) return null;
+  return ROUTING_TARGETS.find((target) => target.type === 'specialist' && target.id === counts[0].id) || null;
 }
 
-// Classifies one fragment. groundingWords: singular forms of the words the objective's routed
-// task clauses use. inheritedDirective: the directive of the framing fragment immediately
-// before this one in the same sentence, if any.
-function classifyInstructionFragment(fragment, groundingWords = new Set(), inheritedDirective = null) {
-  const safety = (fragment.match(SAFETY_CONSTRAINT_REGEX) || []).map((constraint) => constraint.trim());
-  const remaining = fragment.replace(SAFETY_CONSTRAINT_REGEX, ' ');
-  const tokens = phraseTokens(remaining);
-  while (tokens.length > 0 && FRAGMENT_OPENERS.has(tokens[0].lower)) tokens.shift();
-
-  if (tokens.length === 0) {
-    return safety.length > 0 ? { kind: 'safety', safety } : { kind: 'empty', safety };
-  }
-  if (hasExplicitMutationIntent(remaining) || classifyRequestIntent(remaining) === 'mutation') {
-    return { kind: 'new_action', reason: 'mutation_intent', safety };
-  }
-
-  let directive = null;
-  let objectTokens = tokens;
-  let inherited = false;
-  if (OUTPUT_DIRECTIVE_VERBS.has(tokens[0].lower)) {
-    directive = tokens[0].lower;
-    objectTokens = tokens.slice(1);
-  } else if (inheritedDirective && LIST_ITEM_OPENERS.has(tokens[0].lower)) {
-    directive = inheritedDirective;
-    inherited = true;
-  } else if (tokens.every((token) => isGroundedWord(token.lower, groundingWords))) {
-    // A verbless phrase made only of grounded words ("For each product", "in order of
-    // priority") scopes the answer to the established subject; it asks for nothing new and
-    // carries no directive for a following list item.
-    return { kind: 'framing', directive: null, inherited: false, safety };
-  } else {
-    return { kind: 'new_action', reason: 'no_output_directive', safety };
-  }
-
-  const ungrounded = ungroundedObjectWords(objectTokens, groundingWords);
-  if (ungrounded.length > 0) {
-    return { kind: 'new_action', reason: 'introduces_new_subject', ungrounded, safety };
-  }
-  return { kind: 'framing', directive, inherited, safety };
-}
-
-// The directive a following list item may inherit: only from a framing fragment whose
-// sentence has not ended.
-function directiveCarriedBy(fragment) {
-  return fragment.kind === 'framing' && !/[.!?;:]\s*$/.test(fragment.text) ? fragment.directive : null;
-}
-
-// Classifies a clause that did not route: 'instruction' (framing and/or safety only) when
-// EVERY sentence in it is B or C, otherwise 'new_action'. carriedDirective lets its first
-// fragment continue a list opened just before it. Exported so the distinction is inspectable
-// and tested directly, not buried inside routing.
-function classifyObjectiveClause(clauseText, groundingWords = new Set(), carriedDirective = null) {
-  let carry = carriedDirective;
-  const fragments = splitSentences(clauseText).map((fragment) => {
-    const classified = { text: fragment, ...classifyInstructionFragment(fragment, groundingWords, carry) };
-    carry = directiveCarriedBy(classified);
-    return classified;
-  });
-  const isInstruction =
-    fragments.length > 0 &&
-    fragments.every((fragment) => fragment.kind === 'framing' || fragment.kind === 'safety' || fragment.kind === 'empty') &&
-    fragments.some((fragment) => fragment.kind !== 'empty');
-  return { kind: isInstruction ? 'instruction' : 'new_action', fragments, carriedDirective: carry };
-}
-
-// A clause routed as a TASK can still end with a presentation directive whose list continues
-// in the next clause ("... SEO findings. Explain the main reason, why it is important, ...").
-// Its final sentence is read for that directive only - the clause itself keeps its route.
-function directiveEndingRoutedClause(clauseText, groundingWords) {
-  const sentences = splitSentences(clauseText);
-  if (sentences.length === 0) return null;
-  const last = sentences[sentences.length - 1];
-  return directiveCarriedBy({ text: last, ...classifyInstructionFragment(last, groundingWords, null) });
-}
-
-// Grounding comes only from OTHER routed clauses, so a clause can never ground itself.
-function groundingWordsFor(routedClauses, excludeIndex) {
-  const words = new Set();
-  routedClauses.forEach((clause, index) => {
-    if (index === excludeIndex || clause.result.status !== 'matched') return;
-    for (const word of rawWords(clause.text)) {
-      if (!FUNCTION_WORDS.has(word)) words.add(singularForm(word));
-    }
-  });
-  return words;
-}
-
-// Whether a clause is re-examined by the parser: it did not route to one capability, or it
-// routed only to SHARED INFRASTRUCTURE. The second case exists because generic answer words
-// overlap infrastructure descriptions ("compare the results" scored for 'verification' on
-// "results") - infrastructure is a context provider, never the thing an owner asks for by
-// presentation wording. A clause routed to a SPECIALIST is never reinterpreted.
-function isParserCandidate(clause) {
-  if (clause.result.status === 'unmatched' || clause.result.status === 'ambiguous') return true;
-  if (clause.result.status !== 'matched' || !clause.result.target) return false;
-  if (clause.result.target.type === 'shared_infrastructure') return true;
-  return matchRestsOnGenericWords(clause.text, clause.result.target);
-}
-
-// A specialist match carried ONLY by GENERIC_ROUTING_WORDS ("how it affects each product"
-// scored for Product on "product" alone) is the weak evidence that list already documents as
-// unable to decide a route on its own - so the parser may still read it as framing. Any
-// non-generic overlap ("my Shopify products", "inventory", "advertising") is a real task
-// signal and is never reinterpreted.
-function matchRestsOnGenericWords(clauseText, target) {
+// A route that rests only on the connected platform's name ("my Shopify sales" -> Product via
+// "shopify") says where to look, not what to look at - so a declared capability may refine it.
+function matchRestsOnPlatformName(clauseText, target) {
   const clauseWords = new Set(tokenize(clauseText));
-  const overlap = tokenize(target.text).filter((word) => clauseWords.has(word));
-  return overlap.length > 0 && overlap.every((word) => GENERIC_ROUTING_WORDS.has(word));
+  const overlap = tokenize(target.text).filter((word) => clauseWords.has(word) && !GENERIC_ROUTING_WORDS.has(word));
+  return overlap.length > 0 && overlap.every((word) => isConnectedPlatformName(word));
 }
 
-// Separates B/C from A and D after every clause has been routed. A D clause is left as it
-// was, so planRouting still stops for clarification (or keeps its infrastructure route).
-function absorbObjectiveFramingClauses(routedClauses) {
-  const framing = [];
-  const nextClauses = [];
-  // The directive an adjacent list item may inherit. Clauses are walked IN ORDER because a
-  // list ("show A, B, and C") spans consecutive clauses; anything that is not framing - a new
-  // action, or a routed task that does not end in a directive - ends the list.
-  let carry = null;
-  routedClauses.forEach((clause, index) => {
-    const otherRouted = routedClauses.some((other, otherIndex) => otherIndex !== index && other.result.status === 'matched');
-    const groundingWords = groundingWordsFor(routedClauses, index);
+function targetKey(target) {
+  return `${target.type}:${target.id}`;
+}
 
-    // SCOPE SENTENCES. Splitting on sentences left "Analyse my Shopify store using real Shopify
-    // data." on its own, where it scores highest for the configuration tool (a context
-    // provider) although it also scores for specialists this plan already routes to. Such a
-    // sentence describes the objective's scope - the store and its data - rather than asking
-    // for infrastructure: when every specialist it scores for is already routed elsewhere in
-    // this objective, it adds nothing and is absorbed. A request that genuinely targets
-    // infrastructure ("Show me my business configuration") has no such specialists in its
-    // plan and keeps its route.
-    if (otherRouted && clause.result.status === 'matched' && clause.result.target && clause.result.target.type === 'shared_infrastructure') {
-      const routedSpecialists = new Set(
-        routedClauses
-          .filter((other, otherIndex) => otherIndex !== index && other.result.status === 'matched' && other.result.target && other.result.target.type === 'specialist')
-          .map((other) => other.result.target.id)
-      );
-      const scoredSpecialists = scoreRoutingTargets(clause.text)
-        .filter((entry) => entry.target.type === 'specialist')
-        .map((entry) => entry.target.id);
-      if (scoredSpecialists.length > 0 && scoredSpecialists.every((id) => routedSpecialists.has(id))) {
-        framing.push(clause.text);
-        nextClauses.push({ text: clause.text, result: { status: 'absorbed' } });
-        carry = null;
-        return;
+function candidateSummary(target) {
+  return { type: target.type, id: target.id, title: target.title };
+}
+
+// Resolves every routed clause into the result shape planRouting consumes - matched, ambiguous,
+// unmatched (with an optional reason) or absorbed - plus the framing and a per-clause record of
+// how the objective was understood.
+function resolveObjectiveIntent(routedClauses) {
+  const units = [];
+  let previous = null;
+  for (const clause of routedClauses) {
+    if (clause.result.status === 'absorbed') {
+      units.push({ clause, merged: true });
+      continue;
+    }
+    const sameSentence = previous && previous.clause.sentence === clause.sentence;
+    const interpretation = interpretClause(clause.text, {
+      previousAct: sameSentence ? previous.interpretation.act : null,
+      knownWord: isSystemWord,
+      systemVocabulary: SYSTEM_VOCABULARY,
+    });
+    const unit = { clause, interpretation, previous: sameSentence ? previous : null, disposition: null };
+    const { act } = interpretation;
+    const { result, text } = clause;
+
+    if (act === 'safety' || act === 'empty') {
+      unit.disposition = { kind: 'constraint' };
+    } else if (act === 'unsupported_platform') {
+      // The platform as the owner typed it ("eBay"), falling back to the registry's name.
+      const typed = String(text).match(new RegExp(`\\b${interpretation.platform}\\b`, 'i'));
+      const name = typed ? typed[0] : interpretation.platform;
+      unit.disposition = {
+        kind: 'blocked',
+        reason: `"${text}" refers to ${name}, which is not a platform connected to this system - please clarify what you need.`,
+      };
+    } else if (act === 'unsupported_action') {
+      unit.disposition = {
+        kind: 'blocked',
+        reason: `"${text}" asks for something no capability here can do ("${interpretation.verb}") - please clarify what you need.`,
+      };
+    } else if (act === 'produce' || act === 'change' || act === 'act') {
+      // Unchanged from before: the routed clause is the task, and every downstream gate
+      // (mutation intent, permissions, compliance, approval, verification, audit) applies.
+      unit.disposition = result.status === 'matched' ? { kind: 'task', target: result.target } : { kind: 'unresolved' };
+    } else {
+      const route = distinctiveRoute(text);
+      if (
+        route && route.status === 'matched' && route.target.type === 'shared_infrastructure' &&
+        result.status === 'matched' && result.target.type === 'specialist'
+      ) {
+        // Only shared infrastructure had distinctive words, yet the clause as a whole routed to a
+        // specialist: the specialist route stands, as it did before.
+        unit.disposition = { kind: 'task', target: result.target };
+      } else if (route && route.status === 'matched') {
+        unit.disposition = { kind: 'task', target: route.target };
+      } else if (route) {
+        unit.disposition = { kind: 'ambiguous', candidates: route.candidates };
+      } else if (result.status === 'matched' && result.target.type === 'specialist' && !refersBack(text)) {
+        // A weak match (generic words or the platform name only) that names the owner's own thing
+        // ("show me my product data") asks for that data - unless a declared capability names the
+        // subject more precisely ("how are my Shopify sales doing" -> sales), checked below. One
+        // that refers back ("for each product") is framing.
+        unit.disposition = {
+          kind: 'framing_candidate',
+          weakTarget: result.target,
+          weakByPlatformOnly: matchRestsOnPlatformName(text, result.target),
+        };
+      } else {
+        unit.disposition = { kind: 'framing_candidate' };
       }
     }
+    units.push(unit);
+    previous = unit;
+  }
 
-    if (!isParserCandidate(clause) || !otherRouted) {
-      nextClauses.push(clause);
-      // Grounded by the OTHER clauses only: "Explain the flibbertigibbet dance" must not ground
-      // itself into a directive that "why it matters" could then inherit.
-      carry = clause.result.status === 'matched' ? directiveEndingRoutedClause(clause.text, groundingWords) : null;
-      return;
-    }
+  const live = units.filter((unit) => !unit.merged);
+  const firstPassHasTask = live.some((unit) => unit.disposition.kind === 'task' || unit.disposition.weakTarget);
 
-    const parsed = classifyObjectiveClause(clause.text, groundingWords, carry);
-    // A clause a SPECIALIST matched (weakly) is framing only when it REFERS BACK to the
-    // established subject ("for each product", "how it affects them"). One that names the
-    // owner's own thing ("show me my product data") is a request for that data and keeps its
-    // route - a reference, not a word list, is what separates the two.
-    const weakSpecialistMatch = clause.result.status === 'matched' && clause.result.target.type === 'specialist';
-    if (parsed.kind !== 'instruction' || (weakSpecialistMatch && !refersBackToSubject(clause.text))) {
-      nextClauses.push(clause);
-      carry = null;
-      return;
+  // Capabilities named by read-type clauses become tasks before anything is absorbed.
+  for (const unit of live) {
+    if (unit.disposition.kind !== 'framing_candidate') continue;
+    // Read-type clauses, and statements of context ("My sales have been flat."), may name a capability.
+    const readType = ['inform', 'goal', 'scope'].includes(unit.interpretation.act);
+    // A weak route is refined by a named capability only when it rested on the platform name alone.
+    const mayRefine = !unit.disposition.weakTarget || unit.disposition.weakByPlatformOnly;
+    const fallback = readType && mayRefine ? capabilityFallbackTarget(unit.clause.text, { storeScopedOnly: firstPassHasTask }) : null;
+    if (fallback) unit.disposition = { kind: 'task', target: fallback, via: 'capability' };
+    else if (unit.disposition.weakTarget) unit.disposition = { kind: 'task', target: unit.disposition.weakTarget };
+  }
+
+  const taskUnits = live.filter((unit) => unit.disposition.kind === 'task');
+  const plannedKeys = new Set(taskUnits.map((unit) => targetKey(unit.disposition.target)));
+  const taskWords = new Set();
+  for (const unit of taskUnits) {
+    for (const token of interpretationTokens(unit.clause.text)) taskWords.add(singularForm(token.lower));
+  }
+  const knownWord = (word) => isSystemWord(word) || taskWords.has(singularForm(String(word).toLowerCase()));
+
+  for (const unit of live) {
+    const { kind } = unit.disposition;
+    if (kind === 'ambiguous') {
+      if (taskUnits.length > 0 && unit.disposition.candidates.every((target) => plannedKeys.has(targetKey(target)))) {
+        unit.disposition = { kind: 'framing' };
+      } else if (taskUnits.length === 0) {
+        unit.disposition = { kind: 'unresolved' };
+      }
+    } else if (kind === 'framing_candidate') {
+      if (taskUnits.length === 0) {
+        // Alone, a read-type clause whose only route is infrastructure it never named has no task:
+        // it is reported as unmatched rather than run as a configuration/memory/AI step.
+        const { result } = unit.clause;
+        const unnamedInfrastructure =
+          result.status === 'matched' && result.target.type === 'shared_infrastructure' && distinctiveRoutingWords(unit.clause.text, result.target).length === 0;
+        unit.disposition = unnamedInfrastructure ? { kind: 'unmatched' } : { kind: 'unresolved' };
+        continue;
+      }
+      const bareContinuation = Boolean(unit.interpretation.continuation) && !(unit.previous && endsInPrepositionalPhrase(unit.previous.clause.text));
+      const unrelated = unrelatedNounPhrase(unit.clause.text, knownWord, {
+        bareContinuation,
+        includePrepositionalObjects: unit.interpretation.act === 'goal',
+      });
+      unit.disposition = unrelated ? { kind: 'unrelated', phrase: unrelated } : { kind: 'framing' };
     }
-    for (const fragment of parsed.fragments) {
-      if (fragment.kind === 'framing') framing.push(fragment.text);
+  }
+
+  // Nothing is a task and nothing asks a question back: a message made only of constraints
+  // ("Do not make any changes.") still asks what to work on.
+  const decisive = ['task', 'blocked', 'unrelated', 'ambiguous', 'unresolved', 'unmatched'];
+  if (live.length > 0 && !live.some((unit) => decisive.includes(unit.disposition.kind))) {
+    live[0].disposition = { kind: 'unresolved' };
+    live[0].clause = { ...live[0].clause, result: { status: 'unmatched', segment: live[0].clause.text } };
+  }
+
+  const framing = [];
+  const resolved = units.map((unit) => {
+    const { clause } = unit;
+    if (unit.merged) return clause;
+    const { kind } = unit.disposition;
+    switch (kind) {
+      case 'task':
+        return { ...clause, result: { status: 'matched', segment: clause.text, target: unit.disposition.target } };
+      case 'constraint':
+        return { ...clause, result: { status: 'absorbed' } };
+      case 'framing':
+        framing.push(clause.text);
+        return { ...clause, result: { status: 'absorbed' } };
+      case 'blocked':
+        return { ...clause, result: { status: 'unmatched', segment: clause.text, reason: unit.disposition.reason, interpretation_blocked: true } };
+      case 'unmatched':
+        return { ...clause, result: { status: 'unmatched', segment: clause.text } };
+      case 'unrelated':
+        return { ...clause, result: { status: 'unmatched', segment: clause.text, interpretation_blocked: true } };
+      case 'ambiguous':
+        return {
+          ...clause,
+          result: { status: 'ambiguous', segment: clause.text, candidates: unit.disposition.candidates.map(candidateSummary) },
+        };
+      default:
+        return clause;
     }
-    nextClauses.push({ text: clause.text, result: { status: 'absorbed' } });
-    carry = parsed.carriedDirective;
   });
-  return { routedClauses: nextClauses, framing };
-}
 
-// Every safety constraint the objective states, wherever it appears.
-function collectSafetyConstraints(objective) {
-  return (String(objective || '').match(SAFETY_CONSTRAINT_REGEX) || []).map((constraint) => constraint.trim());
+  const interpretation = units
+    .filter((unit) => !unit.merged)
+    .map((unit) => ({
+      clause: unit.clause.text,
+      act: unit.interpretation.act,
+      disposition: unit.disposition.kind === 'unresolved' ? unit.clause.result.status : unit.disposition.kind,
+      target: unit.disposition.target ? unit.disposition.target.id : null,
+    }));
+
+  return { routedClauses: resolved, framing, interpretation };
 }
 
 // Routes a full objective into a controlled, ordered execution plan: splits into
@@ -2039,7 +1978,7 @@ function planRouting(objective) {
     }
   }
 
-  const clauses = splitIntoClauses(objective);
+  const clauses = splitIntoClauseUnits(objective);
 
   if (clauses.length === 0) {
     return {
@@ -2054,8 +1993,10 @@ function planRouting(objective) {
   // Route every clause independently first, then give attemptClauseRecovery() a
   // chance to fold a clause that matched nothing back into an adjacent one before any
   // clarification decision is made - see that function's own header above.
-  const { routedClauses, framing } = absorbObjectiveFramingClauses(
-    attemptClauseRecovery(clauses.map((clause) => ({ text: clause, result: routeClause(clause) })))
+  // Then resolveObjectiveIntent() decides, for the objective as a whole, which clauses are the
+  // business task and which are framing, scope, constraints or unsupported requests.
+  const { routedClauses, framing, interpretation } = resolveObjectiveIntent(
+    attemptClauseRecovery(clauses.map((unit) => ({ text: unit.text, sentence: unit.sentence, result: routeClause(unit.text) })))
   );
 
   const orderedEntries = [];
@@ -2068,9 +2009,14 @@ function planRouting(objective) {
       return {
         status: 'clarification_required',
         clarification_type: 'unmatched',
-        reason: `No known capability matches "${result.segment}" - please clarify what you need.`,
+        reason: result.reason || `No known capability matches "${result.segment}" - please clarify what you need.`,
         candidates: null,
         unmatched_segment: result.segment,
+        // Set when the clause was understood and is unsupported (an action or platform this
+        // system does not have, or an unrelated subject) - not a segmentation problem, so
+        // runOrchestratorContract does not ask the AI to re-segment it.
+        interpretation_blocked: Boolean(result.interpretation_blocked),
+        interpretation,
       };
     }
 
@@ -2081,6 +2027,7 @@ function planRouting(objective) {
         reason: `"${result.segment}" could belong to more than one capability - please clarify which one you mean.`,
         candidates: result.candidates,
         unmatched_segment: null,
+        interpretation,
       };
     }
 
@@ -2104,6 +2051,8 @@ function planRouting(objective) {
     // constraints. Informational: neither adds a target, and every step still receives the
     // whole objective.
     instructions: { framing, safety: collectSafetyConstraints(objective) },
+    // How each clause was understood (act and disposition) - informational, for audit and tests.
+    interpretation,
   };
 }
 
@@ -3132,14 +3081,18 @@ async function attemptAiAssistedSegmentation(objective) {
   const orderedEntries = [];
   const seen = new Set();
   for (const clause of trimmedClauses) {
-    const result = routeClause(clause);
-    if (result.status !== 'matched') return null;
+    // Each proposed clause must plan on its own through planRouting - objective interpretation
+    // included - so a re-segmentation can never turn an unsupported action into a routed one.
+    const clausePlan = planRouting(clause);
+    if (clausePlan.status !== 'planned') return null;
 
-    const key = `${result.target.type}:${result.target.id}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      orderedEntries.push({ target: result.target, segment: result.segment });
-    }
+    clausePlan.targets.forEach((target, index) => {
+      const key = `${target.type}:${target.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        orderedEntries.push({ target, segment: clausePlan.segments[index] });
+      }
+    });
   }
 
   orderedEntries.sort((a, b) => ROUTING_TARGETS.indexOf(a.target) - ROUTING_TARGETS.indexOf(b.target));
@@ -3215,7 +3168,11 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   // one; a failed/unreachable/unparseable attempt silently falls back to the original,
   // honest clarification_required result below - never worse than before this fallback
   // existed.
-  if (routingResult.status === 'clarification_required' && routingResult.clarification_type === 'unmatched') {
+  if (
+    routingResult.status === 'clarification_required' &&
+    routingResult.clarification_type === 'unmatched' &&
+    !routingResult.interpretation_blocked
+  ) {
     const recovered = await attemptAiAssistedSegmentation(objective);
     if (recovered) {
       appendAuditEvent(runAuditTracker, {
@@ -3503,7 +3460,6 @@ function planHasProviderResult(plan, provider) {
 }
 
 module.exports = {
-  classifyObjectiveClause,
   CATEGORY_TO_SPECIALIST,
   SPECIALIST_TO_CATEGORIES,
   SHARED_INFRASTRUCTURE_CATEGORIES,
@@ -3523,6 +3479,7 @@ module.exports = {
   scoreRoutingTargets,
   splitIntoClauses,
   routeClause,
+  resolveObjectiveIntent,
   planRouting,
   // Exported so verification/testing/catalogueExpansionRouting.test.js can assert the
   // intent gate directly, separately from what word-overlap scoring then does with a

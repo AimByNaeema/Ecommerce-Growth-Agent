@@ -278,6 +278,7 @@ const TEST_FILES = [
   'chiefObjectiveRouting.test.js',
   'chiefSeoDataFlow.test.js',
   'chiefInstructionParsing.test.js',
+  'chiefObjectiveIntent.test.js',
 ];
 
 function runAll() {

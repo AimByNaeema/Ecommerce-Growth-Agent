@@ -66,6 +66,7 @@ for (const fn of ['updateProductVendor', 'addProductsToCollection', 'adjustInven
 
 const contract = require('../../agent/core/orchestratorExecutionContract');
 const mutationIntent = require('../../agent/core/mutationIntent');
+const interpretation = require('../../agent/core/objectiveInterpretation');
 const { LIVE_EVIDENCE_PROVIDERS } = require('../../agent/core/crossAgentContext');
 const { describeChiefResultForOwner } = require('../../agent/core/ownerRunView');
 
@@ -105,11 +106,9 @@ const SEO_SUBJECT = 'Review the SEO findings from my Shopify products';
     const result = plan(PRODUCTION_FAILURE);
     assert.ok(result.instructions.framing.includes('explain each issue'), JSON.stringify(result.instructions));
     assert.ok(result.instructions.framing.some((text) => /recommend the exact improvement/.test(text)));
-    const groundedBySubject = new Set(['review', 'seo', 'finding', 'shopify', 'product', 'show', 'highest', 'priority', 'issue']);
-    const parsed = contract.classifyObjectiveClause('explain each issue', groundedBySubject);
-    assert.strictEqual(parsed.kind, 'instruction');
-    assert.strictEqual(parsed.fragments[0].kind, 'framing');
-    assert.strictEqual(parsed.fragments[0].directive, 'explain');
+    assert.strictEqual(interpretation.interpretClause('explain each issue').act, 'inform');
+    const understood = result.interpretation.find((entry) => entry.clause === 'explain each issue');
+    assert.deepStrictEqual([understood.act, understood.disposition], ['inform', 'framing']);
   });
 
   test('"Do not make any changes" stays a safety constraint on the whole run', () => {
@@ -117,7 +116,7 @@ const SEO_SUBJECT = 'Review the SEO findings from my Shopify products';
     assert.deepStrictEqual(result.instructions.safety, ['Do not make any changes']);
     assert.strictEqual(mutationIntent.classifyRequestIntent(PRODUCTION_FAILURE), 'read_only');
     assert.strictEqual(mutationIntent.maySelectMutationTool(PRODUCTION_FAILURE), false);
-    assert.strictEqual(contract.classifyObjectiveClause('Do not make any changes.').fragments[0].kind, 'safety');
+    assert.strictEqual(interpretation.interpretClause('Do not make any changes.').act, 'safety');
   });
 
   // --- 2. Framing language refers back to the identified task --------------------------
@@ -179,7 +178,6 @@ const SEO_SUBJECT = 'Review the SEO findings from my Shopify products';
 
   const MUTATIONS = [
     `${SEO_SUBJECT}, explain each issue and fix each issue.`,
-    `${SEO_SUBJECT}, show me how to fix each issue.`,
     `${SEO_SUBJECT}, recommend the exact improvement and apply it.`,
     `${SEO_SUBJECT}, make changes.`,
   ];
@@ -190,12 +188,17 @@ const SEO_SUBJECT = 'Review the SEO findings from my Shopify products';
     });
   }
 
-  test('MUTATION fragments classify as new actions, with the reason', () => {
-    assert.strictEqual(contract.classifyObjectiveClause('fix each issue').fragments[0].reason, 'mutation_intent');
-    assert.strictEqual(contract.classifyObjectiveClause('show me how to fix each issue').fragments[0].reason, 'mutation_intent');
-    const apply = contract.classifyObjectiveClause('recommend the exact improvement and apply it').fragments[0];
-    assert.strictEqual(apply.kind, 'new_action');
-    assert.ok(apply.ungrounded.includes('apply'));
+  test('MUTATION clauses classify as change or consequential actions, never as framing', () => {
+    assert.strictEqual(interpretation.interpretClause('fix each issue').act, 'change');
+    assert.deepStrictEqual(
+      [interpretation.interpretClause('apply it').act, interpretation.interpretClause('apply it').verb],
+      ['unsupported_action', 'apply']
+    );
+    // Asking HOW to fix something is a request for an explanation: the embedded "fix" is not an
+    // instruction, and the whole objective still can never select a mutation tool.
+    const howTo = `${SEO_SUBJECT}, show me how to fix each issue.`;
+    assert.strictEqual(interpretation.interpretClause('show me how to fix each issue').act, 'inform');
+    assert.strictEqual(mutationIntent.maySelectMutationTool(howTo), false);
   });
 
   // --- 6. SEO request automatically receives Product data ------------------------------
@@ -395,8 +398,13 @@ const SEO_SUBJECT = 'Review the SEO findings from my Shopify products';
   });
 
   test('an inherited list item never crosses a sentence boundary', () => {
-    const parsed = contract.classifyObjectiveClause('show the actual issue. The flibbertigibbet dance.', new Set(['seo', 'finding']));
-    assert.strictEqual(parsed.kind, 'new_action');
+    // "The flibbertigibbet dance." starts a new sentence: it cannot continue "show ..." as a list
+    // item, so it is judged on its own - and it introduces an unrelated subject.
+    assert.strictEqual(interpretation.interpretClause('The flibbertigibbet dance.', { previousAct: null }).act, 'scope');
+    assert.strictEqual(interpretation.interpretClause('the likely impact', { previousAct: 'inform' }).act, 'inform');
+    const result = plan(`${SEO_STORE_SUBJECT} Show the actual issue. The flibbertigibbet dance.`);
+    assert.strictEqual(result.status, 'clarification_required', JSON.stringify(result.interpretation));
+    assert.ok(/flibbertigibbet/.test(result.unmatched_segment || result.reason), result.reason);
   });
 
   // --- 7. No Shopify writes ------------------------------------------------------------
