@@ -1229,8 +1229,14 @@ function validateResult(outcome) {
 // scoring. Naming a vendor or an inventory is how you say WHAT to look at; it remains
 // incapable of saying "change it".
 const ROUTING_SYNONYMS = {
-  analytics_optimization: ['analyze', 'analysis', 'business', 'ecommerce', 'commerce', 'orders'],
-  product: ['shopify', 'products', 'vendor', 'vendors', 'inventory'],
+  // 'analyse': the British spelling the store owner actually types ("Analyse my sales"),
+  // mirroring 'analyze' exactly - same target, same GENERIC_ROUTING_WORDS weight.
+  analytics_optimization: ['analyze', 'analyse', 'analysis', 'business', 'ecommerce', 'commerce', 'orders'],
+  // 'opportunities': Product's description already says "opportunity research", and
+  // "biggest sales opportunity" is pinned to Product - but the plural scored 0 everywhere,
+  // so "sales opportunities" from the Chief dashboard dead-ended the whole request. Same
+  // plural gap, same additive fix, as 'products'/'vendors'.
+  product: ['shopify', 'products', 'vendor', 'vendors', 'inventory', 'opportunities'],
   seo: ['keywords'],
   listing: ['listings', 'titles'],
   // Same bug class and same additive fix as the "shopify"/"products", "business" and
@@ -1259,7 +1265,7 @@ const ROUTING_SYNONYMS = {
 // PHASE 1 REGRESSION comment above). Scored at a reduced weight below instead of being
 // ignored outright, so they can still help resolve a genuine tie without being able to
 // single-handedly decide a route the way a real intent signal can.
-const GENERIC_ROUTING_WORDS = new Set(['business', 'analyze', 'information', 'help', 'check', 'data', 'product']);
+const GENERIC_ROUTING_WORDS = new Set(['business', 'analyze', 'analyse', 'information', 'help', 'check', 'data', 'product']);
 const GENERIC_ROUTING_WORD_WEIGHT = 0.5;
 
 // Concrete goal/action vocabulary that reliably signals which specialist a request
@@ -1541,6 +1547,69 @@ function attemptClauseRecovery(routedClauses) {
   return routedClauses;
 }
 
+// OBJECTIVE FRAMING (real production regression from the Chief dashboard): an owner
+// writes ONE business objective in plain sentences, e.g.
+//
+//   "Analyse my Shopify store using real Shopify data. Check products, inventory,
+//    orders, SEO/listing quality, and sales opportunities. Identify the 10
+//    highest-priority opportunities and recommend what should be done first. Do not
+//    make any changes."
+//
+// CLAUSE_SPLIT_REGEX tears that into fragments, and "recommend what should be done
+// first. Do not make any changes." has no capability vocabulary at all - so the whole
+// request stopped with `No known capability matches "..."`, treating the owner's own
+// words as if they had to name a capability. That fragment is not a separate task: it
+// says HOW to present the answer (prioritise, rank, recommend, top N) or a constraint
+// on the WHOLE objective (read-only). It belongs to the objective, which every plan
+// step already receives in full (see buildPlanStep's `objective` argument).
+//
+// DELIBERATELY CLOSED AND CONSERVATIVE:
+// - Only a clause made ENTIRELY of the framing vocabulary below (plus numbers) and/or an
+//   explicit "do not change" constraint is absorbed. One unknown word - "flibbertigibbet",
+//   "dance", "fix", "make changes" - leaves the clause unmatched, so a real second
+//   instruction is still surfaced for clarification exactly as before.
+// - Only absorbed when at least one other clause matched a real capability, so a
+//   request made only of framing ("Do not make any changes.") still asks what to do.
+// - Never absorbs a clause mutationIntent classifies as a mutation, and never selects
+//   a capability: it only stops a presentation phrase from dead-ending the plan. Tool
+//   selection, the mutation-intent gate, approvals, compliance, budgets and audit all
+//   run unchanged on the whole objective.
+const OBJECTIVE_FRAMING_WORDS = new Set([
+  'identify', 'recommend', 'recommended', 'recommendation', 'recommendations', 'suggest',
+  'suggestions', 'prioritise', 'prioritize', 'prioritised', 'prioritized', 'priority',
+  'priorities', 'rank', 'ranked', 'highest', 'top', 'biggest', 'most', 'important',
+  'first', 'next', 'steps', 'step', 'should', 'could', 'would', 'be', 'done', 'do',
+  'tell', 'show', 'explain', 'summarise', 'summarize', 'summary', 'list', 'opportunities',
+  'opportunity', 'which', 'where', 'how', 'we', 'us', 'our', 'your', 'with', 'by', 'from',
+  'all', 'them', 'these', 'those', 'this', 'that', 'it', 'order', 'using', 'real', 'actual',
+  'live', 'only',
+]);
+
+// An explicit read-only constraint ("do not make any changes", "don't change anything",
+// "without making changes", "read-only"). Stripped before the vocabulary check; it can
+// only ever narrow what the run may do, never widen it.
+const READ_ONLY_CONSTRAINT_REGEX =
+  /\b(?:do\s+not|don['’]?t|never|without)\s+(?:make|making|change|changing|modify|modifying|edit|editing|update|updating|touch|touching|alter|altering|write|writing)(?:\s+(?:any|anything|a|the))?(?:\s+(?:changes?|anything|edits?|updates?|modifications?|writes?))?\b|\bread[\s-]?only\b/gi;
+
+function isObjectiveFramingClause(text) {
+  if (typeof text !== 'string' || text.trim() === '') return false;
+  if (classifyRequestIntent(text) === 'mutation') return false;
+  const words = tokenize(text.replace(READ_ONLY_CONSTRAINT_REGEX, ' '));
+  return words.every((word) => OBJECTIVE_FRAMING_WORDS.has(word) || /^\d+$/.test(word));
+}
+
+function absorbObjectiveFramingClauses(routedClauses) {
+  if (!routedClauses.some((clause) => clause.result.status === 'matched')) return routedClauses;
+  return routedClauses.map((clause) =>
+    // 'ambiguous' too: a framing-only clause ("summarise them by priority") can tie two
+    // targets on incidental words, but it names no capability either way.
+    (clause.result.status === 'unmatched' || clause.result.status === 'ambiguous') &&
+    isObjectiveFramingClause(clause.text)
+      ? { text: clause.text, result: { status: 'absorbed' } }
+      : clause
+  );
+}
+
 // Routes a full objective into a controlled, ordered execution plan: splits into
 // clauses, routes each one, and combines the results. Any ambiguous or unmatched
 // clause stops the whole request and reports a clarification requirement instead of
@@ -1648,8 +1717,8 @@ function planRouting(objective) {
   // Route every clause independently first, then give attemptClauseRecovery() a
   // chance to fold a clause that matched nothing back into an adjacent one before any
   // clarification decision is made - see that function's own header above.
-  const routedClauses = attemptClauseRecovery(
-    clauses.map((clause) => ({ text: clause, result: routeClause(clause) }))
+  const routedClauses = absorbObjectiveFramingClauses(
+    attemptClauseRecovery(clauses.map((clause) => ({ text: clause, result: routeClause(clause) })))
   );
 
   const orderedEntries = [];

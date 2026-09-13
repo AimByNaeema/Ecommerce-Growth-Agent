@@ -275,6 +275,7 @@ const TEST_FILES = [
   'approvalIdUniqueness.test.js',
   'dashboardApiKeyRetry.test.js',
   'chiefControlCenter.test.js',
+  'chiefObjectiveRouting.test.js',
 ];
 
 function runAll() {
