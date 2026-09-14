@@ -80,6 +80,8 @@ const runHistoryStore = require('./agent/core/runHistoryStore');
 // dispatch of its own - every turn ends in one call to the SAME runOrchestratorContract
 // this file's /orchestrate route already uses.
 const commandCenterSession = require('./agent/core/commandCenterSession');
+// Provenance stamped on each Command Center run so later sessions can continue completed research.
+const researchContext = require('./agent/core/researchContext');
 const workflowStateProjection = require('./agent/core/workflowStateProjection');
 const workflowNarrative = require('./agent/core/workflowNarrative');
 const workflowDocument = require('./documents/workflowDocument');
@@ -2774,6 +2776,8 @@ function createApp() {
           // not be decided at all.
           registerChiefRun(runId, runResult);
           try {
+            const createdAt = new Date().toISOString();
+            const businessId = session.business_id || null;
             runHistoryStore.saveRunRecord({
               run_id: runId,
               kind: 'orchestrate',
@@ -2783,8 +2787,21 @@ function createApp() {
               // The session this run belongs to - additive, so a run record without one
               // behaves exactly as before.
               session_id: session.session_id,
+              // The business the session belongs to (null = the single-business default). Research
+              // continuity matches on it exactly, so one business's research never reaches another.
+              business_id: businessId,
               channel: session.channel || null,
-              created_at: new Date().toISOString(),
+              created_at: createdAt,
+              // What this run analysed, for which store, when, by which specialists, and whether it
+              // is authoritative completed research (agent/core/researchContext.js). Additive.
+              research_context: researchContext.describeResearchProvenance({
+                runResult,
+                runId,
+                sessionId: session.session_id,
+                businessId,
+                storeReference: researchContext.currentStoreReference({ businessId }),
+                recordedAt: createdAt,
+              }),
               result: runResult,
             });
           } catch (saveErr) {

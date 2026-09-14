@@ -38,6 +38,9 @@ const { saveSession } = require('./commandCenterSessionStore');
 // engine runs them. This module still performs no dispatch of its own.
 const { prepareOpportunity } = require('./opportunityPreparationWorkflow');
 const runHistoryStore = require('./runHistoryStore');
+// Completed research for this business's connected store, found through the run history store
+// (never through another session). The Chief decides whether a turn continues it.
+const researchContext = require('./researchContext');
 
 // How many prior results are offered to a turn as context. Bounded so a long session
 // cannot grow an unbounded objective string or an unbounded research_params payload.
@@ -60,6 +63,14 @@ const REFERENCE_PATTERNS = [
 const ORDINAL_WORDS = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth'];
 const ORDINAL_REFERENCE_PATTERN =
   /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+(?:opportunity|option|result|item|candidate|one)\b/gi;
+
+// A numbering SCALE describes how the ANSWER should be numbered - "rank them from #1 (highest
+// priority) to #10" - not which earlier result is meant, so the markers inside one are not
+// citations. Recognised by the scale construction itself, "from #a ... to #b", so "compare #1
+// and #4", "compare #1 to #4" and "show #2-#5" still cite earlier results exactly as before.
+const NUMBERED_RANGE_PATTERNS = [
+  /\bfrom\s+#\s*\d{1,2}\b[^#.?!]{0,40}?\b(?:to|through|thru|until)\s+#\s*\d{1,2}\b/gi,
+];
 
 // PREPARATION INTENT. "Prepare #1 for listing" is a different request from "tell me about
 // #1": it runs a sequence of specialists rather than one. Recognised by phrase shape and
@@ -98,8 +109,9 @@ function truncate(text, max) {
 }
 
 // Every distinct result reference the message cites, in order of appearance.
-function extractReferences(text) {
-  if (!nonEmptyString(text)) return [];
+function extractReferences(rawText) {
+  if (!nonEmptyString(rawText)) return [];
+  const text = NUMBERED_RANGE_PATTERNS.reduce((remaining, pattern) => remaining.replace(pattern, ' '), rawText);
   const found = [];
   for (const pattern of REFERENCE_PATTERNS) {
     const globalPattern = new RegExp(pattern.source, 'gi');
@@ -232,6 +244,34 @@ function recordResults(session, runResult, runId, summarize = null) {
   const added = [];
   const plan = asArray(runResult.routing && runResult.routing.plan);
 
+  // The Chief's ranked store opportunities ARE what this turn produced - each becomes one
+  // numbered result, in rank order, so "#3" afterwards means the third-ranked opportunity. The
+  // research steps they were ranked from stay in the run record rather than being numbered again.
+  const priorities = runResult.store_opportunity_priorities;
+  if (priorities && asArray(priorities.opportunities).length > 0) {
+    for (const opportunity of priorities.opportunities) {
+      const entry = {
+        ref: nextRef,
+        label: opportunity.title,
+        specialist: 'chief',
+        run_id: runId,
+        // The platform the research reads used - from the run's own tool records, not a guess.
+        channel: priorities.platform || null,
+        channel_reference: null,
+        summary: truncate(
+          `${opportunity.effort === 'quick_win' ? 'Quick win' : 'Higher effort'}: ${opportunity.why_it_matters} First action: ${opportunity.first_action}`,
+          MAX_SUMMARY_CHARS
+        ),
+        source: [],
+        payload_ref: { run_id: runId, path: `store_opportunity_priorities.opportunities[${opportunity.rank - 1}]` },
+      };
+      session.specialist_results.push(entry);
+      added.push(entry);
+      nextRef += 1;
+    }
+    return added;
+  }
+
   for (const step of plan) {
     const specialist = (step.selected_specialist && step.selected_specialist.id) || null;
     const outputs = step.outputs || {};
@@ -284,6 +324,45 @@ function recordResults(session, runResult, runId, summarize = null) {
   return added;
 }
 
+// The Chief's reply for a turn that continued earlier research: where the evidence came from,
+// the ranked opportunities split into quick wins and higher-effort work, and what was not
+// established. Built only from the run's own research_continuity and store_opportunity_priorities.
+function describeContinuation(runResult, added) {
+  const continuity = runResult.research_continuity || {};
+  const priorities = runResult.store_opportunity_priorities || {};
+  const lines = [];
+  if (continuity.mode === 'reused' && continuity.source) {
+    const source = continuity.source;
+    const platform = nonEmptyString(continuity.platform) ? continuity.platform.charAt(0).toUpperCase() + continuity.platform.slice(1) : 'store';
+    lines.push(
+      `Using completed research run ${source.run_id} (${asArray(source.specialists).join(', ')}; real ${platform} data; ` +
+        `produced ${source.produced_at}, ${source.age_minutes} minute(s) ago). No new store read was made.`
+    );
+  } else if (nonEmptyString(continuity.reason)) {
+    lines.push(continuity.reason);
+  }
+
+  const opportunities = asArray(priorities.opportunities);
+  if (opportunities.length === 0) {
+    lines.push('The research did not support any rankable opportunity.');
+  } else {
+    lines.push(`Ranked ${opportunities.length} opportunit${opportunities.length === 1 ? 'y' : 'ies'}, #1 = highest priority:`);
+    const describe = (opportunity) =>
+      `#${opportunity.rank} ${opportunity.title} (${opportunity.estimated_impact.affected_products} of ${opportunity.estimated_impact.audited_products} audited products). ` +
+      `Why: ${opportunity.why_it_matters} First action: ${opportunity.first_action}`;
+    const quickWins = opportunities.filter((opportunity) => opportunity.effort === 'quick_win');
+    const higherEffort = opportunities.filter((opportunity) => opportunity.effort !== 'quick_win');
+    if (quickWins.length > 0) lines.push('Quick wins:', ...quickWins.map(describe));
+    if (higherEffort.length > 0) lines.push('Higher effort:', ...higherEffort.map(describe));
+  }
+  lines.push(...asArray(priorities.limitations));
+  if (asArray(runResult.pending_approvals).length === 0) lines.push('Nothing was changed in your store.');
+  if (added.length > 0) {
+    lines.push(`These are numbered #${added[0].ref}-#${added[added.length - 1].ref} in this session; refer to any of them by number.`);
+  }
+  return lines.join('\n');
+}
+
 // A compact record of the plan, for the session. The FULL execution state stays in the run
 // record - this is what a conversation view needs, not a second copy of the run.
 function summarizePlan(runResult, summarize) {
@@ -317,6 +396,8 @@ async function runSessionTurn(
     // touching disk; production passes neither.
     runPreparation = prepareOpportunity,
     loadRunRecord = runHistoryStore.getRunRecordById,
+    // Injectable ONLY so tests can pin the store identity and clock; production passes none.
+    lookupResearch = researchContext.lookupResearchContext,
   } = {}
 ) {
   if (!session || typeof session !== 'object') throw new Error('runSessionTurn requires a session.');
@@ -477,11 +558,25 @@ async function runSessionTurn(
 
   const effectiveResearchParams = buildSessionResearchParams(session, resolution.resolved, researchParams);
 
+  // RESEARCH CONTINUITY. The Chief is told which completed research exists for THIS session's
+  // business and connected store - looked up in the run history store, so research from an
+  // earlier session counts and nothing from another business or store can. Whether the objective
+  // actually continues that research is the Chief's decision, not this module's. A lookup
+  // failure only means the Chief is told nothing.
+  let turnResearchContext = null;
+  try {
+    turnResearchContext =
+      typeof lookupResearch === 'function' ? lookupResearch({ businessId: session.business_id || businessId || null }) : null;
+  } catch (err) {
+    turnResearchContext = null;
+  }
+
   let runResult;
   try {
     runResult = await runChief(resolution.objective, {
       researchParams: Object.keys(effectiveResearchParams).length > 0 ? effectiveResearchParams : null,
       businessId,
+      researchContext: turnResearchContext,
     });
   } catch (err) {
     // A failed turn is reported as a failed turn. Nothing is fabricated, and the session
@@ -531,7 +626,9 @@ async function runSessionTurn(
   const chiefText =
     runResult.routing && runResult.routing.status === 'clarification_required'
       ? runResult.routing.reason || 'I need more detail before I can route this.'
-      : added.length > 0
+      : runResult.store_opportunity_priorities
+        ? describeContinuation(runResult, added)
+        : added.length > 0
         ? `Done. ${added.length} result(s) are now numbered #${added[0].ref}-#${added[added.length - 1].ref} in this session; refer to any of them by number.`
         : 'That step completed but produced no referenceable result.';
   session.messages.push({ role: 'chief', text: chiefText, at: nowIso(), run_id: runId });

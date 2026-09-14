@@ -419,6 +419,77 @@ function endsInPrepositionalPhrase(clauseText) {
   return false;
 }
 
+// --- Reference to earlier work --------------------------------------------------------
+//
+// Whether an objective builds on work ALREADY DONE ("using the data you just analysed", "based on
+// the previous analysis") rather than asking for new work. Read from grammar, never from subject
+// matter:
+//   1. the pronoun "you" followed - past only auxiliaries or adverbs - by the PAST form of a READ
+//      or PRODUCE verb ("you just analysed", "you have checked", "what you found");
+//   2. an anterior modifier (previous, earlier, prior, ...) followed by a noun naming the OUTPUT
+//      of one of those operations ("the previous analysis", "your earlier audit", "the prior
+//      results").
+// Both word sets below are closed classes: past-tense morphology of verbs already in the verb
+// classes above, and temporal modifiers. "The last 30 days" or "my latest orders" refer to store
+// data, not to earlier work, and do not match.
+
+// Irregular past forms of verbs already in READ_VERBS/PRODUCE_VERBS - morphology only.
+const IRREGULAR_PAST_FORMS = {
+  found: 'find', did: 'do', done: 'do', ran: 'run', made: 'make', gave: 'give', got: 'get', gotten: 'get',
+  saw: 'see', seen: 'see', wrote: 'write', written: 'write', built: 'build', told: 'tell', came: 'come',
+  went: 'go', gone: 'go', broke: 'break', broken: 'break',
+};
+const ANTERIOR_MODIFIERS = new Set(['previous', 'earlier', 'prior', 'preceding', 'last', 'above', 'completed']);
+// Nouns that name an operation's output without being a verb themselves.
+const OPERATION_OUTPUT_NOUNS = new Set(['result', 'outcome', 'output']);
+const MAX_WORDS_BETWEEN = 2;
+
+function isOperationBase(word) {
+  return READ_VERBS.has(word) || PRODUCE_VERBS.has(word);
+}
+
+function isPastOperation(word) {
+  if (IRREGULAR_PAST_FORMS[word]) return isOperationBase(IRREGULAR_PAST_FORMS[word]);
+  if (word.length <= 4 || !word.endsWith('ed')) return false;
+  const stem = word.slice(0, -2);
+  const candidates = [stem, `${stem}e`];
+  if (/(.)\1$/.test(stem)) candidates.push(stem.slice(0, -1));
+  if (stem.endsWith('i')) candidates.push(`${stem.slice(0, -1)}y`);
+  return candidates.some(isOperationBase);
+}
+
+function isOperationOutputNoun(word) {
+  if (word.endsWith('ysis') || word.endsWith('yses')) {
+    const base = word.slice(0, -4);
+    return isOperationBase(`${base}yse`) || isOperationBase(`${base}yze`);
+  }
+  const singular = singularForm(word);
+  if (OPERATION_OUTPUT_NOUNS.has(singular) || isOperationBase(singular)) return true;
+  if (singular.endsWith('ing')) return lemmaCandidates(singular).some(isOperationBase);
+  if (singular.length > 7 && singular.endsWith('ation')) return isOperationBase(singular.slice(0, -5));
+  return false;
+}
+
+function isBridgeWord(word) {
+  return AUXILIARIES.has(word) || FUNCTION_WORDS.has(word) || word.endsWith('ly') || word === 'already' || word === 'earlier';
+}
+
+function referencesPriorWork(text) {
+  const words = tokens(text).map((token) => token.lower);
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    const lookahead = words.slice(index + 1, index + 2 + MAX_WORDS_BETWEEN);
+    if (word === 'you') {
+      for (const next of lookahead) {
+        if (isPastOperation(next)) return true;
+        if (!isBridgeWord(next)) break;
+      }
+    }
+    if (ANTERIOR_MODIFIERS.has(word) && lookahead.some(isOperationOutputNoun)) return true;
+  }
+  return false;
+}
+
 module.exports = {
   SAFETY_CONSTRAINT_REGEX,
   READ_VERBS,
@@ -431,6 +502,7 @@ module.exports = {
   verbClass,
   isInstructionWord,
   refersBack,
+  referencesPriorWork,
   collectSafetyConstraints,
   unsupportedPlatformIn,
   isConsequentialAction,

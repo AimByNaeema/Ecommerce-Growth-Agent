@@ -125,6 +125,10 @@ const {
 // gate) - see agent/core/memoryContextRetrieval.js's own header for the full scope
 // this wiring is (and is deliberately not) responsible for.
 const { getRelevantMemoryContext, persistVerifiedFinding } = require('./memoryContextRetrieval');
+// RESEARCH CONTINUITY: whether an objective continues completed research (researchContext.js),
+// the read-only research basis it stands on, and the ranked answer built from that basis.
+const { decideResearchContinuity } = require('./researchContext');
+const { STORE_RESEARCH_BASIS, prioritizeStoreOpportunities } = require('./storeOpportunityPrioritization');
 // One honest, compact sentence per finished execution state (agent/core/resultSummary.js) -
 // reused unchanged as the memory record's own `summary` (memoryRules.js's "compact"
 // quality) rather than inventing a second summarization path.
@@ -2955,6 +2959,8 @@ function buildRoutingResponse({
   auditTrail = null,
   usageLedger = null,
   usageSummary = null,
+  researchContinuity = null,
+  storeOpportunityPriorities = null,
 }) {
   const needsMoreInfo = routing.status === 'clarification_required';
   const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
@@ -3012,6 +3018,10 @@ function buildRoutingResponse({
     // engine to consume - this module does no pricing itself.
     usage_ledger: usageLedger,
     usage_summary: usageSummary,
+    // Present only on a run that continued completed research: where its evidence came from
+    // (agent/core/researchContext.js), and the ranked opportunities built from it.
+    ...(researchContinuity ? { research_continuity: researchContinuity } : {}),
+    ...(storeOpportunityPriorities ? { store_opportunity_priorities: storeOpportunityPriorities } : {}),
   };
 }
 
@@ -3113,7 +3123,11 @@ async function attemptAiAssistedSegmentation(objective) {
 // still decided purely by the existing free-text word-overlap logic; researchParams
 // only affects what a matched research tool is actually called with. Omitted by every
 // existing caller, so default behavior (and every existing test) is unchanged.
-async function runOrchestratorContract(rawTask, { researchParams = null, businessId = null } = {}) {
+//
+// researchContext (optional) is what a Command Center session knows about completed research for
+// its business's connected store (agent/core/researchContext.js's lookupResearchContext). Only a
+// session passes it; with it omitted, this function behaves exactly as before.
+async function runOrchestratorContract(rawTask, { researchParams = null, businessId = null, researchContext = null } = {}) {
   // One audit tracker per run - see audit/auditTrail.js. Created before anything else
   // so even a validation failure on the very first line is itself a recorded event;
   // never module-level state, same caller-held-per-run pattern as runTokenTracker/
@@ -3156,6 +3170,17 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   }
 
   let routingResult = planRouting(objective);
+
+  // RESEARCH CONTINUITY (agent/core/researchContext.js's decideResearchContinuity). Decided on the
+  // objective and its interpretation BEFORE clarification or AI re-segmentation: an objective that
+  // builds on completed research ("Using the real Shopify data you just analysed, rank ...") is
+  // answered from that research's basis, so it neither dead-ends nor re-routes to an unrelated
+  // reader. It never applies to a change, an unsupported action or platform, or another platform's
+  // data, and every step it adds still goes through buildPlanStep's gates.
+  const continuity = decideResearchContinuity({ objective, routingResult, researchContext });
+  if (continuity.applies && routingResult.status !== 'planned') {
+    routingResult = { status: 'planned', targets: [], segments: [], interpretation: routingResult.interpretation || [] };
+  }
 
   // AI-ASSISTED RE-SEGMENTATION FALLBACK (real-world regression, reported live by the
   // store owner - see attemptClauseRecovery()'s own header above for the free,
@@ -3203,7 +3228,9 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   // step executes - a plan that routed to too many targets fails fast and honestly,
   // exactly like the unmatched/ambiguous clarification cases above, rather than
   // silently executing only the first N steps and dropping the rest.
-  const planStepBounds = checkPlanStepBounds(routingResult.targets.length);
+  const planStepBounds = checkPlanStepBounds(
+    routingResult.targets.length + (continuity.applies ? STORE_RESEARCH_BASIS.length : 0)
+  );
   if (!planStepBounds.allowed) {
     appendAuditEvent(runAuditTracker, {
       type: 'error',
@@ -3268,9 +3295,136 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
     });
   }
 
+  // MEMORY LAYER - PERSISTENCE (agent/core/memoryContextRetrieval.js): after a specialist (never
+  // shared-infrastructure) step completes with verification_status 'passed'
+  // (step.completion_state === 'complete' - see deriveExecutionState), save a compact record of it
+  // as a reusable finding. Reuses summarizeExecutionState's own compact, honest sentence unchanged
+  // as the record's summary - never a second summarization path. A null/invalid businessId is a
+  // documented no-op (see persistVerifiedFinding's own header), so this has no effect for any
+  // existing caller. Reused research is never saved again - it was saved when it was produced.
+  const persistFinding = (step, stepKey) => {
+    if (!isValidBusinessId(businessId) || !step.selected_specialist || step.selected_specialist.type !== 'specialist' || step.completion_state !== 'complete') return;
+    const toolId = step.inputs ? step.inputs.tool_id : null;
+    const capabilityId = step.inputs ? step.inputs.capability_id : null;
+    const savedRecord = persistVerifiedFinding({
+      businessId,
+      id: `mem-${runId}-${stepKey}`,
+      priorityId: 'reusable_findings',
+      summary: summarizeExecutionState(step),
+      source: { run_id: runId, tool_id: toolId, capability_id: capabilityId },
+      verificationStatus: 'passed',
+    });
+    appendAuditEvent(runAuditTracker, {
+      type: 'result',
+      specialistId: step.selected_specialist.id,
+      toolId,
+      status: savedRecord ? 'saved' : 'not_saved',
+      summary: savedRecord
+        ? `Saved a reusable finding to memory for business '${businessId}'.`
+        : `Could not save this finding to memory for business '${businessId}'.`,
+    });
+  };
+
   const plan = [];
   let providerStepsAdded = 0;
+
+  // RESEARCH CONTINUITY - THE BASIS. Reused: the completed research's own steps, copied unchanged
+  // and marked with where and when they were produced; no tool runs and nothing is read again.
+  // Fresh (no completed, fresh, authoritative research for this store): the basis capabilities run
+  // now, read-only, through buildPlanStep - permissions, the mutation-intent gate, budgets, usage
+  // and audit apply exactly as for any routed step.
+  let researchContinuity = null;
+  const continuationCovered = new Set();
+  if (continuity.applies) {
+    const considered = continuity.considered || {};
+    const platformName = continuity.platform.charAt(0).toUpperCase() + continuity.platform.slice(1);
+    if (continuity.research) {
+      const source = continuity.research;
+      for (const priorStep of source.steps) {
+        const step = JSON.parse(JSON.stringify(priorStep));
+        step.reused_research = { run_id: source.run_id, produced_at: source.produced_at };
+        plan.push(step);
+        const specialistId =
+          step.selected_specialist && step.selected_specialist.type === 'specialist' ? step.selected_specialist.id : null;
+        if (specialistId) continuationCovered.add(specialistId);
+        appendAuditEvent(runAuditTracker, {
+          type: 'data_access',
+          specialistId,
+          toolId: step.inputs ? step.inputs.tool_id : null,
+          capabilityId: step.inputs ? step.inputs.capability_id : null,
+          status: 'reused',
+          summary: `Reused completed research from run ${source.run_id} (produced ${source.produced_at}) instead of reading the store again.`,
+        });
+      }
+      const provenance = source.provenance || {};
+      researchContinuity = {
+        mode: 'reused',
+        platform: continuity.platform,
+        freshness_limit_hours: continuity.freshness_limit_hours,
+        source: {
+          run_id: source.run_id,
+          session_id: source.session_id || null,
+          produced_at: source.produced_at,
+          age_minutes: Math.floor((Number(source.age_ms) || 0) / 60000),
+          specialists: (provenance.specialists || []).map((entry) => entry.title || entry.id),
+          outcome: provenance.outcome || null,
+          real_store_data: provenance.real_store_data === true,
+        },
+        considered,
+        reason: `Continued completed ${platformName} research from run ${source.run_id}.`,
+      };
+    } else {
+      for (const [index, basis] of STORE_RESEARCH_BASIS.entries()) {
+        const step = await buildPlanStep(
+          buildSpecialistTarget(basis.specialistId),
+          objective,
+          objective,
+          runTokenTracker,
+          researchParams,
+          plan,
+          runApprovalTracker,
+          runAuditTracker,
+          runToolResultCache,
+          runUsageTracker,
+          businessId,
+          runUsageLedger,
+          { toolId: basis.toolId, capabilityId: basis.capabilityId },
+          relevantMemoryContext
+        );
+        plan.push(step);
+        continuationCovered.add(basis.specialistId);
+        persistFinding(step, `basis-${index}`);
+      }
+      const passedOver = [];
+      if (considered.stale > 0) passedOver.push(`the newest was produced ${considered.newest_stale_produced_at} and is past the freshness limit`);
+      if (considered.not_authoritative > 0) passedOver.push(`${considered.not_authoritative} partial or failed run(s) were not treated as completed research`);
+      if (considered.incomplete > 0) passedOver.push(`${considered.incomplete} run(s) did not cover products, SEO/listing quality and sales`);
+      researchContinuity = {
+        mode: 'fresh',
+        platform: continuity.platform,
+        freshness_limit_hours: continuity.freshness_limit_hours,
+        source: null,
+        considered,
+        reason:
+          `No completed ${platformName} research for this store from the last ${continuity.freshness_limit_hours} hour(s) was available` +
+          (passedOver.length > 0 ? ` (${passedOver.join('; ')})` : '') +
+          ', so fresh read-only research was run first.',
+      };
+    }
+  }
+
   for (let i = 0; i < routingResult.targets.length; i += 1) {
+    // A routed specialist whose subject the continued research basis already answers adds no
+    // second step - that is the research the objective refers to.
+    const routedTarget = routingResult.targets[i];
+    if (routedTarget.type === 'specialist' && continuationCovered.has(routedTarget.id)) {
+      appendAuditEvent(runAuditTracker, {
+        type: 'agent',
+        specialistId: routedTarget.id,
+        summary: `'${routedTarget.id}' is answered by the research basis already in this plan, so no second step was added.`,
+      });
+      continue;
+    }
     // plan already holds every step completed so far (0..i-1) at this point - passed
     // as priorSteps so buildPlanStep can derive structured cross-agent context for
     // this step from them (see agent/core/crossAgentContext.js).
@@ -3367,27 +3521,7 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
     // sentence unchanged as the record's summary - never a second summarization path.
     // A null/invalid businessId is a documented no-op (see persistVerifiedFinding's
     // own header), so this has no effect for any existing caller.
-    if (isValidBusinessId(businessId) && step.selected_specialist && step.selected_specialist.type === 'specialist' && step.completion_state === 'complete') {
-      const toolId = step.inputs ? step.inputs.tool_id : null;
-      const capabilityId = step.inputs ? step.inputs.capability_id : null;
-      const savedRecord = persistVerifiedFinding({
-        businessId,
-        id: `mem-${runId}-${i}`,
-        priorityId: 'reusable_findings',
-        summary: summarizeExecutionState(step),
-        source: { run_id: runId, tool_id: toolId, capability_id: capabilityId },
-        verificationStatus: 'passed',
-      });
-      appendAuditEvent(runAuditTracker, {
-        type: 'result',
-        specialistId: step.selected_specialist.id,
-        toolId,
-        status: savedRecord ? 'saved' : 'not_saved',
-        summary: savedRecord
-          ? `Saved a reusable finding to memory for business '${businessId}'.`
-          : `Could not save this finding to memory for business '${businessId}'.`,
-      });
-    }
+    persistFinding(step, i);
   }
 
   // "Analytics -> Optimization": every growth-opportunity-shaped record produced
@@ -3396,7 +3530,13 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   // header for why this never calls rankGrowthOpportunities() automatically.
   const growthOpportunityDrafts = gatherGrowthOpportunityDrafts(plan);
 
+  // The ranked answer a continued objective asked for - built only from the basis steps' real
+  // results (agent/core/storeOpportunityPrioritization.js). null for every other run.
+  const storeOpportunityPriorities = continuity.applies ? prioritizeStoreOpportunities({ steps: plan }) : null;
+
   return buildRoutingResponse({
+    researchContinuity,
+    storeOpportunityPriorities,
     objective,
     routing: {
       status: 'planned',

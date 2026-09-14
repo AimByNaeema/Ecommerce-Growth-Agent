@@ -280,6 +280,7 @@ const TEST_FILES = [
   'chiefInstructionParsing.test.js',
   'chiefObjectiveIntent.test.js',
   'seoStoreAudit.test.js',
+  'researchContinuity.test.js',
 ];
 
 function runAll() {

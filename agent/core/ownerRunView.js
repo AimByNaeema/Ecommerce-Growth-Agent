@@ -250,6 +250,22 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
     }
   }
 
+  // A run that continued earlier research answers with the Chief's ranked store opportunities
+  // (agent/core/storeOpportunityPrioritization.js). They replace the per-step recommendation
+  // lists they were ranked from, in rank order, each stating its effort and first action.
+  const priorities = isPlainObject(safeResult.store_opportunity_priorities) ? safeResult.store_opportunity_priorities : null;
+  const rankedRecommendations = priorities
+    ? asArray(priorities.opportunities)
+        .filter(isPlainObject)
+        .map((opportunity) => {
+          const impact = isPlainObject(opportunity.estimated_impact) ? opportunity.estimated_impact : {};
+          return `#${opportunity.rank} [${opportunity.effort === 'quick_win' ? 'Quick win' : 'Higher effort'}] ${opportunity.title}` +
+            ` (${impact.affected_products} of ${impact.audited_products} audited products) - first action: ${opportunity.first_action}`;
+        })
+    : null;
+  const continuity = isPlainObject(safeResult.research_continuity) ? safeResult.research_continuity : null;
+  const continuitySource = continuity && isPlainObject(continuity.source) ? continuity.source : null;
+
   const executed = executions.filter((entry) => entry.decision === 'approved' && entry.execution_status === 'success');
   const executedStoreChanges = executed.filter((entry) => entry.store_change);
   const lastExecution = executions.length > 0 ? executions[executions.length - 1] : null;
@@ -296,14 +312,31 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
     specialists_used: specialistsUsed,
     platform: str(channel) || (toolPlatforms.length === 1 ? toolPlatforms[0] : null),
     findings: plan
-      .map((step) => ({
-        specialist: specialistTitle(step),
-        state: str(step.completion_state),
-        summary: stepSummary(step),
-      }))
+      .map((step) => {
+        const summary = stepSummary(step);
+        const reused = isPlainObject(step.reused_research) ? step.reused_research : null;
+        return {
+          specialist: specialistTitle(step),
+          state: str(step.completion_state),
+          summary: summary && reused ? `${summary} (Reused from research run ${reused.run_id}, produced ${reused.produced_at}.)` : summary,
+        };
+      })
       .filter((finding) => finding.summary)
       .slice(0, MAX_LIST_ENTRIES),
-    recommendations: recommendations.slice(0, MAX_LIST_ENTRIES),
+    recommendations: (rankedRecommendations || recommendations).slice(0, MAX_LIST_ENTRIES),
+    // Where a continued run's evidence came from - null for every other run.
+    research_continuity: continuity
+      ? {
+          mode: str(continuity.mode),
+          platform: str(continuity.platform),
+          source_run_id: continuitySource ? str(continuitySource.run_id) : null,
+          produced_at: continuitySource ? str(continuitySource.produced_at) : null,
+          age_minutes: continuitySource && Number.isFinite(continuitySource.age_minutes) ? continuitySource.age_minutes : null,
+          specialists: continuitySource ? asArray(continuitySource.specialists).filter((entry) => typeof entry === 'string') : [],
+          real_store_data: continuitySource ? continuitySource.real_store_data === true : null,
+          reason: str(continuity.reason),
+        }
+      : null,
     proposed_actions: proposedActions,
     risk,
     compliance: complianceStatuses,
