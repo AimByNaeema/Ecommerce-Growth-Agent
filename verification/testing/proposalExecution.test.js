@@ -154,6 +154,9 @@ const SEO_PROPOSAL_REQUEST =
 // The exact request the Chief refused, and the same request with the owner's usual follow-on sentences.
 const EXACT_REQUEST =
   'Apply the proposed SEO title and meta description only to the 200 Wild Flowers Clipart product from the pending approval.';
+// The read-only verification the owner ran in production, which failed on a compliance step with no content.
+const READ_ONLY_CHECK_REQUEST =
+  "Read the current Shopify SEO data for the 200 Wild Flowers Clipart product and compare it with the existing approved SEO proposal. Do not create, approve, or execute any write approval. Do not change anything. Report only whether the current store values still match the proposal's before-values and whether the proposal is eligible for execution.";
 const EXACT_REQUEST_FULL =
   'Apply the proposed SEO title and meta description only to the 200 Wild Flowers Clipart product from the pending approval. Do not change anything else. Verify the exact resulting Shopify values after the change.';
 
@@ -264,6 +267,88 @@ async function main() {
       const decision = proposalExecution.decideProposalExecution({ objective: EXACT_REQUEST, routingResult: routed });
       assert.strictEqual(decision.applies, true);
       assert.deepStrictEqual(decision.additional_requests, []);
+    });
+
+    // ---- THE READ-ONLY CHECK (production: a compliance step failed on empty content) -------------
+    const approvalCount = () => approvalStore.listStoredApprovals().length;
+
+    test('NEGATION: "Do not create, approve, or execute any write approval" routes nothing - no compliance task', () => {
+      const routed = orchestrator.planRouting(READ_ONLY_CHECK_REQUEST);
+      const clause = routed.interpretation.find((entry) => /execute any write approval/.test(entry.clause));
+      assert.strictEqual(clause.disposition, 'constraint', JSON.stringify(clause));
+      assert.ok(!routed.interpretation.some((entry) => entry.target === 'compliance'), JSON.stringify(routed.interpretation));
+      // "and" does not carry the negation: the second clause is still asked for.
+      const positive = orchestrator.planRouting('Do not change my prices, and write new product titles.');
+      assert.ok(positive.interpretation.some((entry) => /write new product titles/.test(entry.clause) && entry.act === 'produce' && entry.disposition !== 'constraint'));
+    });
+
+    const approvalsBeforeCheck = approvalCount();
+    const checkTurn = await askInNewSession(port, READ_ONLY_CHECK_REQUEST);
+    const checkResult = resultOf(checkTurn);
+
+    await testAsync('READ-ONLY CHECK: the exact production request compares current values with the proposal directly', async () => {
+      assert.strictEqual(checkResult.routing.status, 'planned', checkResult.routing.reason);
+      const plan = checkResult.routing.plan;
+      assert.deepStrictEqual(plan.map((step) => step.inputs.tool_id), ['product_data_retrieval']);
+      assert.strictEqual(plan[0].completion_state, 'complete');
+      assert.ok(!plan.some((step) => step.inputs.tool_id === 'compliance_check'), 'no compliance step may run on empty content');
+      const check = checkResult.proposal_check;
+      assert.strictEqual(check.status, 'checked');
+      assert.strictEqual(check.source_approval_id, wild.approval_id);
+      assert.strictEqual(check.product_id, wild.shopify_product_id);
+      assert.deepStrictEqual(
+        check.fields,
+        wild.proposed_changes.map((change) => ({
+          shopify_field: change.shopify_field, before: change.before, after: change.after, current: '', matches_before: true, matches_after: false,
+        }))
+      );
+      assert.strictEqual(check.all_match_before, true);
+      assert.strictEqual(check.eligible_for_execution, true, JSON.stringify(check.checks));
+      assert.deepStrictEqual(check.checks.map((entry) => entry.check), [
+        'proposal_applicable', 'matches_stored_proposal', 'store_values_match_before', 'not_already_applied', 'compliance_not_block', 'permission_and_platform',
+      ]);
+    });
+
+    await testAsync('READ-ONLY CHECK: nothing is created, approved, executed or written, and the owner sees the comparison', async () => {
+      assert.deepStrictEqual(checkResult.pending_approvals, []);
+      assert.strictEqual(approvalCount(), approvalsBeforeCheck);
+      assert.strictEqual(approvalStore.loadApprovalRecord(wild.approval_id).approval_request.status, 'pending');
+      assert.strictEqual(SEO_WRITES.length, 0);
+      assert.deepStrictEqual(TRIPWIRE_WRITES, []);
+      assert.deepStrictEqual(checkTurn.reads, ['getProducts']);
+      assert.strictEqual(checkTurn.owner_view.status, 'success');
+      assert.strictEqual(checkResult.proposal_check.approvals_created, 0);
+      const text = lastChiefText(checkTurn);
+      assert.ok(/still match the proposal's before-values/.test(text), text);
+      assert.ok(/Eligible for execution: yes/.test(text), text);
+      assert.ok(/No approval was created, approved or executed, and nothing was written/.test(text), text);
+    });
+
+    await testAsync('READ-ONLY CHECK: a changed store value is reported as not matching, and not eligible', async () => {
+      productById(watercolor.shopify_product_id).seo = { title: 'Owner Edited Title', description: null };
+      try {
+        const turn = await askInNewSession(port, READ_ONLY_CHECK_REQUEST.replace('200 Wild Flowers Clipart', '118 Watercolor Mega Clipart PNG Bundle'));
+        const check = resultOf(turn).proposal_check;
+        assert.strictEqual(check.source_approval_id, watercolor.approval_id);
+        const title = check.fields.find((field) => field.shopify_field === 'seo.title');
+        assert.strictEqual(title.current, 'Owner Edited Title');
+        assert.strictEqual(title.matches_before, false);
+        assert.strictEqual(check.all_match_before, false);
+        assert.strictEqual(check.eligible_for_execution, false);
+        assert.strictEqual(check.checks.find((entry) => entry.check === 'store_values_match_before').passed, false);
+        assert.deepStrictEqual(resultOf(turn).pending_approvals, []);
+      } finally {
+        productById(watercolor.shopify_product_id).seo = { title: null, description: null };
+      }
+    });
+
+    await testAsync('READ-ONLY CHECK: a product with no proposal is a question back - no read of anything else, no approval', async () => {
+      const turn = await askInNewSession(port, READ_ONLY_CHECK_REQUEST.replace('200 Wild Flowers Clipart', 'Christmas Invitation Template'));
+      const result = resultOf(turn);
+      assert.strictEqual(result.routing.clarification_type, 'proposal_not_resolved');
+      assert.strictEqual(result.proposal_check.status, 'not_checked');
+      assert.deepStrictEqual(turn.reads, []);
+      assert.strictEqual(approvalCount(), approvalsBeforeCheck);
     });
 
     // ---- THE EXACT REQUEST ----------------------------------------------------------------------
@@ -397,6 +482,12 @@ async function main() {
       const result = resultOf(repeat);
       assert.strictEqual(result.routing.clarification_type, 'proposal_already_applied');
       assertNoApprovalAndNoWrite(result, 1);
+      // The read-only check now shows the after-values in the store, and that it is no longer eligible.
+      const check = resultOf(await askInNewSession(port, READ_ONLY_CHECK_REQUEST)).proposal_check;
+      assert.ok(check.fields.every((field) => field.matches_after === true && field.matches_before === false));
+      assert.strictEqual(check.eligible_for_execution, false);
+      assert.strictEqual(check.checks.find((entry) => entry.check === 'not_already_applied').passed, false);
+      assert.strictEqual(SEO_WRITES.length, 1);
     });
 
     // ---- FAILURE AFTER APPROVAL: never reported as done -----------------------------------------

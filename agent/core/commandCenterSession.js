@@ -417,6 +417,32 @@ function describeContinuation(runResult, added) {
   return lines.join('\n');
 }
 
+// The Chief's reply for a READ-ONLY check of an existing proposal: the current store value of each
+// proposed field beside the proposal's before/after values, and every execution check with its result.
+function describeProposalCheck(check) {
+  const quote = (value) => (value === null || value === undefined ? '(not read)' : `"${value}"`);
+  const yesNo = (value) => (value === null ? 'unknown' : value ? 'yes' : 'no');
+  const lines = [
+    `Read-only check of SEO proposal ${check.source_approval_id} (${check.source_approval_status}) for "${check.product_reference}", against a fresh read of your Shopify store:`,
+  ];
+  for (const field of asArray(check.fields)) {
+    lines.push(
+      `  ${field.shopify_field}: current ${quote(field.current)} | proposal before "${field.before || ''}" | proposal after "${field.after}" - matches before: ${yesNo(field.matches_before)}`
+    );
+  }
+  if (check.read_failure) lines.push(check.read_failure);
+  lines.push(
+    check.all_match_before
+      ? 'The current store values still match the proposal\'s before-values.'
+      : 'The current store values do NOT all match the proposal\'s before-values.'
+  );
+  lines.push(`Eligible for execution: ${check.eligible_for_execution ? 'yes' : 'no'}.`);
+  for (const entry of asArray(check.checks)) lines.push(`  [${entry.passed ? 'pass' : 'fail'}] ${entry.check}: ${entry.detail}`);
+  if (check.eligible_for_execution) lines.push('Applying it would still create a new approval that only you can sign.');
+  lines.push('No approval was created, approved or executed, and nothing was written to your store.');
+  return lines.join('\n');
+}
+
 // The Chief's reply for a turn that asked to apply an existing proposal: which stored proposal it
 // resolved to, exactly what will be written, and the approval it waits on. Built only from the run's
 // own proposal_execution.
@@ -707,6 +733,8 @@ async function runSessionTurn(
   const chiefText =
     runResult.routing && runResult.routing.status === 'clarification_required'
       ? runResult.routing.reason || 'I need more detail before I can route this.'
+      : runResult.proposal_check
+        ? describeProposalCheck(runResult.proposal_check)
       : runResult.proposal_execution
         ? describeProposalExecution(runResult.proposal_execution)
       : runResult.store_opportunity_priorities

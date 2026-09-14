@@ -32,7 +32,7 @@
 const approvalStore = require('../../approvals/approvalStore');
 const runHistoryStore = require('./runHistoryStore');
 const { MUTATION_VERBS } = require('./mutationIntent');
-const { APPLY_CHANGE_VERBS, FUNCTION_WORDS, tokens, lemmaCandidates, singularForm } = require('./objectiveInterpretation');
+const { APPLY_CHANGE_VERBS, FUNCTION_WORDS, tokens, lemmaCandidates, singularForm, verbClass } = require('./objectiveInterpretation');
 const { currentStoreReference } = require('./researchContext');
 const seoUpdate = require('../../integrations/shopifyProductSeoUpdate');
 
@@ -131,7 +131,8 @@ function decideProposalExecution({ objective, routingResult } = {}) {
   const executionActs = new Set();
   let namesRecord = false;
   for (const entry of interpretation) {
-    if (!isExecutionVerb(leadVerb(entry.clause))) continue;
+    // A constraint ("..., or apply anything") is something not to do - never an execution request.
+    if (entry.disposition === 'constraint' || !isExecutionVerb(leadVerb(entry.clause))) continue;
     const sentence = sentenceOf(entry.clause);
     const kind = proposalReferenceKind(sentence);
     if (!kind) continue;
@@ -174,6 +175,43 @@ function decideProposalExecution({ objective, routingResult } = {}) {
     additional_requests: additional,
     answered_by_execution: answeredByExecution,
   };
+}
+
+// A clause asking to be TOLD something: a READ verb, or "read" itself.
+function isReadLead(word) {
+  return Boolean(word) && (word === 'read' || verbClass(word) === 'read');
+}
+
+// Does this objective ask to CHECK an existing proposal against the store, without acting on it?
+// "Read the current Shopify SEO data for the 200 Wild Flowers Clipart product and compare it with the
+// existing approved SEO proposal. Do not create, approve, or execute any write approval. ..."
+//
+// Applies only when a read-led clause is in a sentence naming the proposal RECORD (proposal/approval),
+// the request names a product or an approval id, and every other part of the request is itself a read,
+// framing or a constraint. Anything that asks for work of another kind is left to routing unchanged.
+// Returns { applies: false } or { applies: true }.
+function decideProposalCheck({ objective, routingResult } = {}) {
+  const interpretation = asArray(routingResult && routingResult.interpretation).filter((entry) => isPlainObject(entry) && isNonEmptyString(entry.clause));
+  if (interpretation.length === 0) return { applies: false };
+  const sentences = sentencesOf(objective);
+  const sentenceOf = (clause) => {
+    const needle = normalizeSpace(clause).replace(/[.!?;]+$/, '');
+    return sentences.find((sentence) => sentence.includes(needle)) || normalizeSpace(clause);
+  };
+
+  const refersToRecord = interpretation.some(
+    (entry) => entry.disposition !== 'constraint' && isReadLead(leadVerb(entry.clause)) && proposalReferenceKind(sentenceOf(entry.clause)) === 'record'
+  );
+  if (!refersToRecord) return { applies: false };
+  const namesTarget = namedProducts(objective).length > 0 || /\bapr-\d+\b/.test(String(objective || ''));
+  if (!namesTarget) return { applies: false };
+
+  const asksForOtherWork = interpretation.some((entry) => {
+    if (['constraint', 'framing'].includes(entry.disposition)) return false;
+    if (['safety', 'empty', 'inform', 'scope', 'goal'].includes(entry.act)) return false;
+    return !isReadLead(leadVerb(entry.clause));
+  });
+  return asksForOtherWork ? { applies: false } : { applies: true };
 }
 
 // The store a stored proposal was made for: its own stamp, or the stamp of the research run it names.
@@ -422,6 +460,7 @@ module.exports = {
   APPLICATION_TOOL_ID,
   APPLICATION_KIND,
   referencesExistingProposal,
+  decideProposalCheck,
   decideProposalExecution,
   resolveProposalExecution,
 };

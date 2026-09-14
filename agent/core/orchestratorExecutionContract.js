@@ -136,6 +136,7 @@ const { STORE_RESEARCH_BASIS, prioritizeStoreOpportunities } = require('./storeO
 const { proposeSeoChanges, PROPOSAL_TOOL_ID, PROPOSAL_SPECIALIST_ID } = require('./seoChangeProposal');
 // Applying such a proposal once it exists - resolved against durable approval state, never re-worded.
 const {
+  decideProposalCheck,
   decideProposalExecution,
   resolveProposalExecution,
   APPLICATION_TOOL_ID: PROPOSAL_APPLICATION_TOOL_ID,
@@ -1764,6 +1765,7 @@ function resolveObjectiveIntent(routedClauses) {
     const sameSentence = previous && previous.clause.sentence === clause.sentence;
     const interpretation = interpretClause(clause.text, {
       previousAct: sameSentence ? previous.interpretation.act : null,
+      previousNegated: sameSentence ? Boolean(previous.interpretation.negated) : false,
       knownWord: isSystemWord,
       systemVocabulary: SYSTEM_VOCABULARY,
     });
@@ -1771,7 +1773,9 @@ function resolveObjectiveIntent(routedClauses) {
     const { act } = interpretation;
     const { result, text } = clause;
 
-    if (act === 'safety' || act === 'empty') {
+    // A list item carried by a negation ("..., or execute any write approval") is something NOT to do:
+    // a constraint on the run, never routed to a capability its nouns happen to name.
+    if (act === 'safety' || act === 'empty' || (interpretation.negated && interpretation.continuation)) {
       unit.disposition = { kind: 'constraint' };
     } else if (act === 'unsupported_platform') {
       // The platform as the owner typed it ("eBay"), falling back to the registry's name.
@@ -2997,6 +3001,7 @@ function buildRoutingResponse({
   storeOpportunityPriorities = null,
   seoChangeProposal = null,
   proposalExecution = null,
+  proposalCheck = null,
 }) {
   const needsMoreInfo = routing.status === 'clarification_required';
   const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
@@ -3062,6 +3067,8 @@ function buildRoutingResponse({
     ...(seoChangeProposal ? { seo_change_proposal: seoChangeProposal } : {}),
     // Present only when the objective asked to apply an existing proposal (agent/core/proposalExecution.js).
     ...(proposalExecution ? { proposal_execution: proposalExecution } : {}),
+    // Present only when the objective asked to check an existing proposal against the store, read-only.
+    ...(proposalCheck ? { proposal_check: proposalCheck } : {}),
   };
 }
 
@@ -3219,6 +3226,12 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   const proposalDecision = decideProposalExecution({ objective, routingResult });
   if (proposalDecision.applies) {
     return runProposalExecution({ objective, decision: proposalDecision, businessId, researchContext, runId, runAuditTracker, runUsageLedger });
+  }
+  // A READ-ONLY CHECK of an existing proposal against the store ("compare the current values with the
+  // existing approved SEO proposal ... do not create or execute any approval") is answered directly: one
+  // gated read, a value-by-value comparison, and the execution checks evaluated without creating anything.
+  if (decideProposalCheck({ objective, routingResult }).applies) {
+    return runProposalCheck({ objective, businessId, researchContext, runId, runAuditTracker, runUsageLedger });
   }
 
   // RESEARCH CONTINUITY (agent/core/researchContext.js's decideResearchContinuity). Decided on the
@@ -3679,6 +3692,165 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
     usageLedger: runUsageLedger.events,
     usageSummary: summarizeUsage(runUsageLedger),
   });
+}
+
+// Answers a READ-ONLY check of an existing SEO proposal against the store (proposalExecution.js's
+// decideProposalCheck).
+//
+// The proposal is resolved exactly as an apply request would resolve it. The store is then read ONCE,
+// through the same gated Product read the research basis uses (buildPlanStep: permissions, platform
+// gate, usage and audit), and each proposed field's CURRENT value is compared directly with the
+// proposal's before and after values. Every condition an execution would have to meet is evaluated on
+// the request an execution WOULD create - the stored-proposal match, the before-values, whether it was
+// already applied, the compliance verdict of the values that would be written, permission and platform -
+// without creating, approving or executing anything. No compliance step runs on empty content: there is
+// no content to check until there is a change to write, and that change's own values are what is checked.
+async function runProposalCheck({ objective, businessId, researchContext, runId, runAuditTracker, runUsageLedger }) {
+  const respond = (routing, extra = {}) =>
+    buildRoutingResponse({
+      objective,
+      routing,
+      auditTrail: runAuditTracker.events,
+      usageLedger: runUsageLedger.events,
+      usageSummary: summarizeUsage(runUsageLedger),
+      ...extra,
+    });
+  const noWrite = { store_writes: 0, approvals_created: 0 };
+
+  const resolution = resolveProposalExecution({
+    objective,
+    businessId,
+    storeReference: researchContext && typeof researchContext.store_reference === 'string' ? researchContext.store_reference : undefined,
+  });
+  appendAuditEvent(runAuditTracker, {
+    type: 'data_access',
+    status: resolution.status,
+    summary:
+      resolution.status === 'resolved'
+        ? `Read-only proposal check: resolved to stored SEO proposal '${resolution.source.approval_id}' for '${resolution.source.product_reference}'.`
+        : `Read-only proposal check: looked up stored SEO proposals (${resolution.considered.proposals} for this business): ${resolution.status}.`,
+  });
+  if (resolution.status !== 'resolved') {
+    return respond(
+      {
+        status: 'clarification_required',
+        clarification_type: resolution.status === 'ambiguous' ? 'proposal_ambiguous' : 'proposal_not_resolved',
+        reason: resolution.reason,
+        candidates: null,
+        unmatched_segment: null,
+        plan: null,
+      },
+      { proposalCheck: { status: 'not_checked', reason: resolution.reason, candidates: resolution.candidates, ...noWrite } }
+    );
+  }
+
+  // ONE live read, through the gated Product read.
+  const basis = STORE_RESEARCH_BASIS[0];
+  const runApprovalTracker = { requests: [], id_prefix: runId };
+  const readStep = await buildPlanStep(
+    buildSpecialistTarget(basis.specialistId),
+    objective,
+    objective,
+    { tokensUsedThisRun: 0 },
+    null,
+    [],
+    runApprovalTracker,
+    runAuditTracker,
+    createToolResultCache(),
+    createUsageTracker(),
+    businessId,
+    runUsageLedger,
+    { toolId: basis.toolId, capabilityId: basis.capabilityId },
+    null
+  );
+  const productId = resolution.research_params.productId;
+  const sources = readStep.completion_state === 'complete' && readStep.outputs && Array.isArray(readStep.outputs.listing_sources)
+    ? readStep.outputs.listing_sources
+    : null;
+  const current = sources ? sources.find((source) => source && source.shopify_product_id === productId) || null : null;
+  const comparable = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const fields = resolution.applied_changes.map((change) => {
+    const key = change.shopify_field === 'seo.title' ? 'seo_title' : 'seo_description';
+    const readable = Boolean(current) && !(Array.isArray(current.unavailable_fields) && current.unavailable_fields.includes(key));
+    const value = readable ? current[key] : null;
+    return {
+      shopify_field: change.shopify_field,
+      before: change.before,
+      after: change.after,
+      current: value,
+      matches_before: readable ? comparable(value) === comparable(change.before) : null,
+      matches_after: readable ? value === change.after : null,
+    };
+  });
+  const readFailure = !sources
+    ? 'The store could not be read, so the current values are unknown.'
+    : !current
+      ? `Product '${productId}' was not found in the store read.`
+      : fields.some((field) => field.current === null)
+        ? 'The store read did not return every proposed SEO field.'
+        : null;
+  const allMatchBefore = !readFailure && fields.every((field) => field.matches_before);
+
+  // What an execution would have to pass - evaluated on the request it WOULD create, creating nothing.
+  const tool = getToolById(PROPOSAL_APPLICATION_TOOL_ID);
+  const wouldExecute = createExecutionRequest(objective, { category: tool.category, tool }, resolution.research_params, businessId);
+  const checks = [];
+  const check = (id, passed, detail) => checks.push({ check: id, passed: Boolean(passed), detail });
+  check('proposal_applicable', true, `Stored SEO proposal ${resolution.source.approval_id} is '${resolution.source.approval_status}' and was made for the connected store.`);
+  const source = verifyCorrectionSource(tool.id, wouldExecute);
+  check('matches_stored_proposal', source.ok, source.ok ? 'The values to apply are exactly the stored proposal\'s.' : source.reason);
+  check(
+    'store_values_match_before',
+    allMatchBefore,
+    readFailure || (allMatchBefore ? 'Every current store value still equals the proposal\'s before-value.' : 'At least one current store value differs from the proposal\'s before-value, so applying it would be refused.')
+  );
+  const already = checkCorrectionAlreadyVerified(tool.id, wouldExecute);
+  check('not_already_applied', already.allowed, already.allowed ? 'This change has not been applied and verified before.' : 'This exact change has already been applied and verified.');
+  let complianceStatus = null;
+  try {
+    const input = buildCorrectionComplianceInput(tool.id, wouldExecute);
+    complianceStatus = input ? evaluateCompliance(input).status : null;
+  } catch (err) {
+    complianceStatus = null;
+  }
+  check(
+    'compliance_not_block',
+    complianceStatus !== null && complianceStatus !== 'BLOCK',
+    complianceStatus === null ? 'Compliance could not be evaluated for the values that would be written.' : `Compliance for the values that would be written: ${complianceStatus}.`
+  );
+  const access = checkToolAccess({ specialistId: wouldExecute.specialist_id, toolId: tool.id, enabledPlatforms: resolveEnabledPlatformsForBusiness(businessId) });
+  check('permission_and_platform', access.decision === 'approval_required', access.decision === 'approval_required' ? 'Permitted for Shopify, and only with your signed approval.' : access.reason);
+  const eligible = checks.every((entry) => entry.passed);
+
+  appendAuditEvent(runAuditTracker, {
+    type: 'result',
+    toolId: tool.id,
+    status: eligible ? 'eligible' : 'not_eligible',
+    summary:
+      `Read-only proposal check for '${resolution.source.product_reference}': current values ${readFailure ? 'unknown' : allMatchBefore ? 'match' : 'do not match'} the before-values; ` +
+      `${eligible ? 'eligible' : 'not eligible'} for execution. No approval was created, approved or executed, and nothing was written.`,
+  });
+
+  return respond(
+    { status: 'planned', clarification_type: null, reason: null, candidates: null, unmatched_segment: null, plan: [readStep] },
+    {
+      growthOpportunityDrafts: [],
+      pendingApprovals: runApprovalTracker.requests,
+      proposalCheck: {
+        status: 'checked',
+        source_approval_id: resolution.source.approval_id,
+        source_approval_status: resolution.source.approval_status,
+        product_reference: resolution.source.product_reference,
+        product_id: productId,
+        fields,
+        read_failure: readFailure,
+        all_match_before: allMatchBefore,
+        eligible_for_execution: eligible,
+        checks,
+        ...noWrite,
+      },
+    }
+  );
 }
 
 // Answers an objective that asks to apply an existing proposal (agent/core/proposalExecution.js).

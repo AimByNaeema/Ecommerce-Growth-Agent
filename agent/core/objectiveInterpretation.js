@@ -281,10 +281,20 @@ function actForEmbeddedVerb(word) {
 // Classifies one clause. previousAct: the act of the clause before it in the SAME sentence,
 // which a list item or a bare coordinated noun continues. knownWord(word): whether a word
 // belongs to the system's vocabulary or the objective's own wording.
-function interpretClause(clauseText, { previousAct = null, knownWord = () => false, systemVocabulary = null } = {}) {
+function interpretClause(clauseText, { previousAct = null, previousNegated = false, knownWord = () => false, systemVocabulary = null } = {}) {
   const safety = collectSafetyConstraints(clauseText);
   const remaining = String(clauseText || '').replace(SAFETY_CONSTRAINT_REGEX, ' ');
-  let words = tokens(remaining);
+  const rawWords = tokens(remaining);
+  // NEGATION CARRIES THROUGH A DISJUNCTIVE LIST. "Do not create, approve, or execute any write approval"
+  // is split at its commas, but "approve" and "or execute any write approval" are still governed by the
+  // "Do not" - they are more things NOT to do, never instructions of their own. A clause continuing a
+  // negated clause in the same sentence inherits the negation when it is a bare list item or is joined
+  // by "or"/"nor". "and" is not treated this way: "Don't change prices, and write new titles" asks for
+  // the titles.
+  if (previousNegated && rawWords.length > 0 && (['or', 'nor'].includes(rawWords[0].lower) || rawWords.length === 1)) {
+    return { act: 'scope', negated: true, continuation: true, safety };
+  }
+  let words = rawWords;
   while (words.length > 0 && OPENERS.has(words[0].lower)) words = words.slice(1);
 
   const contentLeft = words.filter((token) => !FUNCTION_WORDS.has(token.lower));
@@ -311,7 +321,7 @@ function interpretClause(clauseText, { previousAct = null, knownWord = () => fal
 
   // Negated instructions about the answer ("don't include drafts", "never mind the fees").
   if ((first === 'don' && words[1] && words[1].lower === 't') || first === 'never' || (first === 'do' && words[1] && words[1].lower === 'not')) {
-    return { act: 'scope', safety };
+    return { act: 'scope', negated: true, safety };
   }
 
   if (isConsequentialAction(first)) return { act: 'unsupported_action', verb: first, safety };
