@@ -167,6 +167,10 @@ const READ_ONLY_CHECK_REQUEST =
 // a reference to the latest research, and the stored proposal made ready for execution.
 const PREPARE_FOR_EXECUTION_REQUEST =
   'Review the latest Shopify SEO research and prepare the stored SEO proposal for the 200 Wild Flowers Clipart product for execution. Do not make any changes.';
+// The production request the Chief answered with "also to do something else": one approval workflow - make the
+// stored proposal ready, show its stored before/after values, create the approval request - with no write.
+const APPROVAL_WORKFLOW_REQUEST =
+  'Prepare the existing SEO proposal for the 200 Wild Flowers Clipart product for execution. Show the exact stored before and after SEO values and create a new approval request, but do not write anything to Shopify.';
 const EXACT_REQUEST_FULL =
   'Apply the proposed SEO title and meta description only to the 200 Wild Flowers Clipart product from the pending approval. Do not change anything else. Verify the exact resulting Shopify values after the change.';
 
@@ -538,6 +542,53 @@ async function main() {
       assert.strictEqual(basis({ storeReference: researchContext.storeReferenceFor('shopify', 'another-store.myshopify.com') }).found, false);
       const newer = basis({ latestResearch: { run_id: 'cc-run-newer' } });
       assert.strictEqual(newer.built_from_latest, false, 'a newer research run is reported, never substituted');
+    });
+
+    // ---- ONE APPROVAL WORKFLOW (production: proposal_execution_mixed) --------------------------------
+    test('APPROVAL WORKFLOW: showing the stored before/after values and creating the approval request are the execution, not other requests', () => {
+      const routed = orchestrator.planRouting(APPROVAL_WORKFLOW_REQUEST);
+      // Root cause, unchanged at the splitter: "before and after" is split on "and".
+      assert.ok(routed.interpretation.some((entry) => entry.clause === 'after SEO values'), JSON.stringify(routed.interpretation));
+      const decision = proposalExecution.decideProposalExecution({ objective: APPROVAL_WORKFLOW_REQUEST, routingResult: routed });
+      assert.strictEqual(decision.applies, true);
+      assert.deepStrictEqual(decision.additional_requests, [], JSON.stringify(decision));
+      assert.deepStrictEqual(decision.answered_by_execution, ['Show the exact stored before and after SEO values', 'create a new approval request']);
+    });
+
+    test('APPROVAL WORKFLOW: structure, not words - someone else\'s approval, unrelated before/after data or another job are still reported', () => {
+      const decide = (objective) => proposalExecution.decideProposalExecution({ objective, routingResult: orchestrator.planRouting(objective) });
+      const base = 'Prepare the existing SEO proposal for the 200 Wild Flowers Clipart product for execution.';
+      for (const [tail, reported] of [
+        [' Create a new approval request for my accountant.', 'Create a new approval request for my accountant.'],
+        [' Approve the approval request for me.', 'Approve the approval request for me.'],
+        [' Show my sales before the holidays.', 'Show my sales before the holidays.'],
+        [' Show the before and after SEO values and write a new marketing campaign.', 'write a new marketing campaign.'],
+      ]) {
+        const decision = decide(`${base}${tail}`);
+        assert.strictEqual(decision.applies, true, tail);
+        assert.ok(decision.additional_requests.includes(reported), `${tail} -> ${JSON.stringify(decision)}`);
+      }
+    });
+
+    await testAsync('APPROVAL WORKFLOW (exact production text): stored proposal -> before/after shown -> one approval request, nothing written', async () => {
+      const writesBefore = SEO_WRITES.length;
+      const turn = await askInNewSession(port, APPROVAL_WORKFLOW_REQUEST);
+      const result = resultOf(turn);
+      assert.strictEqual(result.routing.status, 'planned', result.routing.reason);
+      const run = result.proposal_execution;
+      assert.strictEqual(run.status, 'awaiting_approval');
+      assert.strictEqual(run.source_approval_id, wild.approval_id);
+      assert.deepStrictEqual(run.applied_changes, execution.applied_changes);
+      assert.strictEqual(result.pending_approvals.length, 1, 'exactly one approval request');
+      assert.strictEqual(result.pending_approvals[0].classification, 'externally_executable');
+      assert.strictEqual(SEO_WRITES.length, writesBefore, 'nothing is written to Shopify');
+      assert.deepStrictEqual(TRIPWIRE_WRITES, []);
+      const text = lastChiefText(turn);
+      for (const change of run.applied_changes) {
+        assert.ok(text.includes(`${change.shopify_field}: before "${change.before || ''}" -> after "${change.after}"`), text);
+      }
+      assert.ok(text.includes(`Approval ${run.approval_id} is waiting for your decision`), text);
+      assert.ok(!/also to do something else/.test(text), text);
     });
 
     await testAsync('NO WRITE BEFORE APPROVAL: the pending approval cannot be executed by any path', async () => {

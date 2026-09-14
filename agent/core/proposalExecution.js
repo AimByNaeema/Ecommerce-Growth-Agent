@@ -156,6 +156,61 @@ function preparesProposalForExecution(entry) {
   );
 }
 
+// WHAT THE EXECUTION ITSELF DELIVERS. Answering an execution request always (1) shows the stored proposal's
+// exact before/after values and (2) creates ONE approval request for the owner's signature - see
+// runOrchestratorContract's runProposalExecution and commandCenterSession.js's describeProposalExecution. A
+// clause asking for exactly that is the workflow's own step, not another request:
+//   "Show the exact stored before and after SEO values and create a new approval request"
+//
+// A NOUN PHRASE THE CLAUSE SPLITTER CUT. The router splits on "and", so "the exact stored before and after SEO
+// values" arrives as "Show the exact stored before" + "after SEO values". A fragment with no verb (the
+// interpreter's 'scope' act) joined to the clause before it in the same sentence by a bare "and"/"or" is that
+// clause's own coordinated noun phrase, and is read with it - the joined text is taken from the sentence as
+// typed, never rebuilt.
+function continuedClause(previous, entry, sentence) {
+  if (entry.act !== 'scope' || entry.disposition === 'constraint' || previous.disposition === 'constraint') return null;
+  const lead = leadVerb(entry.clause);
+  if (!lead || verbClass(lead) || isExecutionVerb(lead)) return null;
+  const head = normalizeSpace(previous.clause).replace(/[.!?;]+$/, '');
+  const tail = normalizeSpace(entry.clause).replace(/[.!?;]+$/, '');
+  const start = sentence.indexOf(head);
+  if (start < 0) return null;
+  const tailAt = sentence.indexOf(tail, start + head.length);
+  if (tailAt < 0 || !/^\s*(?:and|or)\s+$/i.test(sentence.slice(start + head.length, tailAt))) return null;
+  return sentence.slice(start, tailAt + tail.length);
+}
+
+// The applied change record's own value keys (integrations/shopifyProductSeoUpdate.js validateAppliedChanges:
+// shopify_field, before, after) and the words its SEO fields are named by (SEO_FIELDS).
+const CHANGE_VALUE_KEYS = new Set(['before', 'after']);
+const CHANGE_FIELD_WORDS = new Set(
+  Object.entries(seoUpdate.SEO_FIELDS).flatMap(([shopifyField, definition]) => [...shopifyField.split('.'), ...definition.field.split('_')])
+);
+
+// A read asking to SEE the proposal's change values: its before/after keys named with the values or an SEO
+// field ("show the before and after SEO values"). "Show my sales before the holidays" names neither.
+function showsProposalValues(entry) {
+  if (entry.act !== 'inform' || !isReadLead(leadVerb(entry.clause))) return false;
+  const words = lowerWords(entry.clause).map(singularForm);
+  return words.some((word) => CHANGE_VALUE_KEYS.has(word)) && words.some((word) => word === 'value' || CHANGE_FIELD_WORDS.has(word));
+}
+
+// A produce request whose object IS the approval record the execution creates: the noun phrase ends in
+// "approval" or "approval request", with nothing after it - "create a new approval request". An approval for
+// or from someone else ("... for my accountant"), a negation (not a produce act) or approving it ("Approve the
+// approval request") is not this, and is reported back. Only for a tool that always requires the owner's
+// signed approval, which is what makes the request and the execution's gate the same record.
+function createsExecutionApproval(entry) {
+  if (!APPLICATION_REQUIRES_SIGNED_APPROVAL || entry.act !== 'produce') return false;
+  const lead = leadVerb(entry.clause);
+  if (verbClass(lead) !== 'produce') return false;
+  const words = lowerWords(entry.clause);
+  const object = words.slice(words.indexOf(lead) + 1);
+  const last = object.length > 0 ? singularForm(object[object.length - 1]) : null;
+  if (last === 'approval') return true;
+  return last === 'request' && object.length > 1 && singularForm(object[object.length - 2]) === 'approval';
+}
+
 // How text refers to a record the approval system holds: 'record' when it names the record itself
 // ("the pending approval", "your proposal"), 'value' when it only names a value as proposed ("the
 // proposed SEO title"), or null.
@@ -246,17 +301,41 @@ function decideProposalExecution({ objective, routingResult } = {}) {
     if (asksForOtherWork) return { applies: false };
   }
 
+  // A verbless fragment the splitter cut from the clause before it is read as part of that clause.
+  const units = [];
+  for (const entry of interpretation) {
+    const previous = units[units.length - 1];
+    const sentence = sentenceOf(entry.clause);
+    const joined =
+      previous && !executionClauses.has(previous.clause) && sentenceOf(previous.clause) === sentence ? continuedClause(previous, entry, sentence) : null;
+    if (joined) {
+      units[units.length - 1] = {
+        clause: joined,
+        act: previous.act,
+        // Framing alone would hide the phrase; the fragment's own disposition says it was asked for.
+        disposition: previous.disposition === 'framing' ? entry.disposition : previous.disposition,
+      };
+    } else {
+      units.push({ clause: entry.clause, act: entry.act, disposition: entry.disposition });
+    }
+  }
+
   const additional = [];
   const answeredByExecution = [];
   const approvalRequirements = [];
   const researchReferences = [];
-  for (const entry of interpretation) {
+  for (const entry of units) {
     const inExecutionSentence = executionSentences.has(sentenceOf(entry.clause));
     const lead = leadVerb(entry.clause);
     if (executionClauses.has(entry.clause) || (inExecutionSentence && (isExecutionVerb(lead) || executionActs.has(entry.act)))) continue;
     // The owner's signed approval before the write is the execution's own gate, not another request.
     if (isOwnerApprovalRequirement(entry.clause)) {
       approvalRequirements.push(entry.clause);
+      continue;
+    }
+    // "Create a new approval request": the one approval request the execution creates for that gate.
+    if (createsExecutionApproval(entry)) {
+      answeredByExecution.push(entry.clause);
       continue;
     }
     // Any other statement about approval ("... approval from my accountant", "approve it for me") is
@@ -267,6 +346,11 @@ function decideProposalExecution({ objective, routingResult } = {}) {
     }
     if (['constraint', 'framing'].includes(entry.disposition) || entry.act === 'safety' || entry.act === 'empty') continue;
     if (lead && VERIFY_VERBS.has(lemmaCandidates(lead).find((candidate) => VERIFY_VERBS.has(candidate)) || lead)) {
+      answeredByExecution.push(entry.clause);
+      continue;
+    }
+    // "Show the exact stored before and after SEO values": the execution's reply shows exactly those.
+    if (showsProposalValues(entry)) {
       answeredByExecution.push(entry.clause);
       continue;
     }
