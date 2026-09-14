@@ -473,6 +473,51 @@
   </div>
 </div>
 
+<!-- Signing an approval. The server's challenge is shown here as selectable, copyable text (never in a
+     browser dialog). Only the public payload and the pasted signature ever appear on this page. -->
+<div class="workflow-drawer" id="signingDrawer" hidden>
+  <div class="workflow-drawer-scrim" id="signingDrawerScrim"></div>
+  <aside class="workflow-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="signingDrawerTitle">
+    <div class="workflow-drawer-head">
+      <div>
+        <div class="workflow-drawer-title" id="signingDrawerTitle">Sign this approval</div>
+        <div class="workflow-drawer-kind" id="signingDrawerKind"></div>
+      </div>
+      <button class="workflow-drawer-close" id="signingDrawerClose" type="button" aria-label="Cancel">&times;</button>
+    </div>
+    <div class="workflow-drawer-body">
+      <p class="workflow-drawer-meaning">On the machine holding your approval private key, run the signing command below (it signs the exact payload bytes), then paste the base64 signature it prints. Your private key is never entered on this page.</p>
+      <div class="workflow-drawer-row">
+        <label class="workflow-drawer-label" for="signingPayloadBase64">payload_base64</label>
+        <textarea class="signing-field" id="signingPayloadBase64" readonly rows="4" spellcheck="false"></textarea>
+        <button class="signing-copy" id="signingCopyPayloadBase64" type="button">Copy payload_base64</button>
+      </div>
+      <div class="workflow-drawer-row">
+        <label class="workflow-drawer-label" for="signingCommand">Signing command</label>
+        <textarea class="signing-field" id="signingCommand" readonly rows="6" spellcheck="false"></textarea>
+        <button class="signing-copy" id="signingCopyCommand" type="button">Copy command</button>
+      </div>
+      <div class="workflow-drawer-row">
+        <div class="workflow-drawer-label">Payload</div>
+        <pre class="signing-field" id="signingPayload"></pre>
+      </div>
+      <div class="workflow-drawer-row">
+        <div class="workflow-drawer-label">Instructions</div>
+        <pre class="signing-field" id="signingInstructions"></pre>
+      </div>
+      <div class="workflow-drawer-row">
+        <label class="workflow-drawer-label" for="signingSignature">Base64 signature</label>
+        <textarea class="signing-field" id="signingSignature" rows="3" spellcheck="false" autocomplete="off"></textarea>
+      </div>
+      <p class="signing-status" id="signingStatus" role="status"></p>
+      <div class="approval-actions">
+        <button class="approve-btn" id="signingSubmit" type="button">Submit signature</button>
+        <button class="reject-btn" id="signingCancel" type="button">Cancel</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
 <script src="dashboard.js" defer></script>
 
 </body>

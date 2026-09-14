@@ -579,6 +579,92 @@
   // NO PRIVATE KEY IS EVER ENTERED HERE, held here, or sent anywhere. The signing happens
   // entirely on the approver's own machine; this page only ever sees the public payload and
   // the resulting signature.
+  //
+  // THE CHALLENGE IS SHOWN IN THE SIGNING DRAWER (index.html #signingDrawer), not a browser
+  // dialog: a prompt()'s text cannot be selected or copied, so payload_base64 could not reach
+  // the signing command. Every value is the server's own, shown as-is (textarea value /
+  // textContent - never re-encoded or rebuilt), so the bytes signed are the bytes issued.
+
+  // Copies one readonly field. Falls back to selecting it, so the person can always copy it.
+  function copySigningField(field, statusEl, label) {
+    const text = field.value;
+    if (!text) {
+      statusEl.textContent = label + ' is not available for this challenge.';
+      return;
+    }
+    const fallback = function () {
+      field.focus();
+      field.select();
+      let copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (err) {
+        copied = false;
+      }
+      statusEl.textContent = copied ? label + ' copied.' : label + ' is selected - press Ctrl+C to copy it.';
+    };
+    if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(text).then(function () { statusEl.textContent = label + ' copied.'; }, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  // Shows one challenge and resolves with the pasted signature, or null when the person cancels.
+  function askForSignature(challenge) {
+    const el = function (id) { return document.getElementById(id); };
+    const drawer = el('signingDrawer');
+    if (!drawer) return Promise.resolve(null);
+    const base64Field = el('signingPayloadBase64');
+    const commandField = el('signingCommand');
+    const signatureField = el('signingSignature');
+    const statusEl = el('signingStatus');
+
+    const instructions = Array.isArray(challenge.signing_instructions) ? challenge.signing_instructions : [];
+    const command = instructions.find(function (line) { return /node -e ".*'base64'/.test(line); });
+    base64Field.value = typeof challenge.payload_base64 === 'string' ? challenge.payload_base64 : '';
+    commandField.value = command ? command.trim() : '';
+    el('signingPayload').textContent = typeof challenge.payload === 'string' ? challenge.payload : '';
+    el('signingInstructions').textContent = instructions.join('\n\n');
+    el('signingDrawerKind').textContent =
+      String(challenge.decision || '') + ' · ' + String(challenge.request_id || '') +
+      (challenge.expires_at ? ' · expires ' + String(challenge.expires_at) : '');
+    signatureField.value = '';
+    statusEl.textContent = '';
+    drawer.hidden = false;
+
+    return new Promise(function (resolve) {
+      const cleanups = [];
+      const on = function (target, type, handler) {
+        if (!target) return;
+        target.addEventListener(type, handler);
+        cleanups.push(function () { target.removeEventListener(type, handler); });
+      };
+      const finish = function (value) {
+        cleanups.forEach(function (cleanup) { cleanup(); });
+        drawer.hidden = true;
+        resolve(value);
+      };
+      on(el('signingSubmit'), 'click', function () {
+        const signature = signatureField.value.trim();
+        if (!signature) {
+          statusEl.textContent = 'Paste the base64 signature before submitting.';
+          signatureField.focus();
+          return;
+        }
+        finish(signature);
+      });
+      on(el('signingCancel'), 'click', function () { finish(null); });
+      on(el('signingDrawerClose'), 'click', function () { finish(null); });
+      on(el('signingDrawerScrim'), 'click', function () { finish(null); });
+      on(document, 'keydown', function (event) { if (event.key === 'Escape') finish(null); });
+      on(el('signingCopyPayloadBase64'), 'click', function () { copySigningField(base64Field, statusEl, 'payload_base64'); });
+      on(el('signingCopyCommand'), 'click', function () { copySigningField(commandField, statusEl, 'Signing command'); });
+      base64Field.focus();
+      base64Field.select();
+    });
+  }
+
   async function collectSignedApproval({ approvalId, decision, decidedBy }) {
     const params =
       'approvalId=' + encodeURIComponent(approvalId) +
@@ -594,13 +680,7 @@
       return { ok: false, error: 'Could not reach the server for an approval challenge.' };
     }
 
-    var instructions = (challenge.signing_instructions || []).join('\n\n');
-    var signature = window.prompt(
-      'SIGN THIS APPROVAL\n\n' +
-        'On the machine holding your approval private key, sign this EXACT payload and paste the base64 signature below.\n\n' +
-        '--- payload ---\n' + challenge.payload + '\n--- end payload ---\n\n' +
-        instructions + '\n\nBase64 signature:'
-    );
+    var signature = await askForSignature(challenge);
     if (!signature || !signature.trim()) return { ok: false, error: 'Approval cancelled - no signature was provided.' };
     return { ok: true, nonce: challenge.nonce, signature: signature.trim() };
   }

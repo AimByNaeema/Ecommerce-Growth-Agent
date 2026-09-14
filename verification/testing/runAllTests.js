@@ -274,6 +274,7 @@ const TEST_FILES = [
   'complianceInputIntegration.test.js',
   'approvalIdUniqueness.test.js',
   'dashboardApiKeyRetry.test.js',
+  'dashboardSigningDrawer.test.js',
   'chiefControlCenter.test.js',
   'chiefObjectiveRouting.test.js',
   'chiefSeoDataFlow.test.js',

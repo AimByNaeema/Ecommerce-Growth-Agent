@@ -1654,6 +1654,22 @@
   .workflow-drawer-list a { color: var(--accent); text-decoration: none; }
   .workflow-drawer-list a:hover { text-decoration: underline; }
 
+  /* Signing drawer: the challenge as ordinary selectable, copyable text. */
+  .signing-field {
+    display: block; width: 100%; box-sizing: border-box; margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5;
+    color: var(--ink); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all;
+    user-select: text; -webkit-user-select: text; resize: vertical;
+  }
+  .signing-field:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+  .signing-copy {
+    margin-top: 6px; background: none; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--accent); font-size: 12px; padding: 4px 10px; cursor: pointer;
+  }
+  .signing-copy:hover { border-color: var(--accent); }
+  .signing-status { font-size: 12px; color: var(--ink-soft); min-height: 1.2em; margin: 4px 0 10px; }
+
   .workflow-verdict { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 9px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; }
 
   @container workflow (min-width: 620px) {
