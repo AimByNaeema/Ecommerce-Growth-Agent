@@ -585,29 +585,63 @@
   // the signing command. Every value is the server's own, shown as-is (textarea value /
   // textContent - never re-encoded or rebuilt), so the bytes signed are the bytes issued.
 
-  // Copies one readonly field. Falls back to selecting it, so the person can always copy it.
+  // Copies one readonly field's COMPLETE value, exactly.
+  //
+  // WHY IT IS SHAPED LIKE THIS. The first version called navigator.clipboard.writeText and fell back
+  // to execCommand only inside the promise's rejection handler - by then the click's user activation
+  // is gone, the fallback copy silently fails, and the clipboard keeps whatever it held before (the
+  // owner saw 24 characters instead of payload_base64). Everything below runs synchronously inside
+  // the click:
+  //   1. the whole value is selected and execCommand('copy') is run; a one-shot 'copy' listener
+  //      writes the field's own value as text/plain - not the rendered selection - so nothing is
+  //      wrapped, trimmed or re-encoded;
+  //   2. a browser that raises no copy event gets navigator.clipboard.writeText in the same tick;
+  //   3. with neither, the whole value stays selected for Ctrl+C, and the status says so.
+  // The status gives the copied length, so it can be checked against the clipboard.
   function copySigningField(field, statusEl, label) {
     const text = field.value;
     if (!text) {
       statusEl.textContent = label + ' is not available for this challenge.';
       return;
     }
-    const fallback = function () {
+    const copiedMessage = label + ' copied (' + text.length + ' characters).';
+    const manualMessage = label + ' could not be copied automatically - it is selected, press Ctrl+C to copy it.';
+    const selectAll = function () {
       field.focus();
-      field.select();
-      let copied = false;
-      try {
-        copied = document.execCommand('copy');
-      } catch (err) {
-        copied = false;
-      }
-      statusEl.textContent = copied ? label + ' copied.' : label + ' is selected - press Ctrl+C to copy it.';
+      if (typeof field.setSelectionRange === 'function') field.setSelectionRange(0, text.length);
+      else field.select();
     };
-    if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      navigator.clipboard.writeText(text).then(function () { statusEl.textContent = label + ' copied.'; }, fallback);
-    } else {
-      fallback();
+
+    let written = false;
+    const onCopy = function (event) {
+      if (!event || !event.clipboardData || typeof event.clipboardData.setData !== 'function') return;
+      event.clipboardData.setData('text/plain', text);
+      event.preventDefault();
+      written = true;
+    };
+    selectAll();
+    document.addEventListener('copy', onCopy);
+    try {
+      document.execCommand('copy');
+    } catch (err) {
+      written = false;
+    } finally {
+      document.removeEventListener('copy', onCopy);
     }
+    if (written) {
+      statusEl.textContent = copiedMessage;
+      return;
+    }
+
+    if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(text).then(
+        function () { statusEl.textContent = copiedMessage; },
+        function () { selectAll(); statusEl.textContent = manualMessage; }
+      );
+      return;
+    }
+    selectAll();
+    statusEl.textContent = manualMessage;
   }
 
   // Shows one challenge and resolves with the pasted signature, or null when the person cancels.

@@ -74,10 +74,12 @@ function drawerMarkup() {
 }
 
 // A minimal browser boundary: only what the signing block touches.
-function makeBrowser({ challengeResponse, clipboard = true } = {}) {
+// `copyEvent`: whether execCommand('copy') raises a copy event (real browsers do, inside a click).
+// `clipboard`: 'ok' | 'reject' | 'absent' - the async clipboard API's behaviour.
+function makeBrowser({ challengeResponse, clipboard = 'ok', copyEvent = true } = {}) {
   const ids = [...drawerMarkup().matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
   const elements = new Map();
-  const state = { focused: null, clipboardWrites: [], execCommands: [], apiCalls: [] };
+  const state = { focused: null, clipboardText: null, clipboardWrites: [], execCommands: [], apiCalls: [] };
   const makeElement = (id) => {
     const listeners = {};
     const element = {
@@ -90,7 +92,8 @@ function makeBrowser({ challengeResponse, clipboard = true } = {}) {
       addEventListener: (type, handler) => { (listeners[type] = listeners[type] || []).push(handler); },
       removeEventListener: (type, handler) => { listeners[type] = (listeners[type] || []).filter((entry) => entry !== handler); },
       focus: () => { state.focused = id; },
-      select: () => { element.selected = true; },
+      select: () => { element.selected = true; element.selection = [0, element.value.length]; },
+      setSelectionRange: (start, end) => { element.selection = [start, end]; },
       click: () => { (listeners.click || []).slice().forEach((handler) => handler({})); },
     };
     return element;
@@ -102,11 +105,30 @@ function makeBrowser({ challengeResponse, clipboard = true } = {}) {
       getElementById: (id) => elements.get(id) || null,
       addEventListener: (type, handler) => { (documentListeners[type] = documentListeners[type] || []).push(handler); },
       removeEventListener: (type, handler) => { documentListeners[type] = (documentListeners[type] || []).filter((entry) => entry !== handler); },
-      execCommand: (command) => { state.execCommands.push(command); return true; },
+      // A real copy event: listeners decide what reaches the clipboard through clipboardData.
+      execCommand: (command) => {
+        state.execCommands.push(command);
+        if (command !== 'copy' || !copyEvent) return false;
+        const data = {};
+        const event = { clipboardData: { setData: (type, value) => { data[type] = value; } }, preventDefault: () => { event.defaultPrevented = true; } };
+        (documentListeners.copy || []).slice().forEach((handler) => handler(event));
+        if (event.defaultPrevented && Object.prototype.hasOwnProperty.call(data, 'text/plain')) state.clipboardText = data['text/plain'];
+        return true;
+      },
     },
-    navigator: clipboard
-      ? { clipboard: { writeText: (text) => { state.clipboardWrites.push(text); return Promise.resolve(); } } }
-      : {},
+    navigator:
+      clipboard === 'absent'
+        ? {}
+        : {
+            clipboard: {
+              writeText: (text) => {
+                state.clipboardWrites.push(text);
+                if (clipboard === 'reject') return Promise.reject(new Error('NotAllowedError'));
+                state.clipboardText = text;
+                return Promise.resolve();
+              },
+            },
+          },
     apiFetch: async (url) => {
       state.apiCalls.push(url);
       const { status, body } = challengeResponse;
@@ -118,7 +140,8 @@ function makeBrowser({ challengeResponse, clipboard = true } = {}) {
   vm.runInContext(`${extractSigningBlock()}\nthis.collectSignedApproval = collectSignedApproval;`, context);
   const pressKey = (key) => (documentListeners.keydown || []).slice().forEach((handler) => handler({ key }));
   const keydownListeners = () => (documentListeners.keydown || []).length;
-  return { context, elements, state, pressKey, keydownListeners };
+  const copyListeners = () => (documentListeners.copy || []).length;
+  return { context, elements, state, pressKey, keydownListeners, copyListeners };
 }
 
 // Waits until the drawer has been opened by the pending collectSignedApproval call.
@@ -196,30 +219,77 @@ function realChallenge(id) {
     assert.strictEqual(verified.verified, true, verified.reason);
   });
 
-  await testAsync('COPY: the copy buttons copy the exact field text; without the clipboard API the field is selected and copied', async () => {
-    const { request, challenge } = realChallenge('apr-drawer-2');
-    const browser = makeBrowser({ challengeResponse: { status: 200, body: challenge } });
+  // ---- COPY (production: Get-Clipboard held 24 characters, not payload_base64) ---------------------
+  // Opens a drawer for a real challenge and returns what the copy tests need.
+  async function openForCopy(id, options = {}) {
+    const { request, challenge } = realChallenge(id);
+    const browser = makeBrowser({ challengeResponse: { status: 200, body: challenge }, ...options });
     const pending = browser.context.collectSignedApproval({ approvalId: request.id, decision: 'approved', decidedBy: DECIDED_BY });
     await opened(browser);
-    browser.elements.get('signingCopyPayloadBase64').click();
-    browser.elements.get('signingCopyCommand').click();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(browser.state.clipboardWrites, [challenge.payload_base64, browser.elements.get('signingCommand').value]);
-    assert.strictEqual(browser.elements.get('signingStatus').textContent, 'Signing command copied.');
-    browser.elements.get('signingCancel').click();
-    await pending;
+    const done = async () => { browser.elements.get('signingCancel').click(); await pending; };
+    return { browser, challenge, done };
+  }
 
-    const noClipboard = makeBrowser({ challengeResponse: { status: 200, body: realChallenge('apr-drawer-3').challenge }, clipboard: false });
-    const again = noClipboard.context.collectSignedApproval({ approvalId: 'apr-drawer-3', decision: 'approved', decidedBy: DECIDED_BY });
-    await opened(noClipboard);
-    const field = noClipboard.elements.get('signingPayloadBase64');
-    field.selected = false;
-    noClipboard.elements.get('signingCopyPayloadBase64').click();
-    assert.strictEqual(field.selected, true);
-    assert.deepStrictEqual(noClipboard.state.execCommands, ['copy']);
-    assert.strictEqual(noClipboard.elements.get('signingStatus').textContent, 'payload_base64 copied.');
-    noClipboard.pressKey('Escape');
-    await again;
+  await testAsync('COPY (regression): the complete, exact payload_base64 and signing command reach the clipboard inside the click', async () => {
+    const { browser, challenge, done } = await openForCopy('apr-drawer-copy-1');
+    const status = browser.elements.get('signingStatus');
+
+    browser.elements.get('signingCopyPayloadBase64').click();
+    // Synchronously, inside the click - no promise, no lost user activation.
+    assert.strictEqual(browser.state.clipboardText, challenge.payload_base64, 'the clipboard holds exactly payload_base64');
+    assert.strictEqual(browser.state.clipboardText.length, challenge.payload_base64.length);
+    assert.ok(challenge.payload_base64.length > 24, 'a real payload_base64 is far longer than the 24 characters seen in production');
+    assert.ok(Buffer.from(browser.state.clipboardText, 'base64').equals(Buffer.from(challenge.payload, 'utf8')), 'the copied value decodes to the exact payload bytes');
+    assert.strictEqual(status.textContent, `payload_base64 copied (${challenge.payload_base64.length} characters).`);
+    assert.deepStrictEqual(browser.state.clipboardWrites, [], 'the async API is not needed when the copy event writes the value');
+    assert.strictEqual(browser.copyListeners(), 0, 'the one-shot copy listener is removed');
+
+    browser.elements.get('signingCopyCommand').click();
+    const command = challenge.signing_instructions.find((line) => /node -e ".*'base64'/.test(line)).trim();
+    assert.strictEqual(browser.state.clipboardText, command, 'the clipboard holds exactly the signing command');
+    assert.ok(browser.state.clipboardText.endsWith(` ${challenge.payload_base64}`));
+    assert.strictEqual(status.textContent, `Signing command copied (${command.length} characters).`);
+    assert.strictEqual(browser.copyListeners(), 0);
+    await done();
+  });
+
+  await testAsync('COPY without a copy event: navigator.clipboard.writeText is called in the same click with the exact value', async () => {
+    const { browser, challenge, done } = await openForCopy('apr-drawer-copy-2', { copyEvent: false });
+    browser.elements.get('signingCopyPayloadBase64').click();
+    assert.deepStrictEqual(browser.state.clipboardWrites, [challenge.payload_base64], 'called synchronously during the click, not after a rejection');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(browser.state.clipboardText, challenge.payload_base64);
+    assert.strictEqual(browser.elements.get('signingStatus').textContent, `payload_base64 copied (${challenge.payload_base64.length} characters).`);
+    await done();
+  });
+
+  await testAsync('COPY with no clipboard access: nothing is claimed as copied - the whole value is selected for Ctrl+C', async () => {
+    for (const clipboard of ['reject', 'absent']) {
+      const { browser, challenge, done } = await openForCopy(`apr-drawer-copy-${clipboard}`, { copyEvent: false, clipboard });
+      const field = browser.elements.get('signingPayloadBase64');
+      field.selection = null;
+      browser.elements.get('signingCopyPayloadBase64').click();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(browser.state.clipboardText, null, `${clipboard}: nothing reached the clipboard`);
+      assert.deepStrictEqual(field.selection, [0, challenge.payload_base64.length], `${clipboard}: the complete value is selected`);
+      assert.strictEqual(browser.state.focused, 'signingPayloadBase64');
+      assert.strictEqual(
+        browser.elements.get('signingStatus').textContent,
+        'payload_base64 could not be copied automatically - it is selected, press Ctrl+C to copy it.',
+        clipboard
+      );
+      assert.ok(!/copied \(/.test(browser.elements.get('signingStatus').textContent), `${clipboard}: never reported as copied`);
+      await done();
+    }
+  });
+
+  test('COPY: the copy code runs inside the click - never from a promise rejection handler', () => {
+    const block = extractSigningBlock();
+    const start = block.indexOf('function copySigningField');
+    const body = block.slice(start, block.indexOf('\n  }\n', start));
+    assert.ok(/addEventListener\('copy'/.test(body) && /setData\('text\/plain', text\)/.test(body), 'the copy event writes the field value itself');
+    assert.ok(!/\.then\([^)]*execCommand/.test(body.replace(/\s+/g, ' ')), 'execCommand is never deferred into a promise callback');
+    assert.ok(body.indexOf("execCommand('copy')") < body.indexOf('writeText'), 'the in-gesture copy is attempted first');
   });
 
   await testAsync('CANCEL: an empty signature is not submitted; Cancel, the close button and Escape return the unchanged cancellation', async () => {
