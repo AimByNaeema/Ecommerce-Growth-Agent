@@ -308,8 +308,22 @@ function decideResearchContinuity({ objective, routingResult = null, researchCon
   };
 }
 
+// In a continuation, which routed specialists still need a step of their own. Routing matched each
+// clause to a specialist by its words; but a clause that READS, ranks, scopes or refers to the
+// research ("Review the research you already have", "Rank the top opportunities") is answered by
+// the research basis and the ranking built on it - running Research's trend capability or a fresh
+// Product catalogue search for it would ask for data the objective never wanted. Only a clause
+// whose speech act is PRODUCE (objectiveInterpretation.js: a draft or plan, e.g. "write a campaign
+// plan for the top opportunity") asks that specialist for new output.
+function routedTargetNeedsOwnStep(interpretation, targetId) {
+  return asArray(interpretation).some(
+    (entry) => isPlainObject(entry) && entry.target === targetId && entry.disposition === 'task' && entry.act === 'produce'
+  );
+}
+
 module.exports = {
   RESEARCH_CONTEXT_VERSION,
+  routedTargetNeedsOwnStep,
   DEFAULT_MAX_AGE_HOURS,
   STORE_RESEARCH_BASIS,
   getResearchMaxAgeHours,

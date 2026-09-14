@@ -127,7 +127,7 @@ const {
 const { getRelevantMemoryContext, persistVerifiedFinding } = require('./memoryContextRetrieval');
 // RESEARCH CONTINUITY: whether an objective continues completed research (researchContext.js),
 // the read-only research basis it stands on, and the ranked answer built from that basis.
-const { decideResearchContinuity } = require('./researchContext');
+const { decideResearchContinuity, routedTargetNeedsOwnStep } = require('./researchContext');
 const { STORE_RESEARCH_BASIS, prioritizeStoreOpportunities } = require('./storeOpportunityPrioritization');
 // One honest, compact sentence per finished execution state (agent/core/resultSummary.js) -
 // reused unchanged as the memory record's own `summary` (memoryRules.js's "compact"
@@ -3414,14 +3414,20 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   }
 
   for (let i = 0; i < routingResult.targets.length; i += 1) {
-    // A routed specialist whose subject the continued research basis already answers adds no
-    // second step - that is the research the objective refers to.
+    // In a continuation, a routed target adds a step only when it is asked to PRODUCE something the
+    // research basis cannot answer (researchContext.js's routedTargetNeedsOwnStep). A specialist the
+    // basis already covers, or one routed from a clause that reads, ranks or refers to the research,
+    // adds none - otherwise "Review the research you already have" would ask Research for trends
+    // and "Rank the top opportunities" would start a fresh Product catalogue search.
     const routedTarget = routingResult.targets[i];
-    if (routedTarget.type === 'specialist' && continuationCovered.has(routedTarget.id)) {
+    const basisCovers = continuationCovered.has(routedTarget.id);
+    if (continuity.applies && (basisCovers || !routedTargetNeedsOwnStep(routingResult.interpretation, routedTarget.id))) {
       appendAuditEvent(runAuditTracker, {
         type: 'agent',
         specialistId: routedTarget.id,
-        summary: `'${routedTarget.id}' is answered by the research basis already in this plan, so no second step was added.`,
+        summary: basisCovers
+          ? `'${routedTarget.id}' is answered by the research basis already in this plan, so no second step was added.`
+          : `'${routedTarget.id}' was routed from a clause that reads, ranks or refers to the research, not one asking it to produce new output; the research basis and its ranking answer it, so no '${routedTarget.id}' step was added.`,
       });
       continue;
     }

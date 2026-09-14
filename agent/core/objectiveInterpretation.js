@@ -426,12 +426,15 @@ function endsInPrepositionalPhrase(clauseText) {
 // matter:
 //   1. the pronoun "you" followed - past only auxiliaries or adverbs - by the PAST form of a READ
 //      or PRODUCE verb ("you just analysed", "you have checked", "what you found");
-//   2. an anterior modifier (previous, earlier, prior, ...) followed by a noun naming the OUTPUT
-//      of one of those operations ("the previous analysis", "your earlier audit", "the prior
-//      results").
-// Both word sets below are closed classes: past-tense morphology of verbs already in the verb
-// classes above, and temporal modifiers. "The last 30 days" or "my latest orders" refer to store
-// data, not to earlier work, and do not match.
+//   2. a noun naming an operation's OUTPUT attributed to "you" by a relative clause of
+//      possession ("the Shopify research you already have", "the results you have on file");
+//   3. an anterior or existence modifier (previous, earlier, prior, existing, ...) followed by a
+//      noun naming such an output ("the previous analysis", "your existing research").
+// A question ("what listings do you have?") is not a reference: "you" after an auxiliary is
+// inverted question word order. An owner's possessive ("my existing listings") names the owner's
+// own store data. Every word set below is a closed class: past-tense morphology of verbs already in
+// the verb classes above, possession verbs, and temporal modifiers. "The last 30 days" or "my
+// latest orders" refer to store data, not to earlier work, and do not match.
 
 // Irregular past forms of verbs already in READ_VERBS/PRODUCE_VERBS - morphology only.
 const IRREGULAR_PAST_FORMS = {
@@ -439,9 +442,11 @@ const IRREGULAR_PAST_FORMS = {
   saw: 'see', seen: 'see', wrote: 'write', written: 'write', built: 'build', told: 'tell', came: 'come',
   went: 'go', gone: 'go', broke: 'break', broken: 'break',
 };
-const ANTERIOR_MODIFIERS = new Set(['previous', 'earlier', 'prior', 'preceding', 'last', 'above', 'completed']);
+const ANTERIOR_MODIFIERS = new Set(['previous', 'earlier', 'prior', 'preceding', 'last', 'above', 'completed', 'existing']);
 // Nouns that name an operation's output without being a verb themselves.
-const OPERATION_OUTPUT_NOUNS = new Set(['result', 'outcome', 'output']);
+const OPERATION_OUTPUT_NOUNS = new Set(['result', 'outcome', 'output', 'finding']);
+const POSSESSION_VERBS = new Set(['have', 'has', 'had', 've']);
+const OWNER_POSSESSIVES = new Set(['my', 'our']);
 const MAX_WORDS_BETWEEN = 2;
 
 function isOperationBase(word) {
@@ -465,7 +470,6 @@ function isOperationOutputNoun(word) {
   }
   const singular = singularForm(word);
   if (OPERATION_OUTPUT_NOUNS.has(singular) || isOperationBase(singular)) return true;
-  if (singular.endsWith('ing')) return lemmaCandidates(singular).some(isOperationBase);
   if (singular.length > 7 && singular.endsWith('ation')) return isOperationBase(singular.slice(0, -5));
   return false;
 }
@@ -479,13 +483,21 @@ function referencesPriorWork(text) {
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
     const lookahead = words.slice(index + 1, index + 2 + MAX_WORDS_BETWEEN);
-    if (word === 'you') {
+    const before = words.slice(Math.max(0, index - 1 - MAX_WORDS_BETWEEN), index);
+    if (word === 'you' && !(index > 0 && AUXILIARIES.has(words[index - 1]))) {
+      const outputNamedBefore = before.some(isOperationOutputNoun);
       for (const next of lookahead) {
-        if (isPastOperation(next)) return true;
+        if (isPastOperation(next) || (outputNamedBefore && POSSESSION_VERBS.has(next))) return true;
         if (!isBridgeWord(next)) break;
       }
     }
-    if (ANTERIOR_MODIFIERS.has(word) && lookahead.some(isOperationOutputNoun)) return true;
+    if (
+      ANTERIOR_MODIFIERS.has(word) &&
+      !words.slice(Math.max(0, index - 2), index).some((previous) => OWNER_POSSESSIVES.has(previous)) &&
+      lookahead.some(isOperationOutputNoun)
+    ) {
+      return true;
+    }
   }
   return false;
 }

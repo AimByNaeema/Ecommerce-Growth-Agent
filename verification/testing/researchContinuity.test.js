@@ -133,6 +133,12 @@ const ANALYSIS_REQUEST =
 const FOLLOW_UP_REQUEST =
   'Using the real Shopify data you just analysed, identify exactly the 10 highest-priority sales/growth opportunities. Rank them from #1 (highest priority) to #10. For each opportunity give: the specific issue/opportunity, the real Shopify evidence behind it, why it matters, estimated impact if the data supports it, and the recommended first action. Separate quick wins from higher-effort opportunities. Do not make any changes.';
 
+// The later Dashboard request that went PARTIAL in production: it refers to existing research by
+// possession ("you already have"), and its clauses routed to Research (trends) and Product
+// (catalogue expansion) although neither was asked to produce anything.
+const EXISTING_RESEARCH_REQUEST =
+  'Review the most recent Shopify research you already have for this store. Without doing another full store analysis unless necessary, identify the highest-priority actions that could realistically increase sales. Rank the top opportunities by priority using only real Shopify evidence. For each one, give the evidence, expected business impact only where supported by data, and the first recommended action. Do not make any changes.';
+
 let passed = 0;
 let failed = 0;
 function test(name, fn) {
@@ -301,6 +307,39 @@ async function main() {
       assert.strictEqual(continued.produced_at, original.produced_at);
     });
 
+    // ---- K: "the research you already have" - reuse it, no trends, no fresh Product search ----
+    await testAsync('K. the sales-priority request reuses existing research: no trends step, no fresh Product read, not PARTIAL', async () => {
+      const writesBefore = WRITE_CALLS.length;
+      const fetchesBefore = FETCH_CALLS.length;
+      const turn = await askInNewSession(port, EXISTING_RESEARCH_REQUEST);
+      assert.strictEqual(turn.clarification, null);
+      assert.strictEqual(turn.owner_view.status, 'success', `owner status was ${turn.owner_view.status}`);
+      assert.strictEqual(turn.owner_view.research_continuity.mode, 'reused');
+      assert.deepStrictEqual(turn.reads, [], `the store was read again: ${turn.reads.join(', ')}`);
+      const record = runHistoryStore.getRunRecordById(turn.run_id);
+      const plan = record.result.routing.plan;
+      assert.deepStrictEqual(plan.map((step) => step.inputs && step.inputs.capability_id), ['product_discovery', 'seo_quality_check', 'sales']);
+      assert.ok(plan.every((step) => step.completion_state === 'complete' && step.reused_research));
+      assert.ok(!plan.some((step) => step.inputs && ['trend_research', 'catalogue_expansion_opportunities'].includes(step.inputs.capability_id)));
+      assert.ok(record.result.audit_trail.some((event) => /reads, ranks or refers to the research/.test(event.summary || '')));
+      assert.ok(record.result.store_opportunity_priorities.opportunities.length > 0);
+      assert.ok(turn.owner_view.recommendations[0].startsWith('#1 ['));
+      assert.deepStrictEqual(record.result.pending_approvals, []);
+      assert.strictEqual(WRITE_CALLS.length, writesBefore);
+      assert.strictEqual(FETCH_CALLS.length, fetchesBefore);
+    });
+
+    await testAsync('K. a continuation that asks for a new draft still gets that specialist, on top of the reused research', async () => {
+      const turn = await askInNewSession(port, 'Based on your existing research, write a marketing campaign plan for the top opportunity. Do not make any changes.');
+      const record = runHistoryStore.getRunRecordById(turn.run_id);
+      const plan = record.result.routing.plan;
+      assert.strictEqual(record.result.research_continuity.mode, 'reused');
+      assert.ok(plan.some((step) => step.selected_specialist.id === 'marketing' && !step.reused_research), 'the requested plan must get its own Marketing step');
+      assert.ok(!plan.some((step) => step.selected_specialist.id === 'research'), 'the reference to the research must not start Research');
+      assert.deepStrictEqual(turn.reads, []);
+      assert.strictEqual(WRITE_CALLS.length, 0);
+    });
+
     // ---- H: explicit numbered references keep working --------------------------------------
     test('H. "#3" and "deep research #1" still resolve against the session', () => {
       assert.deepStrictEqual(commandCenterSession.extractReferences('deep research #1'), [1]);
@@ -452,6 +491,9 @@ async function main() {
         'From your earlier audit, rank the issues.',
         'Using the results you gave me, pick the top 3.',
         'Given the prior results, which products need attention?',
+        EXISTING_RESEARCH_REQUEST,
+        'Use the results you have on file to rank my opportunities.',
+        'Based on your existing research, which listings need work first?',
       ]) {
         assert.strictEqual(referencesPriorWork(text), true, text);
       }
@@ -461,6 +503,10 @@ async function main() {
         'Analyse my latest orders.',
         'Can you check my SEO?',
         'I analysed my store yesterday, now find products to add.',
+        'What listings do you have that need better titles?',
+        'Improve my existing listings.',
+        'Rewrite the last listing description.',
+        'Give me the analysis you think is most useful for my sales.',
       ]) {
         assert.strictEqual(referencesPriorWork(text), false, text);
       }
