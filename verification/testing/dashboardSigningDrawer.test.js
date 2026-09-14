@@ -59,11 +59,12 @@ const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'i
 const START_MARKER = '// SIGNED HUMAN APPROVAL';
 const END_MARKER = '  function attachApprovalPanel';
 
-function extractSigningBlock() {
-  const start = DASHBOARD_SOURCE.indexOf(START_MARKER);
-  const end = DASHBOARD_SOURCE.indexOf(END_MARKER, start);
-  assert.ok(start !== -1 && end !== -1 && end > start, 'the signing block is present in public/dashboard.js');
-  return DASHBOARD_SOURCE.slice(start, end);
+// `source`: the dashboard.js text to run - the file on disk, or the bytes the real app serves.
+function extractSigningBlock(source = DASHBOARD_SOURCE) {
+  const start = source.indexOf(START_MARKER);
+  const end = source.indexOf(END_MARKER, start);
+  assert.ok(start !== -1 && end !== -1 && end > start, 'the signing block is present in dashboard.js');
+  return source.slice(start, end);
 }
 
 function drawerMarkup() {
@@ -76,10 +77,23 @@ function drawerMarkup() {
 // A minimal browser boundary: only what the signing block touches.
 // `copyEvent`: whether execCommand('copy') raises a copy event (real browsers do, inside a click).
 // `clipboard`: 'ok' | 'reject' | 'absent' - the async clipboard API's behaviour.
-function makeBrowser({ challengeResponse, clipboard = 'ok', copyEvent = true } = {}) {
+// `copyEventWrites`: whether a raised copy event actually reaches the system clipboard (a browser can
+// raise it and still leave the clipboard untouched). `initialClipboard`: what the clipboard held before.
+// `source`: which dashboard.js to run. `assetVersions`: the ETag the server reports for dashboard.js on
+// each successive HEAD request (the first is the version the page loaded); null = unknown.
+function makeBrowser({
+  challengeResponse,
+  clipboard = 'ok',
+  copyEvent = true,
+  copyEventWrites = true,
+  initialClipboard = null,
+  source = DASHBOARD_SOURCE,
+  assetVersions = ['W/"dashboard-v1"'],
+} = {}) {
   const ids = [...drawerMarkup().matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
   const elements = new Map();
-  const state = { focused: null, clipboardText: null, clipboardWrites: [], execCommands: [], apiCalls: [] };
+  const state = { focused: null, clipboardText: initialClipboard, clipboardWrites: [], execCommands: [], apiCalls: [], assetRequests: [] };
+  const versions = assetVersions.slice();
   const makeElement = (id) => {
     const listeners = {};
     const element = {
@@ -94,6 +108,7 @@ function makeBrowser({ challengeResponse, clipboard = 'ok', copyEvent = true } =
       focus: () => { state.focused = id; },
       select: () => { element.selected = true; element.selection = [0, element.value.length]; },
       setSelectionRange: (start, end) => { element.selection = [start, end]; },
+      dispatch: (type, event) => { (listeners[type] || []).slice().forEach((handler) => handler(event)); },
       click: () => { (listeners.click || []).slice().forEach((handler) => handler({})); },
     };
     return element;
@@ -112,7 +127,7 @@ function makeBrowser({ challengeResponse, clipboard = 'ok', copyEvent = true } =
         const data = {};
         const event = { clipboardData: { setData: (type, value) => { data[type] = value; } }, preventDefault: () => { event.defaultPrevented = true; } };
         (documentListeners.copy || []).slice().forEach((handler) => handler(event));
-        if (event.defaultPrevented && Object.prototype.hasOwnProperty.call(data, 'text/plain')) state.clipboardText = data['text/plain'];
+        if (copyEventWrites && event.defaultPrevented && Object.prototype.hasOwnProperty.call(data, 'text/plain')) state.clipboardText = data['text/plain'];
         return true;
       },
     },
@@ -134,10 +149,17 @@ function makeBrowser({ challengeResponse, clipboard = 'ok', copyEvent = true } =
       const { status, body } = challengeResponse;
       return { ok: status >= 200 && status < 300, status, json: async () => JSON.parse(JSON.stringify(body)) };
     },
+    // Plain fetch is used only for the public dashboard.js version check.
+    fetch: async (url, options = {}) => {
+      state.assetRequests.push({ url, method: options.method || 'GET', headers: options.headers || null });
+      const version = versions.length > 1 ? versions.shift() : versions[0];
+      if (version === 'unreachable') throw new Error('network error');
+      return { ok: true, status: 200, headers: { get: (name) => (name.toLowerCase() === 'etag' ? version : null) } };
+    },
     Promise,
   };
   vm.createContext(context);
-  vm.runInContext(`${extractSigningBlock()}\nthis.collectSignedApproval = collectSignedApproval;`, context);
+  vm.runInContext(`${extractSigningBlock(source)}\nthis.collectSignedApproval = collectSignedApproval;`, context);
   const pressKey = (key) => (documentListeners.keydown || []).slice().forEach((handler) => handler({ key }));
   const keydownListeners = () => (documentListeners.keydown || []).length;
   const copyListeners = () => (documentListeners.copy || []).length;
@@ -241,7 +263,7 @@ function realChallenge(id) {
     assert.ok(challenge.payload_base64.length > 24, 'a real payload_base64 is far longer than the 24 characters seen in production');
     assert.ok(Buffer.from(browser.state.clipboardText, 'base64').equals(Buffer.from(challenge.payload, 'utf8')), 'the copied value decodes to the exact payload bytes');
     assert.strictEqual(status.textContent, `payload_base64 copied (${challenge.payload_base64.length} characters).`);
-    assert.deepStrictEqual(browser.state.clipboardWrites, [], 'the async API is not needed when the copy event writes the value');
+    assert.deepStrictEqual(browser.state.clipboardWrites, [challenge.payload_base64], 'the same exact value is also written through the clipboard API in the same click');
     assert.strictEqual(browser.copyListeners(), 0, 'the one-shot copy listener is removed');
 
     browser.elements.get('signingCopyCommand').click();
@@ -283,6 +305,64 @@ function realChallenge(id) {
     }
   });
 
+  // The owner's clipboard kept an earlier 24-character value after clicking Copy.
+  const EARLIER_24_CHARACTERS = '2026-09-14T10:48:03.928Z';
+
+  await testAsync('COPY (regression): a copy event that never reaches the system clipboard is backed by the clipboard API in the same click', async () => {
+    const { browser, challenge, done } = await openForCopy('apr-drawer-copy-event-no-write', { copyEventWrites: false, initialClipboard: EARLIER_24_CHARACTERS });
+    assert.strictEqual(EARLIER_24_CHARACTERS.length, 24);
+    browser.elements.get('signingCopyPayloadBase64').click();
+    assert.deepStrictEqual(browser.state.clipboardWrites, [challenge.payload_base64], 'written through the clipboard API during the click');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.notStrictEqual(browser.state.clipboardText, EARLIER_24_CHARACTERS, 'the earlier 24-character value is replaced');
+    assert.strictEqual(browser.state.clipboardText, challenge.payload_base64, 'the clipboard holds the complete, exact payload_base64');
+    assert.strictEqual(browser.state.clipboardText.length, challenge.payload_base64.length);
+    assert.strictEqual(browser.elements.get('signingStatus').textContent, `payload_base64 copied (${challenge.payload_base64.length} characters).`);
+
+    browser.elements.get('signingCopyCommand').click();
+    await new Promise((resolve) => setImmediate(resolve));
+    const command = challenge.signing_instructions.find((line) => /node -e ".*'base64'/.test(line)).trim();
+    assert.strictEqual(browser.state.clipboardText, command, 'the signing command is copied complete and exact too');
+    await done();
+  });
+
+  await testAsync('COPY: when the clipboard API refuses but the copy event wrote the value, it is still copied - exact', async () => {
+    const { browser, challenge, done } = await openForCopy('apr-drawer-copy-api-refused', { clipboard: 'reject', initialClipboard: EARLIER_24_CHARACTERS });
+    browser.elements.get('signingCopyPayloadBase64').click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(browser.state.clipboardText, challenge.payload_base64);
+    assert.strictEqual(browser.elements.get('signingStatus').textContent, `payload_base64 copied (${challenge.payload_base64.length} characters).`);
+    await done();
+  });
+
+  await testAsync('MANUAL COPY: clicking, double-clicking or focusing a readonly field selects all of it, and Ctrl+C copies the complete value', async () => {
+    const { browser, challenge, done } = await openForCopy('apr-drawer-manual-copy');
+    const command = challenge.signing_instructions.find((line) => /node -e ".*'base64'/.test(line)).trim();
+    for (const [id, value] of [['signingPayloadBase64', challenge.payload_base64], ['signingCommand', command]]) {
+      const field = browser.elements.get(id);
+      for (const type of ['click', 'dblclick', 'focus']) {
+        // A double-click on base64 would select only the run between '+' or '/' characters.
+        field.selection = [10, 34];
+        field.dispatch(type, {});
+        assert.deepStrictEqual(field.selection, [0, value.length], `${id} ${type}: the whole value is selected`);
+      }
+      // A copy from the field itself with only part of it selected still carries the complete value.
+      field.selection = [10, 34];
+      const data = {};
+      const event = { clipboardData: { setData: (type, text) => { data[type] = text; } }, preventDefault: () => { event.defaultPrevented = true; } };
+      field.dispatch('copy', event);
+      assert.strictEqual(event.defaultPrevented, true, `${id}: the partial selection is not what is copied`);
+      assert.strictEqual(data['text/plain'], value, `${id}: the complete, exact value is copied`);
+    }
+    await done();
+    // The field listeners are removed with the drawer.
+    for (const id of ['signingPayloadBase64', 'signingCommand']) {
+      for (const type of ['click', 'dblclick', 'focus', 'copy']) {
+        assert.strictEqual((browser.elements.get(id).listeners[type] || []).length, 0, `${id} ${type} listener removed`);
+      }
+    }
+  });
+
   test('COPY: the copy code runs inside the click - never from a promise rejection handler', () => {
     const block = extractSigningBlock();
     const start = block.indexOf('function copySigningField');
@@ -290,6 +370,109 @@ function realChallenge(id) {
     assert.ok(/addEventListener\('copy'/.test(body) && /setData\('text\/plain', text\)/.test(body), 'the copy event writes the field value itself');
     assert.ok(!/\.then\([^)]*execCommand/.test(body.replace(/\s+/g, ' ')), 'execCommand is never deferred into a promise callback');
     assert.ok(body.indexOf("execCommand('copy')") < body.indexOf('writeText'), 'the in-gesture copy is attempted first');
+  });
+
+  // ---- PRODUCTION-EQUIVALENT -------------------------------------------------------------------------
+  // Production: the owner's Get-Clipboard held 22 characters after Copy. Measured on the production origin
+  // (read-only): the served dashboard.js was byte-identical to its commit, the responses carried no CSP or
+  // Permissions-Policy, and the browser reported clipboard-write as DENIED - navigator.clipboard.writeText
+  // rejects there. These tests run the dashboard exactly as the real app serves it, in that runtime.
+  const http = require('node:http');
+  const { createApp } = require('../../server');
+  const EARLIER_22_CHARACTERS = 'previous clipboard 22c';
+
+  async function withServedDashboard(fn) {
+    const savedKey = process.env.AGENT_API_KEY;
+    process.env.AGENT_API_KEY = 'test-agent-api-key-do-not-use-in-production';
+    const server = createApp().listen(0);
+    await new Promise((resolve) => server.once('listening', resolve));
+    const { port } = server.address();
+    const fetchAsset = (assetPath, method = 'GET') =>
+      new Promise((resolve, reject) => {
+        const req = http.request({ hostname: '127.0.0.1', port, path: assetPath, method }, (res) => {
+          let raw = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk) => { raw += chunk; });
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, raw }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    try {
+      await fn(fetchAsset);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      if (savedKey === undefined) delete process.env.AGENT_API_KEY;
+      else process.env.AGENT_API_KEY = savedKey;
+    }
+  }
+
+  await testAsync('PRODUCTION-EQUIVALENT: the real app serves the dashboard byte-for-byte, publicly, with an ETag and no header restricting clipboard writes', async () => {
+    await withServedDashboard(async (fetchAsset) => {
+      const js = await fetchAsset('/dashboard.js');
+      const html = await fetchAsset('/');
+      assert.strictEqual(js.status, 200);
+      assert.strictEqual(html.status, 200);
+      assert.strictEqual(js.raw, DASHBOARD_SOURCE, 'the served dashboard.js is exactly the shipped file');
+      assert.strictEqual(html.raw, INDEX_HTML, 'the served index.html is exactly the shipped file');
+      for (const response of [js, html]) {
+        assert.strictEqual(response.headers['content-security-policy'], undefined, 'no CSP is sent');
+        assert.ok(!/clipboard/i.test(response.headers['permissions-policy'] || ''), 'no Permissions-Policy restricts the clipboard');
+      }
+      const head = await fetchAsset('/dashboard.js', 'HEAD');
+      assert.strictEqual(head.status, 200, 'the version check needs no API key');
+      assert.ok(head.headers.etag, 'the served asset carries an ETag to identify its version');
+    });
+  });
+
+  await testAsync('PRODUCTION-EQUIVALENT: with clipboard-write denied, the SERVED copy code replaces the previous 22 characters with the complete, exact payload_base64 and command', async () => {
+    await withServedDashboard(async (fetchAsset) => {
+      const served = (await fetchAsset('/dashboard.js')).raw;
+      const etag = (await fetchAsset('/dashboard.js', 'HEAD')).headers.etag;
+      assert.strictEqual(EARLIER_22_CHARACTERS.length, 22);
+      const { browser, challenge, done } = await openForCopy('apr-drawer-production-runtime', {
+        source: served,
+        clipboard: 'reject',
+        initialClipboard: EARLIER_22_CHARACTERS,
+        assetVersions: [etag],
+      });
+      browser.elements.get('signingCopyPayloadBase64').click();
+      assert.strictEqual(browser.state.clipboardText, challenge.payload_base64, 'written inside the click, although writeText is denied');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(browser.state.clipboardText, challenge.payload_base64, 'the complete, exact payload_base64 stays on the clipboard');
+      assert.strictEqual(browser.state.clipboardText.length, challenge.payload_base64.length);
+      assert.ok(Buffer.from(browser.state.clipboardText, 'base64').equals(Buffer.from(challenge.payload, 'utf8')), 'it decodes to the exact signing payload');
+      assert.strictEqual(browser.elements.get('signingStatus').textContent, `payload_base64 copied (${challenge.payload_base64.length} characters).`);
+
+      browser.elements.get('signingCopyCommand').click();
+      await new Promise((resolve) => setImmediate(resolve));
+      const command = challenge.signing_instructions.find((line) => /node -e ".*'base64'/.test(line)).trim();
+      assert.strictEqual(browser.state.clipboardText, command, 'the signing command is copied complete and exact');
+      assert.strictEqual(browser.elements.get('signingVersionNotice').hidden, true, 'the served version matches - no warning');
+      await done();
+    });
+  });
+
+  await testAsync('STALE TAB: a page still running an older dashboard.js than the server serves is told to reload before copying or signing - never a false alarm', async () => {
+    const settle = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+    const stale = await openForCopy('apr-drawer-stale', { assetVersions: ['W/"loaded-earlier"', 'W/"served-now"'] });
+    await settle();
+    const notice = stale.browser.elements.get('signingVersionNotice');
+    assert.strictEqual(notice.hidden, false, 'the warning is shown');
+    assert.strictEqual(notice.textContent, 'This page is running an older dashboard than the server now serves. Reload the page (Ctrl+F5) before copying or signing.');
+    assert.deepStrictEqual(
+      stale.browser.state.assetRequests.map((entry) => [entry.url, entry.method, entry.headers]),
+      [['dashboard.js', 'HEAD', null], ['dashboard.js', 'HEAD', null]],
+      'a public HEAD request for the asset, carrying no API key'
+    );
+    await stale.done();
+
+    for (const assetVersions of [['W/"same"'], ['unreachable'], [null]]) {
+      const current = await openForCopy(`apr-drawer-version-${String(assetVersions[0])}`, { assetVersions });
+      await settle();
+      assert.strictEqual(current.browser.elements.get('signingVersionNotice').hidden, true, `${assetVersions[0]}: no warning`);
+      await current.done();
+    }
   });
 
   await testAsync('CANCEL: an empty signature is not submitted; Cancel, the close button and Escape return the unchanged cancellation', async () => {
@@ -319,5 +502,6 @@ function realChallenge(id) {
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
-  if (failed > 0) process.exit(1);
+  // Explicit: the real app started above may leave handles open that would otherwise keep the process alive.
+  process.exit(failed > 0 ? 1 : 0);
 })();

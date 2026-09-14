@@ -487,6 +487,7 @@
     </div>
     <div class="workflow-drawer-body">
       <p class="workflow-drawer-meaning">On the machine holding your approval private key, run the signing command below (it signs the exact payload bytes), then paste the base64 signature it prints. Your private key is never entered on this page.</p>
+      <p class="signing-status signing-version-notice" id="signingVersionNotice" role="alert" hidden></p>
       <div class="workflow-drawer-row">
         <label class="workflow-drawer-label" for="signingPayloadBase64">payload_base64</label>
         <textarea class="signing-field" id="signingPayloadBase64" readonly rows="4" spellcheck="false"></textarea>

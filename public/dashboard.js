@@ -585,6 +585,39 @@
   // the signing command. Every value is the server's own, shown as-is (textarea value /
   // textContent - never re-encoded or rebuilt), so the bytes signed are the bytes issued.
 
+  // WHICH DASHBOARD IS RUNNING. This page is long-lived: a tab left open across a deploy keeps
+  // running the dashboard.js it loaded, so a fix to this very drawer does not reach it until the page
+  // is reloaded - and an earlier copy implementation could not reach the clipboard in a browser where
+  // clipboard-write is denied (measured on the production origin). The server identifies the asset it
+  // serves by its ETag (or Last-Modified). The version this page loaded is read once at start-up and
+  // compared again each time the signing drawer opens; a difference is shown before anything is copied
+  // or signed. dashboard.js is a public static asset, so this request carries no API key. An unknown
+  // version on either side never raises a warning.
+  function dashboardAssetVersion() {
+    if (typeof fetch !== 'function') return Promise.resolve(null);
+    return fetch('dashboard.js', { method: 'HEAD', cache: 'no-store' })
+      .then(function (res) {
+        return res && res.ok && res.headers ? res.headers.get('etag') || res.headers.get('last-modified') : null;
+      })
+      .catch(function () { return null; });
+  }
+  const loadedDashboardVersion = dashboardAssetVersion();
+
+  function warnIfDashboardIsStale(notice) {
+    if (!notice) return Promise.resolve(false);
+    notice.hidden = true;
+    notice.textContent = '';
+    return Promise.all([loadedDashboardVersion, dashboardAssetVersion()]).then(function (versions) {
+      const stale = Boolean(versions[0] && versions[1] && versions[0] !== versions[1]);
+      if (stale) {
+        notice.textContent =
+          'This page is running an older dashboard than the server now serves. Reload the page (Ctrl+F5) before copying or signing.';
+        notice.hidden = false;
+      }
+      return stale;
+    });
+  }
+
   // Copies one readonly field's COMPLETE value, exactly.
   //
   // WHY IT IS SHAPED LIKE THIS. The first version called navigator.clipboard.writeText and fell back
@@ -595,7 +628,10 @@
   //   1. the whole value is selected and execCommand('copy') is run; a one-shot 'copy' listener
   //      writes the field's own value as text/plain - not the rendered selection - so nothing is
   //      wrapped, trimmed or re-encoded;
-  //   2. a browser that raises no copy event gets navigator.clipboard.writeText in the same tick;
+  //   2. the SAME value is also written with navigator.clipboard.writeText, in the same click. A
+  //      browser can raise the copy event yet leave the system clipboard untouched (the owner's
+  //      clipboard still held an earlier 24-character value), and another can refuse the async API;
+  //      both writes carry the identical string, so whichever lands last leaves the complete value;
   //   3. with neither, the whole value stays selected for Ctrl+C, and the status says so.
   // The status gives the copied length, so it can be checked against the clipboard.
   function copySigningField(field, statusEl, label) {
@@ -628,20 +664,35 @@
     } finally {
       document.removeEventListener('copy', onCopy);
     }
-    if (written) {
-      statusEl.textContent = copiedMessage;
+    const clipboardApi =
+      typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function' ? navigator.clipboard : null;
+    if (!clipboardApi) {
+      if (written) {
+        statusEl.textContent = copiedMessage;
+      } else {
+        selectAll();
+        statusEl.textContent = manualMessage;
+      }
       return;
     }
-
-    if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      navigator.clipboard.writeText(text).then(
-        function () { statusEl.textContent = copiedMessage; },
-        function () { selectAll(); statusEl.textContent = manualMessage; }
-      );
-      return;
+    statusEl.textContent = written ? copiedMessage : 'Copying ' + label + '…';
+    let pending;
+    try {
+      pending = clipboardApi.writeText(text);
+    } catch (err) {
+      pending = Promise.reject(err);
     }
-    selectAll();
-    statusEl.textContent = manualMessage;
+    Promise.resolve(pending).then(
+      function () { statusEl.textContent = copiedMessage; },
+      function () {
+        if (written) {
+          statusEl.textContent = copiedMessage;
+        } else {
+          selectAll();
+          statusEl.textContent = manualMessage;
+        }
+      }
+    );
   }
 
   // Shows one challenge and resolves with the pasted signature, or null when the person cancels.
@@ -666,6 +717,7 @@
     signatureField.value = '';
     statusEl.textContent = '';
     drawer.hidden = false;
+    warnIfDashboardIsStale(el('signingVersionNotice'));
 
     return new Promise(function (resolve) {
       const cleanups = [];
@@ -694,6 +746,23 @@
       on(document, 'keydown', function (event) { if (event.key === 'Escape') finish(null); });
       on(el('signingCopyPayloadBase64'), 'click', function () { copySigningField(base64Field, statusEl, 'payload_base64'); });
       on(el('signingCopyCommand'), 'click', function () { copySigningField(commandField, statusEl, 'Signing command'); });
+      // A MANUAL COPY IS ALWAYS THE WHOLE VALUE. A double-click on base64 selects only the run between
+      // '+' or '/' characters, so a hand-made copy could put part of payload_base64 on the clipboard.
+      // Clicking, double-clicking or focusing a readonly field selects all of it, and a copy made from
+      // the field itself (Ctrl+C, context menu) carries the field's complete value, exactly.
+      [base64Field, commandField].forEach(function (field) {
+        const selectWhole = function () {
+          if (field.value) field.setSelectionRange(0, field.value.length);
+        };
+        on(field, 'focus', selectWhole);
+        on(field, 'click', selectWhole);
+        on(field, 'dblclick', selectWhole);
+        on(field, 'copy', function (event) {
+          if (!field.value || !event || !event.clipboardData || typeof event.clipboardData.setData !== 'function') return;
+          event.clipboardData.setData('text/plain', field.value);
+          event.preventDefault();
+        });
+      });
       base64Field.focus();
       base64Field.select();
     });
