@@ -35,12 +35,34 @@ const { MUTATION_VERBS } = require('./mutationIntent');
 const { APPLY_CHANGE_VERBS, FUNCTION_WORDS, tokens, lemmaCandidates, singularForm, verbClass } = require('./objectiveInterpretation');
 const { currentStoreReference } = require('./researchContext');
 const seoUpdate = require('../../integrations/shopifyProductSeoUpdate');
+const { TOOL_OPERATIONS, getToolById } = require('../../tools/toolRegistry');
+const { TOOL_CLASSIFICATIONS } = require('./toolPermissions');
+const { requiresApproval } = require('../../approvals/approvalArchitecture');
 
 const APPLICATION_TOOL_ID = seoUpdate.TOOL_ID;
 const APPLICATION_KIND = 'seo_metadata_application';
 
-// Verbs that execute a change. Reused lists only.
-const EXECUTION_VERBS = new Set([...APPLY_CHANGE_VERBS, ...MUTATION_VERBS]);
+// Verbs that execute a change: the apply/change verb classes, plus the name of the tool operation this
+// request invokes ("Execute the existing proposal") - the registry's own 'execute' operation, which
+// shopify_product_seo_update is. Reused lists only.
+const APPLICATION_OPERATION = (getToolById(APPLICATION_TOOL_ID) || {}).operation;
+const EXECUTION_VERBS = new Set([
+  ...APPLY_CHANGE_VERBS,
+  ...MUTATION_VERBS,
+  ...TOOL_OPERATIONS.filter((operation) => operation === APPLICATION_OPERATION),
+]);
+
+// THE OWNER'S APPROVAL AS A CONDITION OF THE EXECUTION. "Require my signed approval before writing",
+// "wait for my approval", "only after I sign" state HOW the execution must happen, not a second job -
+// and it is exactly what the approval gate already enforces for this tool, whose classification always
+// requires a human's signed decision. Recognised from structure: a clause led by a word that states a
+// precondition, naming an approval or signature that belongs to the OWNER (my/our/I/we/me/us). A clause
+// asking the Chief to approve or sign ("Approve it for me") is led by the approval verb itself, not a
+// precondition, and is never absorbed; nor is anyone else's approval.
+const APPLICATION_REQUIRES_SIGNED_APPROVAL = requiresApproval(TOOL_CLASSIFICATIONS[APPLICATION_TOOL_ID]);
+const OWNER_WORDS = new Set(['my', 'our', 'i', 'we', 'me', 'us']);
+const APPROVAL_TERMS = new Set(['approval', 'approve', 'authorization', 'authorisation', 'authorize', 'authorise', 'sign', 'signed', 'signature', 'consent']);
+const PRECONDITION_LEADS = new Set(['require', 'need', 'wait', 'await', 'ask', 'get', 'obtain', 'request', 'seek', 'only', 'before', 'after', 'until', 'once', 'unless', 'without']);
 // The approval system's own record nouns, and the participles a proposed value is named by.
 const PROPOSAL_RECORD_NOUNS = new Set(['proposal', 'approval']);
 const PROPOSAL_PARTICIPLES = new Set(['proposed', 'suggested', 'recommended']);
@@ -108,6 +130,28 @@ function proposalReferenceKind(text) {
   return namesValue ? 'value' : null;
 }
 
+// Whether a clause states the owner's own approval as a precondition of the execution (see
+// APPLICATION_REQUIRES_SIGNED_APPROVAL above).
+function isOwnerApprovalRequirement(clause) {
+  if (!APPLICATION_REQUIRES_SIGNED_APPROVAL) return false;
+  const lead = leadVerb(clause);
+  if (!lead || !lemmaCandidates(lead).some((candidate) => PRECONDITION_LEADS.has(candidate))) return false;
+  const words = lowerWords(clause);
+  // The owner word must GOVERN the approval: a possessive or subject pronoun just before it ("my signed
+  // approval", "until I approve"). One after it ("approval from my accountant") names someone else's.
+  return words.some(
+    (word, index) => isApprovalTerm(word) && words.slice(Math.max(0, index - 2), index).some((near) => OWNER_WORDS.has(near))
+  );
+}
+
+function isApprovalTerm(word) {
+  return lemmaCandidates(word).some((candidate) => APPROVAL_TERMS.has(candidate));
+}
+
+function mentionsApproval(clause) {
+  return lowerWords(clause).some(isApprovalTerm);
+}
+
 function referencesExistingProposal(text) {
   return proposalReferenceKind(text) !== null;
 }
@@ -150,17 +194,30 @@ function decideProposalExecution({ objective, routingResult } = {}) {
     const isExecutionClause = (entry) =>
       executionSentences.has(sentenceOf(entry.clause)) && (isExecutionVerb(leadVerb(entry.clause)) || executionActs.has(entry.act));
     const asksForOtherWork = interpretation.some(
-      (entry) => entry.disposition === 'task' && !isExecutionClause(entry) && !VERIFY_VERBS.has(leadVerb(entry.clause))
+      (entry) =>
+        entry.disposition === 'task' && !isExecutionClause(entry) && !VERIFY_VERBS.has(leadVerb(entry.clause)) && !isOwnerApprovalRequirement(entry.clause)
     );
     if (asksForOtherWork) return { applies: false };
   }
 
   const additional = [];
   const answeredByExecution = [];
+  const approvalRequirements = [];
   for (const entry of interpretation) {
     const inExecutionSentence = executionSentences.has(sentenceOf(entry.clause));
     const lead = leadVerb(entry.clause);
     if (inExecutionSentence && (isExecutionVerb(lead) || executionActs.has(entry.act))) continue;
+    // The owner's signed approval before the write is the execution's own gate, not another request.
+    if (isOwnerApprovalRequirement(entry.clause)) {
+      approvalRequirements.push(entry.clause);
+      continue;
+    }
+    // Any other statement about approval ("... approval from my accountant", "approve it for me") is
+    // something the approval gate does NOT do, so it is reported back - never absorbed as framing.
+    if (entry.act !== 'safety' && mentionsApproval(entry.clause)) {
+      additional.push(entry.clause);
+      continue;
+    }
     if (['constraint', 'framing'].includes(entry.disposition) || entry.act === 'safety' || entry.act === 'empty') continue;
     if (lead && VERIFY_VERBS.has(lemmaCandidates(lead).find((candidate) => VERIFY_VERBS.has(candidate)) || lead)) {
       answeredByExecution.push(entry.clause);
@@ -174,6 +231,7 @@ function decideProposalExecution({ objective, routingResult } = {}) {
     execution_text: [...executionSentences].join(' '),
     additional_requests: additional,
     answered_by_execution: answeredByExecution,
+    approval_requirements: approvalRequirements,
   };
 }
 
@@ -460,6 +518,7 @@ module.exports = {
   APPLICATION_TOOL_ID,
   APPLICATION_KIND,
   referencesExistingProposal,
+  isOwnerApprovalRequirement,
   decideProposalCheck,
   decideProposalExecution,
   resolveProposalExecution,

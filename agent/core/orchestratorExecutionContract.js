@@ -3919,6 +3919,9 @@ async function runProposalExecution({ objective, decision, businessId, researchC
     applied_changes: resolution.applied_changes,
     not_applied: resolution.not_applied,
     answered_by_execution: decision.answered_by_execution,
+    // The owner's own "require my signed approval before writing" - enforced by the approval gate below,
+    // recorded so the reply can say where it is enforced.
+    approval_requirements: decision.approval_requirements || [],
   };
 
   // An exact change already applied and independently verified is never asked for again.

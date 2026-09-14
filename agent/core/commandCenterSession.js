@@ -463,6 +463,9 @@ function describeProposalExecution(execution) {
         'Once you approve it, only these field(s) are written; the product is then re-read from Shopify, and the change is recorded as done only if ' +
         'Shopify shows exactly these values with no other field changed. If the store no longer shows the "before" value, nothing is written.'
     );
+    for (const requirement of asArray(execution.approval_requirements)) {
+      lines.push(`Your condition "${requirement}" is built in: nothing can be written until you sign approval ${execution.approval_id}.`);
+    }
   } else {
     lines.push(`No approval was created for the SEO proposal on "${execution.product_reference || 'this product'}": ${execution.reason || 'it did not pass the checks.'}`);
     lines.push('Nothing was written to your store.');

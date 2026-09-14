@@ -154,6 +154,12 @@ const SEO_PROPOSAL_REQUEST =
 // The exact request the Chief refused, and the same request with the owner's usual follow-on sentences.
 const EXACT_REQUEST =
   'Apply the proposed SEO title and meta description only to the 200 Wild Flowers Clipart product from the pending approval.';
+// The production requests the Chief answered with "also asks to do something else": the owner's own
+// signed-approval condition was read as a separate task (and "Execute" was not read as an execution).
+const SIGNED_APPROVAL_REQUEST =
+  'Execute the existing approved SEO proposal for the 200 Wild Flowers Clipart product. Apply only the stored SEO title and meta description from that proposal. Require my signed approval before writing, then verify the exact values after the Shopify update. Do not change anything else.';
+const REQUIRE_APPROVAL_REQUEST =
+  'Apply the proposed SEO title and meta description only to the 200 Wild Flowers Clipart product from the pending approval. Do not change anything else. Require my approval before making the Shopify change, then verify the exact SEO values after the change.';
 // The read-only verification the owner ran in production, which failed on a compliance step with no content.
 const READ_ONLY_CHECK_REQUEST =
   "Read the current Shopify SEO data for the 200 Wild Flowers Clipart product and compare it with the existing approved SEO proposal. Do not create, approve, or execute any write approval. Do not change anything. Report only whether the current store values still match the proposal's before-values and whether the proposal is eligible for execution.";
@@ -413,6 +419,48 @@ async function main() {
       assert.strictEqual(SEO_WRITES.length, 0);
     });
 
+    test('APPROVAL CONDITION: the owner\'s signed-approval requirement is the execution\'s gate, not another request', () => {
+      for (const objective of [SIGNED_APPROVAL_REQUEST, REQUIRE_APPROVAL_REQUEST]) {
+        const decision = proposalExecution.decideProposalExecution({ objective, routingResult: orchestrator.planRouting(objective) });
+        assert.strictEqual(decision.applies, true, objective);
+        assert.deepStrictEqual(decision.additional_requests, [], objective);
+        assert.strictEqual(decision.approval_requirements.length, 1, JSON.stringify(decision));
+        assert.strictEqual(decision.answered_by_execution.length, 1, JSON.stringify(decision));
+      }
+      // Structure, not words: asking the Chief to approve, someone else's approval, or another job is not absorbed.
+      const notAbsorbed = [
+        'Execute the existing SEO proposal for the 200 Wild Flowers Clipart product. Approve the approval for me.',
+        'Execute the existing SEO proposal for the 200 Wild Flowers Clipart product. Require approval from my accountant before writing.',
+        'Execute the existing SEO proposal for the 200 Wild Flowers Clipart product. Email my customers about the change.',
+      ];
+      for (const objective of notAbsorbed) {
+        const decision = proposalExecution.decideProposalExecution({ objective, routingResult: orchestrator.planRouting(objective) });
+        assert.strictEqual(decision.applies, true, objective);
+        assert.ok(decision.additional_requests.length > 0, `${objective} -> ${JSON.stringify(decision)}`);
+      }
+      assert.strictEqual(proposalExecution.isOwnerApprovalRequirement('Wait for my signature before writing'), true);
+      assert.strictEqual(proposalExecution.isOwnerApprovalRequirement('only after I approve it'), true);
+      assert.strictEqual(proposalExecution.isOwnerApprovalRequirement('Approve it for me'), false);
+    });
+
+    await testAsync('SIGNED-APPROVAL REQUEST (exact production text): existing proposal -> new signed approval, nothing written', async () => {
+      const writesBefore = SEO_WRITES.length;
+      const turn = await askInNewSession(port, SIGNED_APPROVAL_REQUEST);
+      const result = resultOf(turn);
+      assert.strictEqual(result.routing.status, 'planned', result.routing.reason);
+      const run = result.proposal_execution;
+      assert.strictEqual(run.status, 'awaiting_approval');
+      assert.strictEqual(run.source_approval_id, wild.approval_id);
+      assert.deepStrictEqual(run.applied_changes, execution.applied_changes);
+      assert.deepStrictEqual(run.approval_requirements, ['Require my signed approval before writing']);
+      assert.strictEqual(result.pending_approvals.length, 1);
+      assert.strictEqual(result.pending_approvals[0].classification, 'externally_executable');
+      assert.strictEqual(SEO_WRITES.length, writesBefore);
+      const text = lastChiefText(turn);
+      assert.ok(/is built in: nothing can be written until you sign approval/.test(text), text);
+      assert.ok(!/also to do something else/.test(text), text);
+    });
+
     await testAsync('NO WRITE BEFORE APPROVAL: the pending approval cannot be executed by any path', async () => {
       const pending = approvalStore.loadApprovalRecord(writeApproval.id).approval_request;
       const direct = await dispatch.executeApprovedCorrection(pending);
@@ -553,6 +601,25 @@ async function main() {
         seoWriteMode = 'apply';
         storeProducts = storeProducts.map((product) => (product.id === watercolor.shopify_product_id ? clone(INITIAL_PRODUCTS.find((entry) => entry.id === product.id)) : product));
       }
+    });
+
+    await testAsync('END TO END with the owner\'s condition: existing proposal -> signed approval -> Shopify write -> verification', async () => {
+      const writesBefore = SEO_WRITES.length;
+      const turn = await askInNewSession(port, SIGNED_APPROVAL_REQUEST.replace('200 Wild Flowers Clipart', '118 Watercolor Mega Clipart PNG Bundle'));
+      const result = resultOf(turn);
+      assert.strictEqual(result.proposal_execution.status, 'awaiting_approval', result.routing.reason);
+      assert.strictEqual(result.proposal_execution.source_approval_id, watercolor.approval_id);
+      assert.strictEqual(SEO_WRITES.length, writesBefore, 'nothing may be written before the signature');
+      const response = await approveTurn(port, turn);
+      assert.strictEqual(response.status, 200, response.raw.slice(0, 300));
+      assert.strictEqual(SEO_WRITES.length, writesBefore + 1);
+      const [title, description] = watercolor.proposed_changes;
+      assert.deepStrictEqual(SEO_WRITES[SEO_WRITES.length - 1], {
+        productId: watercolor.shopify_product_id, seoTitle: title.after, seoDescription: description.after, other_arguments: [],
+      });
+      assert.strictEqual(response.data.entity_verification.status, 'verified');
+      assert.strictEqual(response.data.owner_view.status, 'success');
+      assert.deepStrictEqual(productById(watercolor.shopify_product_id).seo, { title: title.after, description: description.after });
     });
 
     // ---- REJECTION: no approval, no write -------------------------------------------------------
