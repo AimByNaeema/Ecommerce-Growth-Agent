@@ -129,6 +129,8 @@ const { getRelevantMemoryContext, persistVerifiedFinding } = require('./memoryCo
 // the read-only research basis it stands on, and the ranked answer built from that basis.
 const { decideResearchContinuity, routedTargetNeedsOwnStep } = require('./researchContext');
 const { STORE_RESEARCH_BASIS, prioritizeStoreOpportunities } = require('./storeOpportunityPrioritization');
+// A change PROPOSAL built on that research - before/after values held for human approval.
+const { proposeSeoChanges, PROPOSAL_TOOL_ID, PROPOSAL_SPECIALIST_ID } = require('./seoChangeProposal');
 // One honest, compact sentence per finished execution state (agent/core/resultSummary.js) -
 // reused unchanged as the memory record's own `summary` (memoryRules.js's "compact"
 // quality) rather than inventing a second summarization path.
@@ -2961,6 +2963,7 @@ function buildRoutingResponse({
   usageSummary = null,
   researchContinuity = null,
   storeOpportunityPriorities = null,
+  seoChangeProposal = null,
 }) {
   const needsMoreInfo = routing.status === 'clarification_required';
   const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
@@ -3022,6 +3025,8 @@ function buildRoutingResponse({
     // (agent/core/researchContext.js), and the ranked opportunities built from it.
     ...(researchContinuity ? { research_continuity: researchContinuity } : {}),
     ...(storeOpportunityPriorities ? { store_opportunity_priorities: storeOpportunityPriorities } : {}),
+    // Present only when the continued objective asked for changes to be proposed for approval.
+    ...(seoChangeProposal ? { seo_change_proposal: seoChangeProposal } : {}),
   };
 }
 
@@ -3179,7 +3184,22 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   // data, and every step it adds still goes through buildPlanStep's gates.
   const continuity = decideResearchContinuity({ objective, routingResult, researchContext });
   if (continuity.applies && routingResult.status !== 'planned') {
-    routingResult = { status: 'planned', targets: [], segments: [], interpretation: routingResult.interpretation || [] };
+    // The clarification came only from clauses that refer to the research itself. Every clause the
+    // router DID resolve to a target is kept, in routing order, so the objective's own tasks are
+    // not dropped along with the reference.
+    const resolved = [];
+    for (const entry of routingResult.interpretation || []) {
+      if (!entry || entry.disposition !== 'task' || !entry.target || resolved.some((item) => item.target.id === entry.target)) continue;
+      const target = ROUTING_TARGETS.find((candidate) => candidate.id === entry.target);
+      if (target) resolved.push({ target, segment: entry.clause });
+    }
+    resolved.sort((a, b) => ROUTING_TARGETS.indexOf(a.target) - ROUTING_TARGETS.indexOf(b.target));
+    routingResult = {
+      status: 'planned',
+      targets: resolved.map((item) => item.target),
+      segments: resolved.map((item) => item.segment),
+      interpretation: routingResult.interpretation || [],
+    };
   }
 
   // AI-ASSISTED RE-SEGMENTATION FALLBACK (real-world regression, reported live by the
@@ -3421,13 +3441,19 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
     // and "Rank the top opportunities" would start a fresh Product catalogue search.
     const routedTarget = routingResult.targets[i];
     const basisCovers = continuationCovered.has(routedTarget.id);
-    if (continuity.applies && (basisCovers || !routedTargetNeedsOwnStep(routingResult.interpretation, routedTarget.id))) {
+    // Shared infrastructure (compliance, approvals, memory, ...) is applied BY the Chief to the
+    // continuation itself - "prepare the changes for my approval" is the approval gate below, not a
+    // separate compliance step with no content to check.
+    const sharedInfrastructure = routedTarget.type !== 'specialist';
+    if (continuity.applies && (basisCovers || sharedInfrastructure || !routedTargetNeedsOwnStep(routingResult.interpretation, routedTarget.id))) {
       appendAuditEvent(runAuditTracker, {
         type: 'agent',
-        specialistId: routedTarget.id,
+        ...(sharedInfrastructure ? {} : { specialistId: routedTarget.id }),
         summary: basisCovers
           ? `'${routedTarget.id}' is answered by the research basis already in this plan, so no second step was added.`
-          : `'${routedTarget.id}' was routed from a clause that reads, ranks or refers to the research, not one asking it to produce new output; the research basis and its ranking answer it, so no '${routedTarget.id}' step was added.`,
+          : sharedInfrastructure
+            ? `'${routedTarget.id}' is shared infrastructure the Chief applies to this continuation itself, so no separate step was added.`
+            : `'${routedTarget.id}' was routed from a clause that reads, ranks or refers to the research, not one asking it to produce new output; the research basis and its ranking answer it, so no '${routedTarget.id}' step was added.`,
       });
       continue;
     }
@@ -3540,9 +3566,57 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   // results (agent/core/storeOpportunityPrioritization.js). null for every other run.
   const storeOpportunityPriorities = continuity.applies ? prioritizeStoreOpportunities({ steps: plan }) : null;
 
+  // CHANGE PROPOSAL (agent/core/seoChangeProposal.js). When the continued objective asks for changes
+  // to be PROPOSED rather than made, the before/after values are built from the basis evidence, run
+  // through compliance, and each eligible product gets one approval_required request through the
+  // existing approval workflow - the same tracker, id scheme and audit events every gated step uses,
+  // persisted by the caller exactly like any other pending approval. Nothing here executes, and the
+  // proposal's approval tool is a read: no approval created here can write to the store.
+  let seoChangeProposal = null;
+  if (continuity.applies && continuity.intent === 'change_proposal') {
+    seoChangeProposal = proposeSeoChanges({
+      steps: plan,
+      priorities: storeOpportunityPriorities,
+      objective,
+      businessId,
+      sourceRunId: researchContinuity && researchContinuity.source ? researchContinuity.source.run_id : null,
+    });
+    for (const product of seoChangeProposal.products) {
+      if (!product.approval_eligible) {
+        appendAuditEvent(runAuditTracker, {
+          type: 'approval',
+          toolId: PROPOSAL_TOOL_ID,
+          specialistId: PROPOSAL_SPECIALIST_ID,
+          status: 'not_requested',
+          summary: `No approval was requested for the SEO proposal on '${product.product_reference}': compliance returned ${product.compliance.compliance_status}.`,
+        });
+        continue;
+      }
+      const approvalRequest = createApprovalRequest({
+        id: approvalIdFor(runApprovalTracker),
+        classification: 'approval_required',
+        specialistId: PROPOSAL_SPECIALIST_ID,
+        toolId: PROPOSAL_TOOL_ID,
+        executionRequest: product.execution_request,
+        reason: product.approval_reason,
+      });
+      runApprovalTracker.requests.push(approvalRequest);
+      product.approval_id = approvalRequest.id;
+      appendAuditEvent(runAuditTracker, {
+        type: 'approval',
+        toolId: PROPOSAL_TOOL_ID,
+        specialistId: PROPOSAL_SPECIALIST_ID,
+        classification: 'approval_required',
+        status: 'pending',
+        summary: `Approval request '${approvalRequest.id}' created for proposed SEO changes on '${product.product_reference}'. Nothing was written to the store.`,
+      });
+    }
+  }
+
   return buildRoutingResponse({
     researchContinuity,
     storeOpportunityPriorities,
+    seoChangeProposal,
     objective,
     routing: {
       status: 'planned',

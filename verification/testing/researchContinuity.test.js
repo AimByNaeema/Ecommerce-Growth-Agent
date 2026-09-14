@@ -139,6 +139,11 @@ const FOLLOW_UP_REQUEST =
 const EXISTING_RESEARCH_REQUEST =
   'Review the most recent Shopify research you already have for this store. Without doing another full store analysis unless necessary, identify the highest-priority actions that could realistically increase sales. Rank the top opportunities by priority using only real Shopify evidence. For each one, give the evidence, expected business impact only where supported by data, and the first recommended action. Do not make any changes.';
 
+// The later Dashboard request the Chief answered with "could belong to more than one capability":
+// a follow-up that reviews earlier SEO findings and asks for changes to be PROPOSED for approval.
+const SEO_PROPOSAL_REQUEST =
+  'Review the Shopify SEO issues you found in the latest research. Propose the safest way to fix the highest-priority SEO issues, starting with the 3 most important products. Prepare the proposed changes for my approval, but do not make any changes yet.';
+
 let passed = 0;
 let failed = 0;
 function test(name, fn) {
@@ -338,6 +343,127 @@ async function main() {
       assert.ok(!plan.some((step) => step.selected_specialist.id === 'research'), 'the reference to the research must not start Research');
       assert.deepStrictEqual(turn.reads, []);
       assert.strictEqual(WRITE_CALLS.length, 0);
+    });
+
+    // ---- L: SEO follow-up -> proposed before/after changes -> approval, zero writes -------------
+    await testAsync('L. the SEO follow-up is resolved in context: no clarification, research reused, changes proposed for approval', async () => {
+      const writesBefore = WRITE_CALLS.length;
+      const fetchesBefore = FETCH_CALLS.length;
+      const turn = await askInNewSession(port, SEO_PROPOSAL_REQUEST);
+      assert.strictEqual(turn.clarification, null);
+      assert.ok(!/more than one capability/.test(turn.raw), 'the follow-up must not be sent back as ambiguous');
+      assert.deepStrictEqual(turn.reads, [], `the store was read again: ${turn.reads.join(', ')}`);
+      const record = runHistoryStore.getRunRecordById(turn.run_id);
+      const result = record.result;
+      assert.strictEqual(result.research_continuity.mode, 'reused');
+      assert.deepStrictEqual(result.routing.plan.map((step) => step.inputs && step.inputs.capability_id), ['product_discovery', 'seo_quality_check', 'sales']);
+      assert.ok(!result.routing.plan.some((step) => step.selected_specialist.id === 'research'));
+
+      const proposal = result.seo_change_proposal;
+      assert.strictEqual(proposal.requested_products, 3);
+      assert.ok(proposal.products.length >= 1 && proposal.products.length <= 3);
+      assert.ok(proposal.seo_issues.length > 0 && proposal.seo_issues[0].issue.startsWith('[Metadata]'));
+      // Published products come first; every change is a real before/after from the product's own text.
+      const halloween = proposal.products.find((product) => product.product_reference === 'Halloween SVG Cut Files');
+      assert.ok(halloween, 'the published product with missing SEO fields must be proposed');
+      assert.strictEqual(proposal.products[0].status, 'ACTIVE');
+      const titleChange = halloween.proposed_changes.find((change) => change.shopify_field === 'seo.title');
+      assert.deepStrictEqual([titleChange.before, titleChange.after, titleChange.derived_from], ['', 'Halloween SVG Cut Files', 'product title']);
+      // A 21-character description cannot yield a meta description without inventing text.
+      assert.ok(!halloween.proposed_changes.some((change) => change.shopify_field === 'seo.description'));
+      assert.ok(halloween.not_proposed.some((entry) => /meta_description/.test(entry.issue) && /without writing new content/.test(entry.reason)));
+      assert.ok(halloween.not_proposed.some((entry) => /product type/i.test(entry.issue)));
+      assert.ok(proposal.limitations.some((line) => /no tool that writes Shopify SEO fields/.test(line)));
+
+      // Approval required: one pending approval per eligible proposal, persisted, never a store-write tool.
+      const pending = result.pending_approvals;
+      assert.strictEqual(pending.length, proposal.products.filter((product) => product.approval_eligible).length);
+      for (const request of pending) {
+        assert.strictEqual(request.status, 'pending');
+        assert.strictEqual(request.classification, 'approval_required');
+        assert.strictEqual(request.tool_id, 'seo_quality_check');
+        assert.strictEqual(require('../../agent/core/mutationIntent').isCorrectionTool(request.tool_id), false);
+        assert.ok(request.execution_request.compliance && request.execution_request.compliance.compliance_status !== 'BLOCK');
+      }
+      const stored = await request(port, { path: '/approvals/pending' });
+      for (const approval of pending) assert.ok(stored.raw.includes(approval.id), `approval ${approval.id} must be durable`);
+      assert.ok(result.audit_trail.some((event) => event.type === 'approval' && event.status === 'pending'));
+
+      assert.strictEqual(turn.owner_view.status, 'waiting_for_approval');
+      assert.strictEqual(turn.owner_view.approval_state, 'pending');
+      assert.strictEqual(turn.owner_view.proposed_actions.length, pending.length);
+      assert.ok(turn.owner_view.proposed_actions[0].proposed_value.includes('seo.title: "" → "'));
+      assert.ok(/does not write to the store/.test(turn.owner_view.proposed_actions[0].what_changes));
+      assert.deepStrictEqual(turn.owner_view.mutations, []);
+      assert.strictEqual(turn.session.status, 'waiting_for_approval');
+      assert.ok(lastChiefText(turn).includes('before "" -> after "Halloween SVG Cut Files"'));
+
+      assert.strictEqual(WRITE_CALLS.length, writesBefore, 'zero Shopify writes');
+      assert.strictEqual(FETCH_CALLS.length, fetchesBefore, 'zero network calls');
+
+      // What approving would run: the read-only audit of the proposed values - still no store write.
+      const { runSeoQualityCheckTool } = require('../../tools/seoQualityCheckTool');
+      const reaudit = runSeoQualityCheckTool(pending[0].execution_request.research_params);
+      assert.strictEqual(reaudit.status, 'success');
+      assert.ok(!reaudit.result.checks[0].result.recommendations.includes('[Metadata] Add a meta_title.'));
+      assert.strictEqual(WRITE_CALLS.length, writesBefore);
+    });
+
+    await testAsync('L. without research context the same request still asks - the resolution is context-aware, not a word patch', async () => {
+      const contract = require('../../agent/core/orchestratorExecutionContract');
+      const bare = await contract.runOrchestratorContract(SEO_PROPOSAL_REQUEST);
+      assert.strictEqual(bare.routing.status, 'clarification_required');
+      assert.strictEqual(bare.routing.clarification_type, 'ambiguous');
+      // And an ambiguity that is NOT a reference to earlier research still asks, even with context.
+      const decision = researchContext.decideResearchContinuity({
+        objective: 'Review the SEO research you found and compare it with market trends.',
+        routingResult: {
+          status: 'clarification_required',
+          clarification_type: 'ambiguous',
+          interpretation: [
+            { clause: 'Review the SEO research you found', act: 'inform', disposition: 'task', target: 'seo' },
+            { clause: 'compare it with market trends', act: 'inform', disposition: 'ambiguous', target: null },
+          ],
+        },
+        researchContext: { platform: 'shopify', research: null, considered: {} },
+      });
+      assert.strictEqual(decision.applies, false);
+    });
+
+    test('L. change intent is resolved from the whole objective: proposal, change or none', () => {
+      assert.strictEqual(researchContext.resolveChangeIntent(SEO_PROPOSAL_REQUEST), 'change_proposal');
+      assert.strictEqual(researchContext.resolveChangeIntent('Fix the vendor on Halloween SVG Cut Files.'), 'change');
+      assert.strictEqual(researchContext.resolveChangeIntent(FOLLOW_UP_REQUEST), 'none');
+    });
+
+    test('L. proposed values are derived, never invented, and held to the audit\'s own limits', () => {
+      const proposalModule = require('../../agent/core/seoChangeProposal');
+      assert.strictEqual(proposalModule.requestedProductCount('starting with the 3 most important products'), 3);
+      assert.strictEqual(proposalModule.requestedProductCount('the two most important products'), 2);
+      assert.strictEqual(proposalModule.requestedProductCount('fix the SEO'), 3);
+      const longTitle = 'Hand Painted Watercolor Floral Clipart Bundle With Transparent PNG Files For Invitations';
+      const metaTitle = proposalModule.deriveMetaTitle(longTitle);
+      assert.ok(metaTitle.length <= 60 && longTitle.startsWith(metaTitle) && !metaTitle.endsWith(' '));
+      assert.strictEqual(proposalModule.deriveMetaDescription('Spooky SVG cut files.'), null);
+      const description = 'A bundle of 118 hand-painted watercolor clipart PNG files. Perfect for crafts, invitations and print projects. Includes commercial use.';
+      const metaDescription = proposalModule.deriveMetaDescription(description);
+      assert.ok(metaDescription.length >= 50 && metaDescription.length <= 160 && description.startsWith(metaDescription));
+    });
+
+    await testAsync('L. a proposal compliance BLOCKS is shown but never sent for approval', async () => {
+      const proposalModule = require('../../agent/core/seoChangeProposal');
+      const { PROTECTED_MARK_INDICATORS } = require('../../compliance/etsyIpRiskDetector');
+      const steps = JSON.parse(JSON.stringify(runHistoryStore.getRunRecordById(sessionA.run_id).result.routing.plan));
+      const mark = PROTECTED_MARK_INDICATORS[0];
+      const renamed = `${mark} SVG Cut Files`;
+      for (const source of steps[0].outputs.listing_sources) if (source.product_reference === 'Halloween SVG Cut Files') { source.product_reference = renamed; source.title = renamed; }
+      for (const check of steps[1].outputs.result.checks) if (check.subject_reference === 'Halloween SVG Cut Files') check.subject_reference = renamed;
+      const priorities = prioritization.prioritizeStoreOpportunities({ steps });
+      const proposal = proposalModule.proposeSeoChanges({ steps, priorities, objective: SEO_PROPOSAL_REQUEST });
+      const blocked = proposal.products.find((product) => product.product_reference === renamed);
+      assert.ok(blocked, 'the product is still shown');
+      assert.strictEqual(blocked.compliance.compliance_status, 'BLOCK');
+      assert.strictEqual(blocked.approval_eligible, false);
     });
 
     // ---- H: explicit numbered references keep working --------------------------------------

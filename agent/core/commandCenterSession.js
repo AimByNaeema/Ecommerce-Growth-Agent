@@ -247,6 +247,33 @@ function recordResults(session, runResult, runId, summarize = null) {
   // The Chief's ranked store opportunities ARE what this turn produced - each becomes one
   // numbered result, in rank order, so "#3" afterwards means the third-ranked opportunity. The
   // research steps they were ranked from stay in the run record rather than being numbered again.
+  // A change proposal's products are what the turn produced: each is numbered with the approval it
+  // waits on, so "#2" afterwards means the second proposed product.
+  const proposal = runResult.seo_change_proposal;
+  if (proposal && asArray(proposal.products).length > 0) {
+    for (const product of proposal.products) {
+      const entry = {
+        ref: nextRef,
+        label: `SEO proposal: ${product.product_reference}`,
+        specialist: 'seo',
+        run_id: runId,
+        channel: proposal.platform || null,
+        channel_reference: product.shopify_product_id || null,
+        summary: truncate(
+          asArray(product.proposed_changes).map((change) => `${change.shopify_field} -> "${change.after}"`).join('; ') +
+            (product.approval_id ? ` (approval ${product.approval_id} pending)` : ' (not sent for approval)'),
+          MAX_SUMMARY_CHARS
+        ),
+        source: [],
+        payload_ref: { run_id: runId, path: `seo_change_proposal.products[${product.rank - 1}]` },
+      };
+      session.specialist_results.push(entry);
+      added.push(entry);
+      nextRef += 1;
+    }
+    return added;
+  }
+
   const priorities = runResult.store_opportunity_priorities;
   if (priorities && asArray(priorities.opportunities).length > 0) {
     for (const opportunity of priorities.opportunities) {
@@ -343,7 +370,33 @@ function describeContinuation(runResult, added) {
   }
 
   const opportunities = asArray(priorities.opportunities);
-  if (opportunities.length === 0) {
+  const proposal = runResult.seo_change_proposal;
+  if (proposal) {
+    // A change proposal: the SEO issues it stands on, then each proposed product's before/after.
+    const issues = asArray(proposal.seo_issues);
+    if (issues.length > 0) {
+      lines.push('Highest-priority SEO issues in that research:');
+      lines.push(...issues.slice(0, 5).map((issue) => `#${issue.rank} ${issue.issue} (${issue.affected_products} of ${issue.audited_products} products)`));
+    }
+    const products = asArray(proposal.products);
+    if (products.length === 0) {
+      lines.push('No SEO change could be derived from the products\' own stored text, so nothing was proposed.');
+    } else {
+      lines.push(`Proposed SEO changes for the ${products.length} most important product(s) - nothing has been written to your store:`);
+      for (const product of products) {
+        lines.push(`#${product.rank} ${product.product_reference}${product.status ? ` (${product.status})` : ''}`);
+        for (const change of asArray(product.proposed_changes)) {
+          lines.push(`  ${change.shopify_field}: before "${change.before || ''}" -> after "${change.after}" (from the ${change.derived_from})`);
+        }
+        for (const skipped of asArray(product.not_proposed)) lines.push(`  Not proposed - ${skipped.issue}: ${skipped.reason}`);
+        lines.push(
+          `  Compliance: ${product.compliance ? product.compliance.compliance_status : 'not checked'}. ` +
+            (product.approval_id ? `Approval ${product.approval_id} is waiting for your decision.` : 'Not sent for approval.')
+        );
+      }
+    }
+    lines.push(...asArray(proposal.limitations));
+  } else if (opportunities.length === 0) {
     lines.push('The research did not support any rankable opportunity.');
   } else {
     lines.push(`Ranked ${opportunities.length} opportunit${opportunities.length === 1 ? 'y' : 'ies'}, #1 = highest priority:`);
@@ -355,8 +408,9 @@ function describeContinuation(runResult, added) {
     if (quickWins.length > 0) lines.push('Quick wins:', ...quickWins.map(describe));
     if (higherEffort.length > 0) lines.push('Higher effort:', ...higherEffort.map(describe));
   }
-  lines.push(...asArray(priorities.limitations));
+  if (!proposal) lines.push(...asArray(priorities.limitations));
   if (asArray(runResult.pending_approvals).length === 0) lines.push('Nothing was changed in your store.');
+  else lines.push('Nothing has been written to your store; each proposal is waiting for your approval.');
   if (added.length > 0) {
     lines.push(`These are numbered #${added[0].ref}-#${added[added.length - 1].ref} in this session; refer to any of them by number.`);
   }

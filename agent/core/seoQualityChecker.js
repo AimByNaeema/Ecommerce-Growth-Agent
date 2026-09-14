@@ -702,6 +702,15 @@ module.exports = {
   checkSeoQualityOnAvailableData,
   checkStoreListingFields,
   labelForDimension,
+  // The audit's own length limits, so a proposal is held to the same standard it is audited by.
+  SEO_LENGTH_LIMITS: Object.freeze({
+    TITLE_MIN_LENGTH,
+    TITLE_MAX_LENGTH,
+    META_TITLE_MAX_LENGTH,
+    META_DESCRIPTION_MIN_LENGTH,
+    META_DESCRIPTION_MAX_LENGTH,
+    DESCRIPTION_MIN_LENGTH,
+  }),
 };
 
 if (require.main === module) {

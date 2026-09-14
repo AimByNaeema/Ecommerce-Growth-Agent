@@ -44,7 +44,7 @@ const crypto = require('crypto');
 const runHistoryStore = require('./runHistoryStore');
 const { getToolById } = require('../../tools/toolRegistry');
 const { hasExplicitMutationIntent } = require('./mutationIntent');
-const { referencesPriorWork, isConnectedPlatformName, tokens } = require('./objectiveInterpretation');
+const { referencesPriorWork, isConnectedPlatformName, tokens, collectSafetyConstraints } = require('./objectiveInterpretation');
 const { BASIS_PLATFORM, STORE_RESEARCH_BASIS, coversResearchBasis } = require('./storeOpportunityPrioritization');
 
 const RESEARCH_CONTEXT_VERSION = 1;
@@ -279,21 +279,55 @@ function lookupResearchContext({ businessId = null, now = Date.now(), storeDir =
   };
 }
 
+// What the objective asks to happen to the STORE, read with the whole objective in view rather than
+// clause by clause:
+//   'change_proposal' - a change is named AND a run-wide constraint forbids making changes ("propose
+//                       the safest way to fix ... but do not make any changes yet"). The change then
+//                       describes what to PROPOSE for approval, not an action to perform in this run.
+//   'change'          - a change is named and nothing forbids it: the existing mutation chain.
+//   'none'            - no change is named.
+// Both signals are the existing ones: mutationIntent.js's explicit-mutation gate and
+// objectiveInterpretation.js's run-wide safety constraints.
+function resolveChangeIntent(objective) {
+  const text = typeof objective === 'string' ? objective : '';
+  if (!hasExplicitMutationIntent(text)) return 'none';
+  return collectSafetyConstraints(text).length > 0 ? 'change_proposal' : 'change';
+}
+
 // Whether an objective CONTINUES earlier research, decided by the Chief from what the objective
 // asks - never from a session's numbering. It must refer to prior work (objectiveInterpretation.js
-// referencesPriorWork - grammatical, not a subject list), request no change and no unsupported
-// action or platform, and name no connected platform other than the research basis's own.
+// referencesPriorWork - grammatical, not a subject list), request no store change to be MADE (a
+// change PROPOSAL is allowed - resolveChangeIntent), no unsupported action or platform, and name no
+// connected platform other than the research basis's own.
+//
+// CONTEXT-AWARE AMBIGUITY. Without research context, "Review the SEO issues you found in the latest
+// research" genuinely could mean the Research or the SEO specialist, and the router asks. With
+// completed research available, a clause that refers back to earlier work names the EVIDENCE the
+// objective builds on, not a specialist to run - so an ambiguity (or an unmatched clause) confined to
+// such clauses no longer blocks the objective. Any other ambiguity still asks, exactly as before.
 function decideResearchContinuity({ objective, routingResult = null, researchContext = null } = {}) {
   if (!isPlainObject(researchContext)) return { applies: false, reason: 'No research context was supplied for this run.' };
   const text = typeof objective === 'string' ? objective : '';
   if (!referencesPriorWork(text)) return { applies: false, reason: 'The objective does not refer to earlier research.' };
-  if (hasExplicitMutationIntent(text)) return { applies: false, reason: 'The objective asks for a store change, which is never answered from prior research.' };
+  const changeIntent = resolveChangeIntent(text);
+  if (changeIntent === 'change') {
+    return { applies: false, reason: 'The objective asks for a store change to be made, which is never answered from prior research.' };
+  }
   const routing = isPlainObject(routingResult) ? routingResult : {};
   if (routing.interpretation_blocked) return { applies: false, reason: 'The objective contains a request this system does not support.' };
-  if (routing.status === 'clarification_required' && routing.clarification_type !== 'unmatched') {
-    return { applies: false, reason: 'The objective needs clarification before it can be answered.' };
+  if (routing.status === 'clarification_required') {
+    const unresolved = asArray(routing.interpretation).filter(
+      (entry) => isPlainObject(entry) && (entry.disposition === 'ambiguous' || entry.disposition === 'unmatched')
+    );
+    const onlyReferencesUnresolved = unresolved.length > 0 && unresolved.every((entry) => referencesPriorWork(entry.clause));
+    if (routing.clarification_type !== 'unmatched' && !onlyReferencesUnresolved) {
+      return { applies: false, reason: 'The objective needs clarification before it can be answered.' };
+    }
   }
-  if (asArray(routing.interpretation).some((entry) => isPlainObject(entry) && CONTINUATION_BLOCKING_ACTS.has(entry.act))) {
+  const blockingActs = asArray(routing.interpretation).filter(
+    (entry) => isPlainObject(entry) && CONTINUATION_BLOCKING_ACTS.has(entry.act) && !(entry.act === 'change' && changeIntent === 'change_proposal')
+  );
+  if (blockingActs.length > 0) {
     return { applies: false, reason: 'The objective asks for a change or an unsupported action.' };
   }
   const platform = researchContext.platform || BASIS_PLATFORM;
@@ -301,6 +335,7 @@ function decideResearchContinuity({ objective, routingResult = null, researchCon
   if (otherPlatform) return { applies: false, reason: `The objective is about ${otherPlatform}, not the ${platform} research basis.` };
   return {
     applies: true,
+    intent: changeIntent,
     platform,
     research: isPlainObject(researchContext.research) && asArray(researchContext.research.steps).length > 0 ? researchContext.research : null,
     considered: isPlainObject(researchContext.considered) ? researchContext.considered : {},
@@ -324,6 +359,7 @@ function routedTargetNeedsOwnStep(interpretation, targetId) {
 module.exports = {
   RESEARCH_CONTEXT_VERSION,
   routedTargetNeedsOwnStep,
+  resolveChangeIntent,
   DEFAULT_MAX_AGE_HOURS,
   STORE_RESEARCH_BASIS,
   getResearchMaxAgeHours,

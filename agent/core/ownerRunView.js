@@ -103,9 +103,23 @@ function describeProposedAction(request) {
   const executionRequest = isPlainObject(request.execution_request) ? request.execution_request : {};
   const params = isPlainObject(executionRequest.research_params) ? executionRequest.research_params : {};
   const describe = ACTION_DESCRIPTIONS[request.tool_id];
-  const described = describe
-    ? describe(params)
-    : { what_changes: null, entity_type: null, entity_id: null, proposed_value: null };
+  // A change PROPOSAL (agent/core/seoChangeProposal.js) is described from its own before/after
+  // values, and says plainly that approving it writes nothing to the store.
+  const proposal = params.proposal_kind === 'seo_metadata' ? params : null;
+  const described = proposal
+    ? {
+        what_changes: 'SEO title / meta description (proposal only - approving it does not write to the store)',
+        entity_type: 'product',
+        entity_id: str(proposal.shopify_product_id) || str(proposal.product_reference),
+        proposed_value:
+          asArray(proposal.proposed_changes)
+            .filter(isPlainObject)
+            .map((change) => `${change.shopify_field}: "${change.before || ''}" → "${change.after}"`)
+            .join('; ') || null,
+      }
+    : describe
+      ? describe(params)
+      : { what_changes: null, entity_type: null, entity_id: null, proposed_value: null };
   const compliance = isPlainObject(executionRequest.compliance) ? executionRequest.compliance : null;
   const autonomy = isPlainObject(executionRequest.autonomy) ? executionRequest.autonomy : null;
 
@@ -113,7 +127,7 @@ function describeProposedAction(request) {
     approval_id: str(request.id),
     tool_id: str(request.tool_id),
     specialist_id: str(request.specialist_id),
-    platform: platformForTool(request.tool_id) || (autonomy ? str(autonomy.platform) : null),
+    platform: platformForTool(request.tool_id) || (proposal ? str(proposal.platform) : null) || (autonomy ? str(autonomy.platform) : null),
     what_changes: described.what_changes || (str(request.tool_id) ? `Runs '${request.tool_id}'` : null),
     entity_type: described.entity_type,
     entity_id: described.entity_id,
@@ -265,6 +279,20 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
     : null;
   const continuity = isPlainObject(safeResult.research_continuity) ? safeResult.research_continuity : null;
   const continuitySource = continuity && isPlainObject(continuity.source) ? continuity.source : null;
+  // A change proposal answers with one line per proposed product: its before/after values and the
+  // approval each one is waiting on.
+  const seoProposal = isPlainObject(safeResult.seo_change_proposal) ? safeResult.seo_change_proposal : null;
+  const proposalRecommendations = seoProposal
+    ? asArray(seoProposal.products)
+        .filter(isPlainObject)
+        .map((product) =>
+          `#${product.rank} ${product.product_reference}: ` +
+          asArray(product.proposed_changes).filter(isPlainObject).map((change) => `${change.shopify_field} "${change.before || ''}" → "${change.after}"`).join('; ') +
+          (product.approval_id
+            ? ` - approval ${product.approval_id} pending`
+            : ` - not sent for approval (compliance ${product.compliance ? product.compliance.compliance_status : 'not checked'})`)
+        )
+    : null;
 
   const executed = executions.filter((entry) => entry.decision === 'approved' && entry.execution_status === 'success');
   const executedStoreChanges = executed.filter((entry) => entry.store_change);
@@ -323,7 +351,7 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
       })
       .filter((finding) => finding.summary)
       .slice(0, MAX_LIST_ENTRIES),
-    recommendations: (rankedRecommendations || recommendations).slice(0, MAX_LIST_ENTRIES),
+    recommendations: (proposalRecommendations || rankedRecommendations || recommendations).slice(0, MAX_LIST_ENTRIES),
     // Where a continued run's evidence came from - null for every other run.
     research_continuity: continuity
       ? {
