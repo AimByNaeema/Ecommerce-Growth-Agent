@@ -444,13 +444,14 @@ function endsInPrepositionalPhrase(clauseText) {
 //      or PRODUCE verb ("you just analysed", "you have checked", "what you found");
 //   2. a noun naming an operation's OUTPUT attributed to "you" by a relative clause of
 //      possession ("the Shopify research you already have", "the results you have on file");
-//   3. an anterior or existence modifier (previous, earlier, prior, existing, ...) followed by a
-//      noun naming such an output ("the previous analysis", "your existing research").
+//   3. an anterior, recency or existence modifier (previous, earlier, prior, latest, recent,
+//      existing, ...) followed by a noun naming such an output ("the previous analysis", "your
+//      existing research", "the latest Shopify SEO research").
 // A question ("what listings do you have?") is not a reference: "you" after an auxiliary is
 // inverted question word order. An owner's possessive ("my existing listings") names the owner's
 // own store data. Every word set below is a closed class: past-tense morphology of verbs already in
 // the verb classes above, possession verbs, and temporal modifiers. "The last 30 days" or "my
-// latest orders" refer to store data, not to earlier work, and do not match.
+// latest orders" refer to store data, not to earlier work, and do not match: no output noun follows.
 
 // Irregular past forms of verbs already in READ_VERBS/PRODUCE_VERBS - morphology only.
 const IRREGULAR_PAST_FORMS = {
@@ -458,7 +459,7 @@ const IRREGULAR_PAST_FORMS = {
   saw: 'see', seen: 'see', wrote: 'write', written: 'write', built: 'build', told: 'tell', came: 'come',
   went: 'go', gone: 'go', broke: 'break', broken: 'break',
 };
-const ANTERIOR_MODIFIERS = new Set(['previous', 'earlier', 'prior', 'preceding', 'last', 'above', 'completed', 'existing']);
+const ANTERIOR_MODIFIERS = new Set(['previous', 'earlier', 'prior', 'preceding', 'last', 'latest', 'recent', 'above', 'completed', 'existing']);
 // Nouns that name an operation's output without being a verb themselves.
 const OPERATION_OUTPUT_NOUNS = new Set(['result', 'outcome', 'output', 'finding']);
 const POSSESSION_VERBS = new Set(['have', 'has', 'had', 've']);

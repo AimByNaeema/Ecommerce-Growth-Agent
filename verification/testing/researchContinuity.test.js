@@ -620,6 +620,8 @@ async function main() {
         EXISTING_RESEARCH_REQUEST,
         'Use the results you have on file to rank my opportunities.',
         'Based on your existing research, which listings need work first?',
+        'Review the latest Shopify SEO research and prepare the stored SEO proposal for execution.',
+        'Using the most recent analysis, rank my listings.',
       ]) {
         assert.strictEqual(referencesPriorWork(text), true, text);
       }
@@ -633,6 +635,8 @@ async function main() {
         'Improve my existing listings.',
         'Rewrite the last listing description.',
         'Give me the analysis you think is most useful for my sales.',
+        'Show me my recent orders.',
+        'What are the latest trends in clipart?',
       ]) {
         assert.strictEqual(referencesPriorWork(text), false, text);
       }

@@ -455,6 +455,18 @@ function describeProposalExecution(execution) {
         'Prepared exactly its approved value(s) for Shopify:'
     );
     for (const change of changes) lines.push(`  ${change.shopify_field}: before "${change.before || ''}" -> after "${change.after}"`);
+    const basis = execution.research_basis;
+    if (basis && basis.source_run_id) {
+      const when = basis.produced_at ? ` (${basis.produced_at})` : '';
+      if (basis.built_from_latest === false) {
+        lines.push(
+          `This proposal was built from research run ${basis.source_run_id}${when}. Your newest research is run ${basis.latest_research_run_id}; ` +
+            'the "before" values are checked against the store again before anything is written.'
+        );
+      } else {
+        lines.push(`This proposal was built from research run ${basis.source_run_id}${when}${basis.built_from_latest ? ', your latest research' : ''}.`);
+      }
+    }
     if (asArray(execution.not_applied).length > 0) {
       lines.push(`Not included, because you did not ask for it: ${execution.not_applied.join(', ')}.`);
     }

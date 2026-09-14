@@ -32,7 +32,7 @@
 const approvalStore = require('../../approvals/approvalStore');
 const runHistoryStore = require('./runHistoryStore');
 const { MUTATION_VERBS } = require('./mutationIntent');
-const { APPLY_CHANGE_VERBS, FUNCTION_WORDS, tokens, lemmaCandidates, singularForm, verbClass } = require('./objectiveInterpretation');
+const { APPLY_CHANGE_VERBS, FUNCTION_WORDS, tokens, lemmaCandidates, singularForm, verbClass, referencesPriorWork } = require('./objectiveInterpretation');
 const { currentStoreReference } = require('./researchContext');
 const seoUpdate = require('../../integrations/shopifyProductSeoUpdate');
 const { TOOL_OPERATIONS, getToolById } = require('../../tools/toolRegistry');
@@ -118,6 +118,44 @@ function isExecutionVerb(word) {
   return Boolean(word) && lemmaCandidates(word).some((candidate) => EXECUTION_VERBS.has(candidate));
 }
 
+// EXECUTION NAMED AS A PURPOSE. "Prepare the stored SEO proposal for the 200 Wild Flowers Clipart product
+// for execution" is led by a PRODUCE verb, yet what it asks to produce is the proposal made ready to
+// execute. The execution is carried by the nominal form of an execution verb after "for" ("execution" ->
+// execute, "application" -> apply, "implementation" -> implement): morphology over EXECUTION_VERBS above,
+// no new vocabulary. Only a nominal counts ("for execution", not "for the change log").
+function nominalVerbCandidates(word) {
+  const singular = singularForm(word);
+  const candidates = [];
+  if (singular.length > 7 && singular.endsWith('ication')) candidates.push(`${singular.slice(0, -7)}y`);
+  if (singular.length > 5 && singular.endsWith('ation')) candidates.push(singular.slice(0, -5));
+  if (singular.length > 4 && singular.endsWith('ion')) candidates.push(`${singular.slice(0, -3)}e`, singular.slice(0, -3));
+  return candidates;
+}
+
+const PURPOSE_DETERMINERS = new Set([...NAME_DETERMINERS, 'a', 'an', 'its', 'their', 'your']);
+
+function namesExecutionPurpose(clause) {
+  const words = lowerWords(clause);
+  return words.some((word, index) => {
+    if (word !== 'for') return false;
+    const next = words.slice(index + 1).find((entry) => !PURPOSE_DETERMINERS.has(entry));
+    return Boolean(next) && nominalVerbCandidates(next).some((candidate) => EXECUTION_VERBS.has(candidate));
+  });
+}
+
+// A clause that prepares the proposal RECORD itself for execution: interpreted as a PRODUCE request
+// (objectiveInterpretation.js - so a negated "Do not prepare ..." is not one, it is read as scope), naming
+// the record in the clause, with the execution as its purpose. A proposed VALUE ("prepare the proposed
+// changes for my approval") is the proposal step's own output, never an existing record, and does not match.
+function preparesProposalForExecution(entry) {
+  return (
+    entry.act === 'produce' &&
+    verbClass(leadVerb(entry.clause)) === 'produce' &&
+    proposalReferenceKind(entry.clause) === 'record' &&
+    namesExecutionPurpose(entry.clause)
+  );
+}
+
 // How text refers to a record the approval system holds: 'record' when it names the record itself
 // ("the pending approval", "your proposal"), 'value' when it only names a value as proposed ("the
 // proposed SEO title"), or null.
@@ -173,16 +211,23 @@ function decideProposalExecution({ objective, routingResult } = {}) {
 
   const executionSentences = new Set();
   const executionActs = new Set();
+  const executionClauses = new Set();
   let namesRecord = false;
   for (const entry of interpretation) {
     // A constraint ("..., or apply anything") is something not to do - never an execution request.
-    if (entry.disposition === 'constraint' || !isExecutionVerb(leadVerb(entry.clause))) continue;
+    if (entry.disposition === 'constraint') continue;
+    const verbLed = isExecutionVerb(leadVerb(entry.clause));
+    if (!verbLed && !preparesProposalForExecution(entry)) continue;
     const sentence = sentenceOf(entry.clause);
-    const kind = proposalReferenceKind(sentence);
+    // A prepared-for-execution clause names the record in the clause itself (checked above).
+    const kind = verbLed ? proposalReferenceKind(sentence) : 'record';
     if (!kind) continue;
     if (kind === 'record') namesRecord = true;
     executionSentences.add(sentence);
-    executionActs.add(entry.act);
+    executionClauses.add(entry.clause);
+    // Only a verb-led execution carries its act to the rest of its sentence; a produce-led one must not
+    // absorb another produce request ("write a campaign and prepare the proposal for execution").
+    if (verbLed) executionActs.add(entry.act);
   }
   if (executionSentences.size === 0) return { applies: false };
 
@@ -192,7 +237,8 @@ function decideProposalExecution({ objective, routingResult } = {}) {
   // recommendations are that work's output - not a stored proposal - and routing answers it as before.
   if (!namesRecord) {
     const isExecutionClause = (entry) =>
-      executionSentences.has(sentenceOf(entry.clause)) && (isExecutionVerb(leadVerb(entry.clause)) || executionActs.has(entry.act));
+      executionClauses.has(entry.clause) ||
+      (executionSentences.has(sentenceOf(entry.clause)) && (isExecutionVerb(leadVerb(entry.clause)) || executionActs.has(entry.act)));
     const asksForOtherWork = interpretation.some(
       (entry) =>
         entry.disposition === 'task' && !isExecutionClause(entry) && !VERIFY_VERBS.has(leadVerb(entry.clause)) && !isOwnerApprovalRequirement(entry.clause)
@@ -203,10 +249,11 @@ function decideProposalExecution({ objective, routingResult } = {}) {
   const additional = [];
   const answeredByExecution = [];
   const approvalRequirements = [];
+  const researchReferences = [];
   for (const entry of interpretation) {
     const inExecutionSentence = executionSentences.has(sentenceOf(entry.clause));
     const lead = leadVerb(entry.clause);
-    if (inExecutionSentence && (isExecutionVerb(lead) || executionActs.has(entry.act))) continue;
+    if (executionClauses.has(entry.clause) || (inExecutionSentence && (isExecutionVerb(lead) || executionActs.has(entry.act)))) continue;
     // The owner's signed approval before the write is the execution's own gate, not another request.
     if (isOwnerApprovalRequirement(entry.clause)) {
       approvalRequirements.push(entry.clause);
@@ -223,6 +270,14 @@ function decideProposalExecution({ objective, routingResult } = {}) {
       answeredByExecution.push(entry.clause);
       continue;
     }
+    // "Review the latest Shopify SEO research": a read of EARLIER work (objectiveInterpretation.js
+    // referencesPriorWork - grammatical) names the evidence the stored proposal was built from, not a
+    // Research or SEO run to start. It is not trusted on its wording: runOrchestratorContract resolves it
+    // against the proposal's own source research (resolveProposalResearchBasis) or asks.
+    if (entry.act === 'inform' && isReadLead(lead) && referencesPriorWork(entry.clause)) {
+      researchReferences.push(entry.clause);
+      continue;
+    }
     additional.push(entry.clause);
   }
 
@@ -232,6 +287,7 @@ function decideProposalExecution({ objective, routingResult } = {}) {
     additional_requests: additional,
     answered_by_execution: answeredByExecution,
     approval_requirements: approvalRequirements,
+    research_references: researchReferences,
   };
 }
 
@@ -514,6 +570,44 @@ function resolveProposalExecution({
   };
 }
 
+// The research a resolved proposal was built from, for a request that refers to that research ("Review the
+// latest Shopify SEO research and prepare the stored SEO proposal ..."). The reference is answered from
+// STATE: the proposal's own source run must be a completed, authoritative research run of this business for
+// the same store. `latestResearch` (researchContext.js lookupResearchContext's `research`) says whether that
+// is still the newest reusable research; a newer one is reported, never silently substituted - the proposal's
+// before-values are re-checked against the store before any write regardless.
+//
+// Returns { found: true, source_run_id, produced_at, latest_research_run_id, built_from_latest }
+// or { found: false, reason }.
+function resolveProposalResearchBasis({ sourceRunId = null, businessId = null, storeReference = null, latestResearch = null } = {}) {
+  const tenant = tenantOf(businessId);
+  const notFound = (reason) => ({ found: false, reason });
+  if (!isNonEmptyString(sourceRunId)) {
+    return notFound('The stored SEO proposal does not name the research it was built from, so the research you referred to cannot be confirmed as its basis.');
+  }
+  let record = null;
+  try {
+    record = runHistoryStore.getRunRecordById(sourceRunId);
+  } catch (err) {
+    record = null;
+  }
+  const stamp = record && isPlainObject(record.research_context) ? record.research_context : null;
+  if (!record || (record.business_id || null) !== tenant || !stamp) {
+    return notFound(`The research run ${sourceRunId} this SEO proposal was built from is no longer on record for this business.`);
+  }
+  if (stamp.authoritative !== true || !isNonEmptyString(storeReference) || stamp.store_reference !== storeReference) {
+    return notFound(`The research run ${sourceRunId} this SEO proposal was built from is not completed research of the connected store.`);
+  }
+  const latestRunId = isPlainObject(latestResearch) && isNonEmptyString(latestResearch.run_id) ? latestResearch.run_id : null;
+  return {
+    found: true,
+    source_run_id: sourceRunId,
+    produced_at: isNonEmptyString(stamp.produced_at) ? stamp.produced_at : null,
+    latest_research_run_id: latestRunId,
+    built_from_latest: latestRunId ? latestRunId === sourceRunId : null,
+  };
+}
+
 module.exports = {
   APPLICATION_TOOL_ID,
   APPLICATION_KIND,
@@ -522,4 +616,5 @@ module.exports = {
   decideProposalCheck,
   decideProposalExecution,
   resolveProposalExecution,
+  resolveProposalResearchBasis,
 };

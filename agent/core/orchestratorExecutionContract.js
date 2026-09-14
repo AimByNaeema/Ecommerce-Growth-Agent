@@ -139,6 +139,7 @@ const {
   decideProposalCheck,
   decideProposalExecution,
   resolveProposalExecution,
+  resolveProposalResearchBasis,
   APPLICATION_TOOL_ID: PROPOSAL_APPLICATION_TOOL_ID,
 } = require('./proposalExecution');
 // One honest, compact sentence per finished execution state (agent/core/resultSummary.js) -
@@ -3923,6 +3924,30 @@ async function runProposalExecution({ objective, decision, businessId, researchC
     // recorded so the reply can say where it is enforced.
     approval_requirements: decision.approval_requirements || [],
   };
+
+  // "Review the latest Shopify SEO research ...": the research referred to must be the proposal's own basis,
+  // confirmed from the run record - otherwise the owner is asked, and no approval is created.
+  const researchReferences = decision.research_references || [];
+  if (researchReferences.length > 0) {
+    const basis = resolveProposalResearchBasis({
+      sourceRunId: resolution.research_params.sourceRunId,
+      businessId,
+      storeReference: resolution.research_params.storeReference,
+      latestResearch: researchContext && researchContext.research ? researchContext.research : null,
+    });
+    appendAuditEvent(runAuditTracker, {
+      type: 'data_access',
+      status: basis.found ? 'resolved' : 'not_resolved',
+      summary: basis.found
+        ? `The referenced research is the proposal's own basis, run '${basis.source_run_id}'.`
+        : `The referenced research could not be confirmed as the proposal's basis: ${basis.reason}`,
+    });
+    if (!basis.found) {
+      return clarify('proposal_research_not_found', `${basis.reason} Nothing was changed.`, { ...described, research_references: researchReferences });
+    }
+    described.research_references = researchReferences;
+    described.research_basis = basis;
+  }
 
   // An exact change already applied and independently verified is never asked for again.
   const alreadyVerified = checkCorrectionAlreadyVerified(tool.id, executionRequest);

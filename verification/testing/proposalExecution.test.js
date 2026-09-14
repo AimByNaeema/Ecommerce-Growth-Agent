@@ -163,6 +163,10 @@ const REQUIRE_APPROVAL_REQUEST =
 // The read-only verification the owner ran in production, which failed on a compliance step with no content.
 const READ_ONLY_CHECK_REQUEST =
   "Read the current Shopify SEO data for the 200 Wild Flowers Clipart product and compare it with the existing approved SEO proposal. Do not create, approve, or execute any write approval. Do not change anything. Report only whether the current store values still match the proposal's before-values and whether the proposal is eligible for execution.";
+// The production request the Chief answered with "could belong to more than one capability" (Research vs SEO):
+// a reference to the latest research, and the stored proposal made ready for execution.
+const PREPARE_FOR_EXECUTION_REQUEST =
+  'Review the latest Shopify SEO research and prepare the stored SEO proposal for the 200 Wild Flowers Clipart product for execution. Do not make any changes.';
 const EXACT_REQUEST_FULL =
   'Apply the proposed SEO title and meta description only to the 200 Wild Flowers Clipart product from the pending approval. Do not change anything else. Verify the exact resulting Shopify values after the change.';
 
@@ -459,6 +463,81 @@ async function main() {
       const text = lastChiefText(turn);
       assert.ok(/is built in: nothing can be written until you sign approval/.test(text), text);
       assert.ok(!/also to do something else/.test(text), text);
+    });
+
+    // ---- RESEARCH + STORED PROPOSAL (production: "could belong to more than one capability") ----------
+    test('RESEARCH + STORED PROPOSAL: the research clause names the proposal\'s evidence, not a Research-vs-SEO task', () => {
+      // Root cause, unchanged at the router: alone, "Review the latest Shopify SEO research" could be either.
+      const routed = orchestrator.planRouting(PREPARE_FOR_EXECUTION_REQUEST);
+      assert.strictEqual(routed.clarification_type, 'ambiguous');
+      assert.deepStrictEqual(routed.candidates.map((candidate) => candidate.id), ['research', 'seo']);
+      // Read with the whole objective: the stored proposal made ready for execution, built on that research.
+      const decision = proposalExecution.decideProposalExecution({ objective: PREPARE_FOR_EXECUTION_REQUEST, routingResult: routed });
+      assert.strictEqual(decision.applies, true);
+      assert.deepStrictEqual(decision.additional_requests, []);
+      assert.deepStrictEqual(decision.research_references, ['Review the latest Shopify SEO research']);
+      // The execution requests without a research reference carry none.
+      for (const objective of [SIGNED_APPROVAL_REQUEST, EXACT_REQUEST]) {
+        assert.deepStrictEqual(proposalExecution.decideProposalExecution({ objective, routingResult: orchestrator.planRouting(objective) }).research_references, []);
+      }
+    });
+
+    test('RESEARCH + STORED PROPOSAL: execution as a purpose is structure - nominal execution verbs only, never a negation', () => {
+      const decide = (objective) => proposalExecution.decideProposalExecution({ objective, routingResult: orchestrator.planRouting(objective) });
+      for (const objective of [
+        'Prepare the stored SEO proposal for the 200 Wild Flowers Clipart product for application.',
+        'Prepare the existing SEO proposal for the 200 Wild Flowers Clipart product for implementation.',
+      ]) {
+        assert.strictEqual(decide(objective).applies, true, objective);
+      }
+      for (const objective of [
+        'Prepare the stored SEO proposal for the 200 Wild Flowers Clipart product for review.',
+        'Do not prepare the stored SEO proposal for the 200 Wild Flowers Clipart product for execution.',
+        SEO_PROPOSAL_REQUEST,
+      ]) {
+        assert.strictEqual(decide(objective).applies, false, `${objective} -> ${JSON.stringify(decide(objective))}`);
+      }
+      // Another job, or a read that is not a reference to earlier work, is never absorbed.
+      const mixed = decide('Write a marketing campaign and prepare the stored SEO proposal for the 200 Wild Flowers Clipart product for execution.');
+      assert.deepStrictEqual(mixed.additional_requests, ['Write a marketing campaign']);
+      const compared = decide('Review the SEO research you found, compare it with market trends and prepare the stored SEO proposal for the 200 Wild Flowers Clipart product for execution.');
+      assert.deepStrictEqual(compared.additional_requests, ['compare it with market trends']);
+    });
+
+    await testAsync('RESEARCH + STORED PROPOSAL (exact production text): stored proposal -> new signed approval, built on that research', async () => {
+      const writesBefore = SEO_WRITES.length;
+      const turn = await askInNewSession(port, PREPARE_FOR_EXECUTION_REQUEST);
+      const result = resultOf(turn);
+      assert.strictEqual(result.routing.status, 'planned', result.routing.reason);
+      assert.deepStrictEqual(result.routing.plan.map((step) => step.inputs.tool_id), ['shopify_product_seo_update'], 'no Research or SEO run is started');
+      const run = result.proposal_execution;
+      assert.strictEqual(run.status, 'awaiting_approval');
+      assert.strictEqual(run.source_approval_id, wild.approval_id);
+      assert.deepStrictEqual(run.applied_changes, execution.applied_changes);
+      assert.deepStrictEqual(run.research_references, ['Review the latest Shopify SEO research']);
+      // The reference is answered from state: the proposal's own source research run.
+      assert.strictEqual(run.research_basis.source_run_id, wild.execution_request.research_params.source_run_id);
+      assert.strictEqual(run.research_basis.built_from_latest, true, JSON.stringify(run.research_basis));
+      assert.strictEqual(result.pending_approvals.length, 1);
+      assert.strictEqual(result.pending_approvals[0].classification, 'externally_executable');
+      assert.strictEqual(SEO_WRITES.length, writesBefore, 'nothing is written before the signature');
+      assert.deepStrictEqual(TRIPWIRE_WRITES, []);
+      const text = lastChiefText(turn);
+      assert.ok(text.includes(`This proposal was built from research run ${run.research_basis.source_run_id}`), text);
+      assert.ok(!/could belong to more than one capability/.test(text), text);
+    });
+
+    test('RESEARCH + STORED PROPOSAL: a research basis that cannot be confirmed from the run record is refused', () => {
+      const sourceRunId = wild.execution_request.research_params.source_run_id;
+      const storeReference = wild.execution_request.research_params.store_reference;
+      const basis = (overrides) => proposalExecution.resolveProposalResearchBasis({ sourceRunId, businessId: null, storeReference, ...overrides });
+      assert.strictEqual(basis({}).found, true);
+      assert.strictEqual(basis({ sourceRunId: null }).found, false);
+      assert.strictEqual(basis({ sourceRunId: 'cc-run-does-not-exist' }).found, false);
+      assert.strictEqual(basis({ businessId: 'another-business' }).found, false, 'another business\'s research is never a basis');
+      assert.strictEqual(basis({ storeReference: researchContext.storeReferenceFor('shopify', 'another-store.myshopify.com') }).found, false);
+      const newer = basis({ latestResearch: { run_id: 'cc-run-newer' } });
+      assert.strictEqual(newer.built_from_latest, false, 'a newer research run is reported, never substituted');
     });
 
     await testAsync('NO WRITE BEFORE APPROVAL: the pending approval cannot be executed by any path', async () => {
