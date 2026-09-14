@@ -119,6 +119,10 @@ const CHALLENGE_TTL_ENV = 'APPROVAL_CHALLENGE_TTL_MS';
 // therefore cannot be replayed against this one: the version is part of what was signed.
 const APPROVAL_PAYLOAD_VERSION = 'ecom-approval-v1';
 
+// Stands in for one challenge's base64 payload in the shared instructions below; each issued
+// challenge returns the instructions with it filled in (see signingInstructionsFor).
+const PAYLOAD_BASE64_PLACEHOLDER = '<payload_base64>';
+
 // What the operator actually does. Written here, next to the verification, so the two can
 // never drift apart. No project file ever runs the first command.
 const APPROVAL_SIGNING_INSTRUCTIONS = [
@@ -127,12 +131,23 @@ const APPROVAL_SIGNING_INSTRUCTIONS = [
     "require('fs').writeFileSync('approval-private.pem',privateKey.export({type:'pkcs8',format:'pem'}));" +
     "console.log(publicKey.export({type:'spki',format:'pem'}))\"",
   `2. Put the printed PUBLIC key in the server's ${APPROVAL_PUBLIC_KEY_ENV}. Keep approval-private.pem off this machine.`,
-  '3. To approve, request a challenge, then sign the EXACT payload string it returns:',
+  '3. To approve, run this in the folder holding approval-private.pem. It signs the EXACT payload bytes, carried as one base64 line:',
   "     node -e \"const c=require('crypto'),f=require('fs');" +
-    "console.log(c.sign(null,Buffer.from(process.argv[1],'utf8')," +
-    "c.createPrivateKey(f.readFileSync('approval-private.pem'))).toString('base64'))\" '<payload>'",
+    "console.log(c.sign(null,Buffer.from(process.argv[1],'base64')," +
+    "c.createPrivateKey(f.readFileSync('approval-private.pem'))).toString('base64'))\" " +
+    PAYLOAD_BASE64_PLACEHOLDER,
   '4. Paste the printed base64 signature into the approval form.',
 ];
+
+// WHY THE PAYLOAD IS SIGNED FROM BASE64. The payload is seven lines joined by LF. Passed as a
+// shell argument or copied through a dialog and the clipboard, those bytes do not survive on
+// Windows: a paste turns LF into CRLF, and cmd.exe does not treat single quotes as quoting,
+// so only the first line reaches the signer. Either way a genuine key signs different bytes
+// and verification correctly refuses. Base64 is one line of shell-inert characters, so the
+// bytes signed are the bytes issued. Verification itself is unchanged and stays exact.
+function signingInstructionsFor(payloadBase64) {
+  return APPROVAL_SIGNING_INSTRUCTIONS.map((line) => line.replace(PAYLOAD_BASE64_PLACEHOLDER, payloadBase64));
+}
 
 // Deterministic JSON: object keys sorted at every depth, so the same execution request
 // always produces the same fingerprint regardless of key insertion order. Without this a
@@ -271,7 +286,8 @@ function issueApprovalChallenge({ request, decision, decidedBy } = {}) {
   ISSUED_CHALLENGES.set(nonce, challenge);
 
   // The payload is what the human signs; nothing secret is in it, and no key material is
-  // returned or recorded anywhere.
+  // returned or recorded anywhere. payload_base64 is the same bytes in transport-safe form.
+  const payloadBase64 = Buffer.from(payload, 'utf8').toString('base64');
   return {
     nonce,
     request_id: challenge.request_id,
@@ -281,7 +297,8 @@ function issueApprovalChallenge({ request, decision, decidedBy } = {}) {
     issued_at: issuedAt,
     expires_at: challenge.expires_at,
     payload,
-    signing_instructions: APPROVAL_SIGNING_INSTRUCTIONS,
+    payload_base64: payloadBase64,
+    signing_instructions: signingInstructionsFor(payloadBase64),
   };
 }
 

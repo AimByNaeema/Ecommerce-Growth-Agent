@@ -100,6 +100,7 @@ const crypto = require('node:crypto');
 const {
   APPROVAL_PUBLIC_KEY_ENV,
   APPROVAL_PAYLOAD_VERSION,
+  APPROVAL_SIGNING_INSTRUCTIONS,
   computeExecutionFingerprint,
   getConfiguredApprovalPublicKey,
   issueApprovalChallenge,
@@ -150,6 +151,87 @@ test('THE HAPPY PATH: a genuinely signed decision verifies', () => {
     assert.strictEqual(result.provenance.payload_version, APPROVAL_PAYLOAD_VERSION);
     assert.strictEqual(result.provenance.decided_by, 'owner@example.com');
     assert.strictEqual(result.provenance.execution_fingerprint, computeExecutionFingerprint(request.execution_request));
+  });
+});
+
+// THE SIGNING TRANSPORT. A matching key pair still failed with "did not verify" because the
+// seven-line payload was signed after passing through a shell argument or the clipboard,
+// which on Windows turns LF into CRLF (or, in cmd.exe, keeps only the first line). The fix
+// carries the same bytes as one base64 line; verification stays exact.
+function signingCommandFrom(instructions) {
+  const line = instructions.find((text) => /^\s*node -e ".*Buffer\.from\(process\.argv\[1\],'base64'\)/.test(text));
+  assert.ok(line, 'the instructions must carry a signing command that decodes a base64 payload');
+  const match = line.trim().match(/^node -e "([^"]+)" (\S+)$/);
+  assert.ok(match, `the signing command must be one line with one unquoted argument: ${line}`);
+  return { script: match[1], argument: match[2] };
+}
+
+test('THE CHALLENGE CARRIES ITS PAYLOAD AS EXACT BASE64 BYTES, and signing those bytes verifies', () => {
+  withPublicKey(REAL_PUBLIC_PEM, () => {
+    const request = pendingRecord();
+    const challenge = issueApprovalChallenge({ request, decision: 'approved', decidedBy: 'owner@example.com' });
+    assert.match(challenge.payload_base64, /^[A-Za-z0-9+/]+=*$/, 'base64 must be one line of shell-inert characters');
+    const bytes = Buffer.from(challenge.payload_base64, 'base64');
+    assert.ok(bytes.equals(Buffer.from(challenge.payload, 'utf8')), 'the base64 must decode to exactly the issued payload bytes');
+    const signature = crypto.sign(null, bytes, realKeys.privateKey).toString('base64');
+    const result = verifyApprovalAuthorization({ request, decision: 'approved', decidedBy: 'owner@example.com', authorization: { nonce: challenge.nonce, signature } });
+    assert.strictEqual(result.verified, true);
+  });
+});
+
+test('ROOT CAUSE: the right key over transport-altered payload bytes is still refused (verification stays exact)', () => {
+  withPublicKey(REAL_PUBLIC_PEM, () => {
+    for (const alter of [(payload) => payload.replace(/\n/g, '\r\n'), (payload) => payload.split('\n')[0], (payload) => `${payload}\n`]) {
+      clearIssuedApprovalChallenges();
+      const request = pendingRecord();
+      const challenge = issueApprovalChallenge({ request, decision: 'approved', decidedBy: 'owner@example.com' });
+      const result = verifyApprovalAuthorization({
+        request,
+        decision: 'approved',
+        decidedBy: 'owner@example.com',
+        authorization: { nonce: challenge.nonce, signature: sign(alter(challenge.payload)) },
+      });
+      assert.strictEqual(result.verified, false);
+      assert.strictEqual(result.failed_check, 'signature_verifies_under_public_key');
+    }
+  });
+});
+
+test('THE DOCUMENTED SIGNING COMMAND, RUN AS WRITTEN, PRODUCES A SIGNATURE THAT VERIFIES', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { execFileSync } = require('node:child_process');
+  // The operator's machine, simulated: a temporary folder holding approval-private.pem. The key
+  // is this test's own throwaway key and the folder is removed afterwards.
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-sign-'));
+  try {
+    fs.writeFileSync(path.join(folder, 'approval-private.pem'), realKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    withPublicKey(REAL_PUBLIC_PEM, () => {
+      const request = pendingRecord();
+      const challenge = issueApprovalChallenge({ request, decision: 'approved', decidedBy: 'owner@example.com' });
+      const { script, argument } = signingCommandFrom(challenge.signing_instructions);
+      assert.strictEqual(argument, challenge.payload_base64, 'the command must carry THIS challenge\'s payload');
+      const signature = execFileSync(process.execPath, ['-e', script, argument], { cwd: folder, encoding: 'utf8' }).trim();
+      const result = verifyApprovalAuthorization({ request, decision: 'approved', decidedBy: 'owner@example.com', authorization: { nonce: challenge.nonce, signature } });
+      assert.strictEqual(result.verified, true, result.reason);
+    });
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test('the shared instructions keep a placeholder; each issued challenge fills in only its own payload', () => {
+  assert.ok(APPROVAL_SIGNING_INSTRUCTIONS.some((line) => line.includes('<payload_base64>')));
+  assert.ok(APPROVAL_SIGNING_INSTRUCTIONS.every((line) => !line.includes("'<payload>'")), 'the multi-line payload is never passed as a shell argument');
+  withPublicKey(REAL_PUBLIC_PEM, () => {
+    const first = issueApprovalChallenge({ request: pendingRecord(), decision: 'approved', decidedBy: 'owner@example.com' });
+    const second = issueApprovalChallenge({ request: pendingRecord({ id: 'apr-prov-2' }), decision: 'approved', decidedBy: 'owner@example.com' });
+    assert.ok(first.signing_instructions.every((line) => !line.includes('<payload_base64>')));
+    assert.strictEqual(signingCommandFrom(first.signing_instructions).argument, first.payload_base64);
+    assert.strictEqual(signingCommandFrom(second.signing_instructions).argument, second.payload_base64);
+    assert.notStrictEqual(first.payload_base64, second.payload_base64);
+    assert.ok(APPROVAL_SIGNING_INSTRUCTIONS.some((line) => line.includes('<payload_base64>')), 'issuing must not mutate the shared instructions');
   });
 });
 
