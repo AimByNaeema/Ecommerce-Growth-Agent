@@ -89,10 +89,15 @@ function makeBrowser({
   initialClipboard = null,
   source = DASHBOARD_SOURCE,
   assetVersions = ['W/"dashboard-v1"'],
+  // `helper(url, options)`: the local signing helper's answer (a response, or a thrown network error).
+  // `fetchImpl` / `apiFetchImpl`: real network calls for the complete-flow test.
+  helper = null,
+  fetchImpl = null,
+  apiFetchImpl = null,
 } = {}) {
   const ids = [...drawerMarkup().matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
   const elements = new Map();
-  const state = { focused: null, clipboardText: initialClipboard, clipboardWrites: [], execCommands: [], apiCalls: [], assetRequests: [] };
+  const state = { focused: null, clipboardText: initialClipboard, clipboardWrites: [], execCommands: [], apiCalls: [], assetRequests: [], helperRequests: [] };
   const versions = assetVersions.slice();
   const makeElement = (id) => {
     const listeners = {};
@@ -144,17 +149,24 @@ function makeBrowser({
               },
             },
           },
-    apiFetch: async (url) => {
+    apiFetch: async (url, options) => {
       state.apiCalls.push(url);
+      if (apiFetchImpl) return apiFetchImpl(url, options);
       const { status, body } = challengeResponse;
       return { ok: status >= 200 && status < 300, status, json: async () => JSON.parse(JSON.stringify(body)) };
     },
-    // Plain fetch is used only for the public dashboard.js version check.
+    // Plain fetch: the public dashboard.js version check, and the local signing helper.
     fetch: async (url, options = {}) => {
-      state.assetRequests.push({ url, method: options.method || 'GET', headers: options.headers || null });
-      const version = versions.length > 1 ? versions.shift() : versions[0];
-      if (version === 'unreachable') throw new Error('network error');
-      return { ok: true, status: 200, headers: { get: (name) => (name.toLowerCase() === 'etag' ? version : null) } };
+      if (url === 'dashboard.js') {
+        state.assetRequests.push({ url, method: options.method || 'GET', headers: options.headers || null });
+        const version = versions.length > 1 ? versions.shift() : versions[0];
+        if (version === 'unreachable') throw new Error('network error');
+        return { ok: true, status: 200, headers: { get: (name) => (name.toLowerCase() === 'etag' ? version : null) } };
+      }
+      state.helperRequests.push({ url, options });
+      if (fetchImpl) return fetchImpl(url, options);
+      if (typeof helper !== 'function') throw new TypeError('Failed to fetch');
+      return helper(url, options);
     },
     Promise,
   };
@@ -472,6 +484,234 @@ function realChallenge(id) {
       await settle();
       assert.strictEqual(current.browser.elements.get('signingVersionNotice').hidden, true, `${assetVersions[0]}: no warning`);
       await current.done();
+    }
+  });
+
+  // ---- LOCAL SIGNING HELPER (approvals/localSigningHelper/) ------------------------------------------
+  // Approval Center -> Approve -> Sign: the helper on the approver's computer signs after a local Yes, and
+  // only the base64 signature comes back. No copying, no commands, no private key in the page.
+  const localSigningHelper = require('../../approvals/localSigningHelper/localSigningHelper');
+  const LOCAL_HELPER_URL = 'http://127.0.0.1:47321';
+  const helperResponse = (status, body) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: body === undefined ? async () => { throw new SyntaxError('Unexpected token'); } : async () => JSON.parse(JSON.stringify(body)),
+  });
+  const settleTicks = async () => { for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+
+  await testAsync('LOCAL HELPER: one click signs through the helper on this computer - no copying, no API key, no cookies - and the server verifies it', async () => {
+    const { request, challenge } = realChallenge('apr-drawer-helper-sign');
+    const signature = crypto.sign(null, Buffer.from(challenge.payload_base64, 'base64'), keys.privateKey).toString('base64');
+    const browser = makeBrowser({ challengeResponse: { status: 200, body: challenge }, helper: async () => helperResponse(200, { signature }) });
+    const pending = browser.context.collectSignedApproval({ approvalId: request.id, decision: 'approved', decidedBy: DECIDED_BY });
+    await opened(browser);
+
+    browser.elements.get('signingHelperSign').click();
+    assert.strictEqual(browser.elements.get('signingHelperSign').disabled, true, 'the button waits while the owner confirms');
+    assert.ok(/confirm in the signing helper window/.test(browser.elements.get('signingHelperStatus').textContent));
+    const signed = await pending;
+
+    assert.deepStrictEqual({ ...signed }, { ok: true, nonce: challenge.nonce, signature }, 'the same result shape the approve calls submit');
+    const [sent] = browser.state.helperRequests;
+    assert.strictEqual(browser.state.helperRequests.length, 1);
+    assert.strictEqual(sent.url, `${LOCAL_HELPER_URL}/sign`, 'only the loopback helper is contacted');
+    assert.strictEqual(sent.options.method, 'POST');
+    assert.strictEqual(sent.options.credentials, 'omit', 'no cookies');
+    assert.strictEqual(sent.options.referrerPolicy, 'no-referrer');
+    assert.deepStrictEqual({ ...sent.options.headers }, { 'Content-Type': 'application/json' }, 'no API key or other header');
+    assert.deepStrictEqual(JSON.parse(sent.options.body), {
+      payload_base64: challenge.payload_base64,
+      request_id: challenge.request_id,
+      decision: challenge.decision,
+      decided_by: challenge.decided_by,
+      nonce: challenge.nonce,
+    }, 'exactly the challenge fields the helper checks - nothing else');
+    assert.deepStrictEqual(browser.state.clipboardWrites, [], 'nothing is copied');
+    assert.deepStrictEqual(browser.state.execCommands, []);
+    assert.strictEqual(browser.elements.get('signingDrawer').hidden, true);
+    const verified = verifyApprovalAuthorization({ request, decision: 'approved', decidedBy: DECIDED_BY, authorization: { nonce: signed.nonce, signature: signed.signature } });
+    assert.strictEqual(verified.verified, true, verified.reason);
+  });
+
+  await testAsync('LOCAL HELPER FAILURES (Windows): not running or blocked, declined, key missing or locked, no window, busy, expired, timeout or a bad answer - nothing is submitted and manual signing still works', async () => {
+    const E = localSigningHelper.SIGNING_HELPER_ERRORS;
+    const cases = [
+      ['not running / local network access blocked', async () => { throw new TypeError('Failed to fetch'); }, /not reachable on this computer.*start-local-signing-helper\.cmd.*sign manually/],
+      ['declined in the Windows window', async () => helperResponse(403, { error: E.declined_by_owner.message, code: 'declined_by_owner' }), new RegExp(E.declined_by_owner.message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))],
+      ['key file missing', async () => helperResponse(500, { error: E.key_not_found.message, code: 'key_not_found' }), /private key file was not found/],
+      ['key file locked or protected', async () => helperResponse(500, { error: E.key_access_denied.message, code: 'key_access_denied' }), /could not read the approval private key file/],
+      ['confirmation window unavailable', async () => helperResponse(503, { error: E.confirmation_unavailable.message, code: 'confirmation_unavailable' }), /could not show its confirmation window/],
+      ['another approval waiting', async () => helperResponse(409, { error: E.busy.message, code: 'busy' }), /already waiting for your confirmation/],
+      ['challenge too old', async () => helperResponse(410, { error: E.challenge_expired.message, code: 'challenge_expired' }), /too old to sign/],
+      ['no answer in time', async () => { const err = new Error('The operation was aborted.'); err.name = 'AbortError'; throw err; }, /did not answer in time/],
+      ['not an Ed25519 signature', async () => helperResponse(200, { signature: 'not-a-signature' }), /did not return an Ed25519 signature/],
+      ['a non-JSON error page', async () => helperResponse(502), /refused to sign \(HTTP 502\)/],
+    ];
+    for (const [label, helper, expected] of cases) {
+      const { request, challenge } = realChallenge(`apr-drawer-helper-fail-${label.replace(/\W+/g, '-')}`);
+      const browser = makeBrowser({ challengeResponse: { status: 200, body: challenge }, helper });
+      const pending = browser.context.collectSignedApproval({ approvalId: request.id, decision: 'approved', decidedBy: DECIDED_BY });
+      await opened(browser);
+      browser.elements.get('signingHelperSign').click();
+      await settleTicks();
+      const status = browser.elements.get('signingHelperStatus').textContent;
+      assert.ok(expected.test(status), `${label}: "${status}"`);
+      assert.strictEqual(browser.elements.get('signingDrawer').hidden, false, `${label}: the drawer stays open`);
+      assert.strictEqual(browser.elements.get('signingHelperSign').disabled, false, `${label}: the owner can try again`);
+      assert.strictEqual(browser.elements.get('signingSignature').value, '', `${label}: no signature is filled in`);
+
+      if (label.startsWith('not running')) {
+        // Manual signing remains available as the fallback.
+        const manual = crypto.sign(null, Buffer.from(challenge.payload_base64, 'base64'), keys.privateKey).toString('base64');
+        browser.elements.get('signingSignature').value = manual;
+        browser.elements.get('signingSubmit').click();
+        const signed = await pending;
+        assert.deepStrictEqual({ ...signed }, { ok: true, nonce: challenge.nonce, signature: manual });
+      } else {
+        browser.elements.get('signingCancel').click();
+        assert.deepStrictEqual({ ...(await pending) }, { ok: false, error: 'Approval cancelled - no signature was provided.' }, label);
+      }
+    }
+  });
+
+  await testAsync('LOCAL HELPER: a second click while waiting sends nothing more, and a signature that arrives after Cancel is discarded', async () => {
+    const { request, challenge } = realChallenge('apr-drawer-helper-late');
+    let answer;
+    const browser = makeBrowser({ challengeResponse: { status: 200, body: challenge }, helper: () => new Promise((resolve) => { answer = resolve; }) });
+    const pending = browser.context.collectSignedApproval({ approvalId: request.id, decision: 'approved', decidedBy: DECIDED_BY });
+    await opened(browser);
+    browser.elements.get('signingHelperSign').click();
+    browser.elements.get('signingHelperSign').click();
+    assert.strictEqual(browser.state.helperRequests.length, 1, 'one request only');
+    browser.elements.get('signingCancel').click();
+    assert.deepStrictEqual({ ...(await pending) }, { ok: false, error: 'Approval cancelled - no signature was provided.' });
+    answer(helperResponse(200, { signature: crypto.sign(null, Buffer.from(challenge.payload_base64, 'base64'), keys.privateKey).toString('base64') }));
+    await settleTicks();
+    assert.strictEqual(browser.elements.get('signingDrawer').hidden, true);
+    assert.strictEqual(browser.elements.get('signingSignature').value, '', 'the late signature is not used');
+  });
+
+  await testAsync('COMPLETE LOCAL-SIGNING FLOW: Chief approval -> server challenge -> Dashboard drawer -> helper signs after the local Yes -> the server verifies and records it; a replay is refused', async () => {
+    const os = require('node:os');
+    const orchestratorExecutionContract = require('../../agent/core/orchestratorExecutionContract');
+    const { createApprovalRequest } = require('../../approvals/approvalWorkflow');
+    const API_KEY = 'test-agent-api-key-do-not-use-in-production';
+    const DASHBOARD_ORIGIN = 'https://dashboard.example.test';
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'complete-local-signing-'));
+    const keyPath = path.join(temp, 'approval-private.pem');
+    fs.writeFileSync(keyPath, keys.privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    const savedEnv = {};
+    const env = { AGENT_API_KEY: API_KEY, RUN_HISTORY_STORE_DIR: path.join(temp, 'runs'), APPROVAL_STORE_DIR: path.join(temp, 'approvals'), RATE_LIMIT_MAX_REQUESTS: '10000' };
+    for (const [name, value] of Object.entries(env)) {
+      savedEnv[name] = process.env[name];
+      process.env[name] = value;
+    }
+    const saved = { run: orchestratorExecutionContract.runOrchestratorContract, resume: orchestratorExecutionContract.resumeApprovedExecution };
+    const approval = createApprovalRequest({
+      id: 'apr-complete-local-1',
+      classification: 'externally_executable',
+      specialistId: 'analytics_optimization',
+      toolId: 'analytics_data_retrieval',
+      executionRequest: { objective: 'Analyze store performance.', tool_id: 'analytics_data_retrieval' },
+      reason: 'Executing this tool requires explicit approval before it can proceed.',
+    });
+    let resumed = 0;
+    orchestratorExecutionContract.runOrchestratorContract = async () => ({
+      objective: 'Analyze store performance.',
+      routing: {
+        status: 'planned',
+        plan: [{
+          request: 'Analyze store performance.', current_task: 'Analyze store performance.',
+          selected_specialist: { type: 'specialist', id: 'analytics_optimization', title: 'Analytics & Optimization' },
+          inputs: { category: 'analytics', tool_id: 'analytics_data_retrieval', capability_id: 'sales', input_contract: null },
+          required_context: [], outputs: null, evidence: [], confidence: 'unassessed', tool_calls: ['analytics_data_retrieval'],
+          approvals: [{ classification: 'externally_executable', status: 'required', approval_request_id: approval.id }],
+          errors: [], completion_state: 'blocked',
+        }],
+      },
+      pending_approvals: [approval],
+    });
+    orchestratorExecutionContract.resumeApprovedExecution = async (decided) => {
+      resumed += 1;
+      assert.strictEqual(decided.status, 'approved');
+      return { status: 'success', data: { status: 'success', result: { ok: true } }, error: null, classification: 'externally_executable' };
+    };
+
+    const appServer = createApp().listen(0);
+    await new Promise((resolve) => appServer.once('listening', resolve));
+    const confirmations = [];
+    const helper = localSigningHelper.createSigningHelper({
+      keyPath,
+      allowedOrigins: [DASHBOARD_ORIGIN],
+      confirm: async (text) => { confirmations.push(text); return true; },
+    });
+    const helperServer = await helper.listen(0);
+    const appPort = appServer.address().port;
+    const helperPort = helperServer.address().port;
+
+    // Real HTTP, as the browser sends it: the Dashboard's API calls carry the API key; the helper call carries
+    // the page's Origin and nothing else.
+    const httpCall = (port, requestPath, { method = 'GET', headers = {}, body } = {}) =>
+      new Promise((resolve, reject) => {
+        const req = http.request({ hostname: '127.0.0.1', port, path: requestPath, method, headers: { ...headers, ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}) } }, (res) => {
+          let raw = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk) => { raw += chunk; });
+          res.on('end', () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, raw, json: async () => JSON.parse(raw) }));
+        });
+        req.on('error', reject);
+        if (body) req.write(body);
+        req.end();
+      });
+    const api = (requestPath, options = {}) =>
+      httpCall(appPort, requestPath, { method: options.method || 'GET', body: options.body, headers: { Authorization: `Bearer ${API_KEY}`, ...(options.headers || {}) } });
+
+    try {
+      const orchestrated = await api('/orchestrate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objective: 'Analyze store performance.' }) });
+      const runId = JSON.parse(orchestrated.raw).run_id;
+      assert.ok(runId, orchestrated.raw);
+
+      const browser = makeBrowser({
+        challengeResponse: null,
+        apiFetchImpl: (url) => api(url),
+        fetchImpl: (url, options) => {
+          assert.ok(url.startsWith(`${LOCAL_HELPER_URL}/`), url);
+          return httpCall(helperPort, url.slice(LOCAL_HELPER_URL.length), {
+            method: options.method,
+            headers: { ...options.headers, Origin: DASHBOARD_ORIGIN },
+            body: options.body,
+          });
+        },
+      });
+      const pending = browser.context.collectSignedApproval({ approvalId: approval.id, decision: 'approved', decidedBy: 'naeema' });
+      await opened(browser);
+      browser.elements.get('signingHelperSign').click();
+      const signed = await pending;
+      assert.strictEqual(signed.ok, true, JSON.stringify(signed));
+      assert.strictEqual(confirmations.length, 1, 'the owner confirmed once, locally');
+      assert.ok(confirmations[0].includes(approval.id));
+
+      // What the Approval Center then submits - unchanged.
+      const decide = (body) => api('/orchestrate/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const approved = await decide({ runId, approvalId: approval.id, decision: 'approved', decidedBy: 'naeema', nonce: signed.nonce, signature: signed.signature });
+      assert.strictEqual(approved.status, 200, approved.raw);
+      const result = JSON.parse(approved.raw);
+      assert.strictEqual(result.approval_request.status, 'approved');
+      assert.strictEqual(result.approval_request.decided_by, 'naeema');
+      assert.strictEqual(resumed, 1, 'the approved action ran through the unchanged resume path');
+
+      const replay = await decide({ runId, approvalId: approval.id, decision: 'approved', decidedBy: 'naeema', nonce: signed.nonce, signature: signed.signature });
+      assert.strictEqual(replay.status, 400, 'the same signature never decides twice');
+    } finally {
+      orchestratorExecutionContract.runOrchestratorContract = saved.run;
+      orchestratorExecutionContract.resumeApprovedExecution = saved.resume;
+      await new Promise((resolve) => helperServer.close(resolve));
+      await new Promise((resolve) => appServer.close(resolve));
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      fs.rmSync(temp, { recursive: true, force: true });
     }
   });
 

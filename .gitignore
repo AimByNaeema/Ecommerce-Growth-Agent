@@ -6,6 +6,10 @@ node_modules/
 .env.local
 .env.*.local
 
+# Private keys - the approval private key belongs only on the approver's computer
+# (approvals/localSigningHelper/README.md), never in this repository.
+*.pem
+
 # Real business configuration (not a template) — kept out of git normally so this
 # codebase stays reusable for a different business without a code change (CLAUDE.md
 # rule 14). Committed anyway for this repo (private, owner-confirmed) so hosting

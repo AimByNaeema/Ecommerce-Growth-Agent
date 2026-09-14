@@ -695,7 +695,72 @@
     );
   }
 
-  // Shows one challenge and resolves with the pasted signature, or null when the person cancels.
+  // LOCAL SIGNING HELPER (approvals/localSigningHelper/). A small program on the approver's own computer
+  // signs the challenge after the approver confirms it in a window outside the browser, and returns only
+  // the base64 signature, which is submitted exactly as a pasted one. The request goes to 127.0.0.1 with
+  // plain fetch: no API key, no cookies, no referrer. The page never sees or handles the private key, and
+  // the server verifies the signature exactly as before.
+  const LOCAL_SIGNING_HELPER_URL = 'http://127.0.0.1:47321';
+  // Longer than the helper's own two-minute confirmation window.
+  const LOCAL_SIGNING_TIMEOUT_MS = 150 * 1000;
+  const ED25519_SIGNATURE_BASE64 = /^[A-Za-z0-9+/]{86}==$/;
+  const HELPER_UNREACHABLE_MESSAGE =
+    'The local signing helper is not reachable on this computer. Start it (approvals/localSigningHelper/start-local-signing-helper.cmd), ' +
+    'allow local network access if the browser asks, and try again - or sign manually below.';
+
+  function requestLocalSignature(challenge) {
+    if (typeof fetch !== 'function') return Promise.resolve({ ok: false, code: 'helper_unreachable', message: HELPER_UNREACHABLE_MESSAGE });
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(function () { controller.abort(); }, LOCAL_SIGNING_TIMEOUT_MS) : null;
+    return fetch(LOCAL_SIGNING_HELPER_URL + '/sign', {
+      method: 'POST',
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        payload_base64: challenge.payload_base64,
+        request_id: challenge.request_id,
+        decision: challenge.decision,
+        decided_by: challenge.decided_by,
+        nonce: challenge.nonce,
+      }),
+      signal: controller ? controller.signal : undefined,
+    })
+      .then(
+        function (res) {
+          return res.json().catch(function () { return {}; }).then(function (body) {
+            if (res.ok && body && typeof body.signature === 'string' && ED25519_SIGNATURE_BASE64.test(body.signature)) {
+              return { ok: true, signature: body.signature };
+            }
+            if (res.ok) {
+              return { ok: false, code: 'invalid_signature_response', message: 'The local signing helper did not return an Ed25519 signature. Nothing was submitted.' };
+            }
+            return {
+              ok: false,
+              code: body && typeof body.code === 'string' ? body.code : 'helper_error',
+              message: body && typeof body.error === 'string' && body.error
+                ? body.error
+                : 'The local signing helper refused to sign (HTTP ' + res.status + '). Nothing was submitted.',
+            };
+          });
+        },
+        function (err) {
+          if (err && err.name === 'AbortError') {
+            return { ok: false, code: 'helper_timeout', message: 'The local signing helper did not answer in time. Nothing was submitted.' };
+          }
+          return { ok: false, code: 'helper_unreachable', message: HELPER_UNREACHABLE_MESSAGE };
+        }
+      )
+      .then(function (result) {
+        if (timer) clearTimeout(timer);
+        return result;
+      });
+  }
+
+  // Shows one challenge and resolves with the signature (from the local signing helper, or pasted), or
+  // null when the person cancels.
   function askForSignature(challenge) {
     const el = function (id) { return document.getElementById(id); };
     const drawer = el('signingDrawer');
@@ -716,21 +781,44 @@
       (challenge.expires_at ? ' · expires ' + String(challenge.expires_at) : '');
     signatureField.value = '';
     statusEl.textContent = '';
+    const helperButton = el('signingHelperSign');
+    const helperStatus = el('signingHelperStatus');
+    if (helperButton) helperButton.disabled = false;
+    if (helperStatus) helperStatus.textContent = '';
     drawer.hidden = false;
     warnIfDashboardIsStale(el('signingVersionNotice'));
 
     return new Promise(function (resolve) {
       const cleanups = [];
+      let settled = false;
       const on = function (target, type, handler) {
         if (!target) return;
         target.addEventListener(type, handler);
         cleanups.push(function () { target.removeEventListener(type, handler); });
       };
       const finish = function (value) {
+        if (settled) return;
+        settled = true;
         cleanups.forEach(function (cleanup) { cleanup(); });
         drawer.hidden = true;
         resolve(value);
       };
+      on(helperButton, 'click', function () {
+        if (settled || helperButton.disabled) return;
+        helperButton.disabled = true;
+        helperStatus.textContent = 'Waiting for you to confirm in the signing helper window on this computer…';
+        requestLocalSignature(challenge).then(function (result) {
+          if (settled) return;
+          helperButton.disabled = false;
+          if (result.ok) {
+            signatureField.value = result.signature;
+            helperStatus.textContent = 'Signed on this computer. Submitting the signature for verification…';
+            finish(result.signature);
+            return;
+          }
+          helperStatus.textContent = result.message;
+        });
+      });
       on(el('signingSubmit'), 'click', function () {
         const signature = signatureField.value.trim();
         if (!signature) {

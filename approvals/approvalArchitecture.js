@@ -554,6 +554,7 @@ module.exports = {
   APPROVAL_SIGNING_INSTRUCTIONS,
   APPROVAL_VERIFICATION_CHECKS,
   CHALLENGE_TTL_ENV,
+  getChallengeTtlMs,
   computeExecutionFingerprint,
   buildApprovalPayload,
   getConfiguredApprovalPublicKey,
