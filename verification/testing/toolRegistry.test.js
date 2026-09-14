@@ -29,6 +29,8 @@ const EXPECTED_PLATFORM_BINDINGS = {
   shopify_vendor_correction: ['shopify'],
   shopify_inventory_correction: ['shopify'],
   shopify_collection_membership_update: ['shopify'],
+  // Writes a product's SEO title/meta description through the same productUpdate mutation.
+  shopify_product_seo_update: ['shopify'],
   etsy_shop_data_retrieval: ['etsy'],
   etsy_listing_data_retrieval: ['etsy'],
   // The one genuinely multi-platform tool: tools/customerMarketOpportunityTool.js reads
@@ -76,6 +78,7 @@ const EXPECTED_ORDER = [
   'shopify_vendor_correction',
   'shopify_inventory_correction',
   'shopify_collection_membership_update',
+  'shopify_product_seo_update',
 ];
 
 const IMPLEMENTED_IDS = [
@@ -133,6 +136,9 @@ const IMPLEMENTED_IDS = [
   'shopify_vendor_correction',
   'shopify_inventory_correction',
   'shopify_collection_membership_update',
+  // The fourth 'execute' tool: applies an existing SEO proposal's approved values through the same
+  // compliance -> approval -> publish-authorization chain (integrations/shopifyProductSeoUpdate.js).
+  'shopify_product_seo_update',
 ];
 
 let passed = 0;
@@ -150,7 +156,7 @@ function test(name, fn) {
   }
 }
 
-test('the registry has exactly the 39 required tools, in the requested order', () => {
+test('the registry has exactly the 40 required tools, in the requested order', () => {
   assert.deepStrictEqual(
     TOOL_REGISTRY.map((tool) => tool.id),
     EXPECTED_ORDER
@@ -181,12 +187,12 @@ test('TOOL_OPERATIONS is exactly read/write/execute', () => {
   assert.deepStrictEqual(TOOL_OPERATIONS, ['read', 'write', 'execute']);
 });
 
-test('exactly the three Shopify write tools are "execute" - each calls the external store directly, once authorized', () => {
+test('exactly the four Shopify write tools are "execute" - each calls the external store directly, once authorized', () => {
   assert.deepStrictEqual(
     getToolsByOperation('execute')
       .map((tool) => tool.id)
       .sort(),
-    ['shopify_collection_membership_update', 'shopify_inventory_correction', 'shopify_vendor_correction']
+    ['shopify_collection_membership_update', 'shopify_inventory_correction', 'shopify_product_seo_update', 'shopify_vendor_correction']
   );
 });
 

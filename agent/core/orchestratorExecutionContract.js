@@ -87,6 +87,9 @@ const { createUsageLedger, appendUsageEvent, summarizeUsage } = require('../../u
 const { isValidBusinessId, getEnabledPlatforms } = require('../../configuration/businessRegistry');
 const {
   isCorrectionTool,
+  requiresSourceProposal,
+  verifyCorrectionSource,
+  checkCorrectionAlreadyVerified,
   buildCorrectionComplianceInput,
   executeApprovedCorrection,
 } = require('../../integrations/approvedCorrectionDispatch');
@@ -131,6 +134,12 @@ const { decideResearchContinuity, routedTargetNeedsOwnStep } = require('./resear
 const { STORE_RESEARCH_BASIS, prioritizeStoreOpportunities } = require('./storeOpportunityPrioritization');
 // A change PROPOSAL built on that research - before/after values held for human approval.
 const { proposeSeoChanges, PROPOSAL_TOOL_ID, PROPOSAL_SPECIALIST_ID } = require('./seoChangeProposal');
+// Applying such a proposal once it exists - resolved against durable approval state, never re-worded.
+const {
+  decideProposalExecution,
+  resolveProposalExecution,
+  APPLICATION_TOOL_ID: PROPOSAL_APPLICATION_TOOL_ID,
+} = require('./proposalExecution');
 // One honest, compact sentence per finished execution state (agent/core/resultSummary.js) -
 // reused unchanged as the memory record's own `summary` (memoryRules.js's "compact"
 // quality) rather than inventing a second summarization path.
@@ -852,7 +861,26 @@ async function executeSelectedCapability(
   // there would let a phrasing quirk void a cryptographically approved action. The
   // request can only have been created here in the first place, so this is the point
   // where it is actually preventable.
-  if (isCorrectionTool(access.tool_id) && !maySelectMutationTool(executionRequest.objective)) {
+  // A correction whose values may only come from an EXISTING PROPOSAL (shopify_product_seo_update) is
+  // held to that instead of to the objective's wording: the proposal it names is re-read from durable
+  // approval state, and the request must be exactly it - this business, this product, the proposal's own
+  // before/after values, and a proposal the owner has not rejected. Stronger than a verb in the text, and
+  // it applies however the request was built. Without a matching proposal nothing is queued.
+  if (requiresSourceProposal(access.tool_id)) {
+    const source = verifyCorrectionSource(access.tool_id, executionRequest);
+    if (!source.ok) {
+      const reason = `Tool '${access.tool_id}' only applies an existing proposal, and this request does not match one (${source.reason_code}): ${source.reason} No approval was created.`;
+      appendAuditEvent(runAuditTracker, {
+        type: 'error',
+        toolId: access.tool_id,
+        specialistId: executionRequest.specialist_id,
+        classification: access.classification,
+        status: 'denied',
+        summary: reason,
+      });
+      return { status: 'denied', data: null, error: reason, classification: access.classification, source_proposal: source.reason_code };
+    }
+  } else if (isCorrectionTool(access.tool_id) && !maySelectMutationTool(executionRequest.objective)) {
     const reason = mutationIntentRefusalReason(access.tool_id, executionRequest.objective);
     appendAuditEvent(runAuditTracker, {
       type: 'error',
@@ -2394,7 +2422,11 @@ async function buildPlanStep(
   // renaming it to avoid the collision did not fix that). It is reached only through the
   // narrow, capability-gated swap below, or through forcedSelection - never by winning
   // this contest.
-  const NON_SCORABLE_TOOL_IDS = new Set(['live_competitor_research', 'catalogue_expansion_opportunities']);
+  //
+  // shopify_product_seo_update is excluded for a different reason: it has nothing to score on. Its
+  // values come only from an existing proposal, which proposalExecution.js resolves before routing, so
+  // winning a word-overlap contest could only ever produce a request its own source gate refuses.
+  const NON_SCORABLE_TOOL_IDS = new Set(['live_competitor_research', 'catalogue_expansion_opportunities', 'shopify_product_seo_update']);
   const scorableToolIds = candidateToolIds.filter((toolId) => !NON_SCORABLE_TOOL_IDS.has(toolId));
 
   if (!toolMatch) {
@@ -2964,6 +2996,7 @@ function buildRoutingResponse({
   researchContinuity = null,
   storeOpportunityPriorities = null,
   seoChangeProposal = null,
+  proposalExecution = null,
 }) {
   const needsMoreInfo = routing.status === 'clarification_required';
   const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
@@ -3027,6 +3060,8 @@ function buildRoutingResponse({
     ...(storeOpportunityPriorities ? { store_opportunity_priorities: storeOpportunityPriorities } : {}),
     // Present only when the continued objective asked for changes to be proposed for approval.
     ...(seoChangeProposal ? { seo_change_proposal: seoChangeProposal } : {}),
+    // Present only when the objective asked to apply an existing proposal (agent/core/proposalExecution.js).
+    ...(proposalExecution ? { proposal_execution: proposalExecution } : {}),
   };
 }
 
@@ -3175,6 +3210,16 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   }
 
   let routingResult = planRouting(objective);
+
+  // PROPOSAL EXECUTION (agent/core/proposalExecution.js). Decided on the objective's structure BEFORE
+  // clarification: "Apply the proposed SEO title ... from the pending approval" is not an unsupported
+  // action when its object is a proposal the approval system already holds. It is resolved against
+  // durable approval state and answered with one gated approval - or a precise question back, with no
+  // approval - and never continues into research or routing.
+  const proposalDecision = decideProposalExecution({ objective, routingResult });
+  if (proposalDecision.applies) {
+    return runProposalExecution({ objective, decision: proposalDecision, businessId, researchContext, runId, runAuditTracker, runUsageLedger });
+  }
 
   // RESEARCH CONTINUITY (agent/core/researchContext.js's decideResearchContinuity). Decided on the
   // objective and its interpretation BEFORE clarification or AI re-segmentation: an objective that
@@ -3579,6 +3624,7 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
       priorities: storeOpportunityPriorities,
       objective,
       businessId,
+      storeReference: researchContext && typeof researchContext.store_reference === 'string' ? researchContext.store_reference : null,
       sourceRunId: researchContinuity && researchContinuity.source ? researchContinuity.source.run_id : null,
     });
     for (const product of seoChangeProposal.products) {
@@ -3633,6 +3679,124 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
     usageLedger: runUsageLedger.events,
     usageSummary: summarizeUsage(runUsageLedger),
   });
+}
+
+// Answers an objective that asks to apply an existing proposal (agent/core/proposalExecution.js).
+//
+// Resolves the ONE stored proposal and the exact fields meant, then asks for the store change through
+// the same executeSelectedCapability every gated step uses - permissions, the platform gate, the source
+// gate (gate 3), compliance, approval creation and audit all apply unchanged - as a single plan step, so
+// /orchestrate/approve can fold the approved execution back into it. Nothing is written here: the
+// only outcome is a pending approval, or a question back with no approval.
+async function runProposalExecution({ objective, decision, businessId, researchContext, runId, runAuditTracker, runUsageLedger }) {
+  const respond = (routing, extra = {}) =>
+    buildRoutingResponse({
+      objective,
+      routing,
+      auditTrail: runAuditTracker.events,
+      usageLedger: runUsageLedger.events,
+      usageSummary: summarizeUsage(runUsageLedger),
+      ...extra,
+    });
+  const clarify = (clarificationType, reason, proposalExecution) => {
+    appendAuditEvent(runAuditTracker, { type: 'agent', status: 'not_resolved', summary: `Proposal execution not started: ${reason}` });
+    return respond(
+      { status: 'clarification_required', clarification_type: clarificationType, reason, candidates: null, unmatched_segment: null, plan: null },
+      { proposalExecution: { status: 'not_started', store_writes: 0, ...proposalExecution } }
+    );
+  };
+
+  // Another operation in the same message is not silently dropped while the proposal is applied.
+  if (decision.additional_requests.length > 0) {
+    return clarify(
+      'proposal_execution_mixed',
+      `This message asks to apply an existing proposal and also to do something else (${decision.additional_requests.map((clause) => `"${clause}"`).join(', ')}). ` +
+        'Send the other request separately so each gets its own checks. Nothing was changed.',
+      { additional_requests: decision.additional_requests }
+    );
+  }
+
+  const resolution = resolveProposalExecution({
+    objective,
+    executionText: decision.execution_text,
+    businessId,
+    storeReference: researchContext && typeof researchContext.store_reference === 'string' ? researchContext.store_reference : undefined,
+  });
+  appendAuditEvent(runAuditTracker, {
+    type: 'data_access',
+    status: resolution.status,
+    summary:
+      resolution.status === 'resolved'
+        ? `Resolved the request to stored SEO proposal '${resolution.source.approval_id}' for '${resolution.source.product_reference}' (${resolution.applied_changes.map((change) => change.shopify_field).join(', ')}).`
+        : `Looked up stored SEO proposals (${resolution.considered.proposals} for this business): ${resolution.status}.`,
+  });
+  if (resolution.status !== 'resolved') {
+    return clarify(resolution.status === 'ambiguous' ? 'proposal_ambiguous' : 'proposal_not_resolved', resolution.reason, {
+      candidates: resolution.candidates,
+    });
+  }
+
+  const tool = getToolById(PROPOSAL_APPLICATION_TOOL_ID);
+  const executionRequest = createExecutionRequest(objective, { category: tool.category, tool }, resolution.research_params, businessId);
+  const described = {
+    tool_id: tool.id,
+    source_approval_id: resolution.source.approval_id,
+    source_approval_status: resolution.source.approval_status,
+    product_reference: resolution.source.product_reference,
+    product_id: resolution.research_params.productId,
+    applied_changes: resolution.applied_changes,
+    not_applied: resolution.not_applied,
+    answered_by_execution: decision.answered_by_execution,
+  };
+
+  // An exact change already applied and independently verified is never asked for again.
+  const alreadyVerified = checkCorrectionAlreadyVerified(tool.id, executionRequest);
+  if (!alreadyVerified.allowed) {
+    return clarify(
+      'proposal_already_applied',
+      `The proposed ${resolution.applied_changes.map((change) => change.shopify_field).join(' and ')} for "${resolution.source.product_reference}" has already been applied and verified, so no new approval was created. Nothing was changed.`,
+      described
+    );
+  }
+
+  const runApprovalTracker = { requests: [], id_prefix: runId };
+  const outcome = await executeSelectedCapability(
+    executionRequest,
+    { tokensUsedThisRun: 0 },
+    runApprovalTracker,
+    runAuditTracker,
+    null,
+    createUsageTracker(),
+    runUsageLedger
+  );
+  const step = deriveExecutionState({
+    request: objective,
+    currentTask: decision.execution_text,
+    target: buildSpecialistTarget(executionRequest.specialist_id),
+    category: tool.category,
+    toolId: tool.id,
+    capabilityId: null,
+    inputContract: null,
+    requiredContextIds: gatherMinimumContext(executionRequest).map((boundary) => boundary.id),
+    outcome,
+    verificationStatus: validateResult(outcome),
+    approvalRequestId: outcome ? outcome.approval_request_id || null : null,
+  });
+
+  return respond(
+    { status: 'planned', clarification_type: null, reason: null, candidates: null, unmatched_segment: null, plan: [step] },
+    {
+      growthOpportunityDrafts: [],
+      pendingApprovals: runApprovalTracker.requests,
+      proposalExecution: {
+        status: outcome && outcome.status === 'approval_required' ? 'awaiting_approval' : 'not_created',
+        store_writes: 0,
+        ...described,
+        approval_id: outcome && outcome.approval_request_id ? outcome.approval_request_id : null,
+        reason: outcome && outcome.status !== 'approval_required' ? outcome.error || null : null,
+      },
+    }
+  );
 }
 
 // The phrase buildPlanStep's missing-evidence stop uses, shared so the dependency check in

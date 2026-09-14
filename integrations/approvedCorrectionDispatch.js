@@ -49,6 +49,14 @@ const executionVerification = require('../reliability/executionVerification');
 const { correctProductVendor } = require('./shopifyVendorCorrection');
 const { correctInventoryDeficit } = require('./shopifyInventoryCorrection');
 const { addProductToFreeDesignsCollection } = require('./shopifyCollectionMembership');
+const {
+  SEO_FIELDS,
+  UNCHANGED_PRODUCT_FIELDS,
+  projectProduct,
+  validateAppliedChanges,
+  verifySeoProposalSource,
+  applyApprovedProductSeo,
+} = require('./shopifyProductSeoUpdate');
 
 // Every correction here writes to Shopify, so this is the platform each one is verified on and
 // bound to. Not a guess: the three integration modules each state PLATFORM 'shopify'.
@@ -160,6 +168,49 @@ const CORRECTION_DISPATCH = {
     run: (params, common) =>
       addProductToFreeDesignsCollection({ ...common, collectionId: params.collectionId, productId: params.productId }),
   },
+  shopify_product_seo_update: {
+    module: 'integrations/shopifyProductSeoUpdate.js',
+    required_params: ['productId', 'sourceApprovalId', 'appliedChanges'],
+    // ITS VALUES MAY ONLY COME FROM AN EXISTING PROPOSAL. Unlike the three corrections above, whose
+    // values a request states, this one applies before/after values agent/core/seoChangeProposal.js
+    // already put in front of the owner. The source is re-read from durable approval state when the
+    // Chief creates the approval (orchestratorExecutionContract.js's gate 3) and again here before
+    // execution, so a rejected or cancelled proposal, another product, another business or an
+    // altered value is refused without a Shopify call.
+    verify_source: (executionRequest, options) => verifySeoProposalSource(executionRequest, options),
+    // The literal values that will be written, one line per approved field; the reference is the product.
+    compliance_content: (params) => {
+      const checked = validateAppliedChanges(params.appliedChanges);
+      if (!checked.ok) return null;
+      return {
+        content: checked.changes.map((change) => `${change.shopify_field}: ${change.after}`).join('\n'),
+        content_type: 'shopify product SEO field values',
+        content_reference: String(params.productId),
+      };
+    },
+    // Every approved field must show exactly its approved value, and every other SEO and product field
+    // must be unchanged from the integration's own read immediately before the write.
+    verification_target: (params) => {
+      const checked = validateAppliedChanges(params.appliedChanges);
+      if (!checked.ok) {
+        return { unverifiable: { reason_code: 'changes_invalid', reason: `The approved request's SEO changes are not verifiable: ${checked.reason}` } };
+      }
+      const expected = {};
+      for (const change of checked.changes) expected[SEO_FIELDS[change.shopify_field].observed] = change.after;
+      return {
+        entity_kind: 'product',
+        entity_id: String(params.productId),
+        expected,
+        select: projectProduct,
+        unexpected_fields: [
+          ...Object.values(SEO_FIELDS).map((entry) => entry.observed).filter((key) => !(key in expected)),
+          ...UNCHANGED_PRODUCT_FIELDS,
+        ],
+      };
+    },
+    run: (params, common) =>
+      applyApprovedProductSeo({ ...common, productId: params.productId, appliedChanges: params.appliedChanges }),
+  },
 };
 
 const CORRECTION_TOOL_IDS = Object.keys(CORRECTION_DISPATCH);
@@ -212,6 +263,7 @@ function buildCorrectionComplianceInput(toolId, executionRequest) {
   if (missing.length > 0) return null;
 
   const described = entry.compliance_content(params);
+  if (!described) return null;
   return {
     ...described,
     provenance: {
@@ -240,10 +292,25 @@ const DISPATCH_REFUSAL_REASONS = [
   'already_executed',
   'already_completed',
   'missing_parameters',
+  'source_proposal_invalid',
 ];
 
 function isCorrectionTool(toolId) {
   return Object.prototype.hasOwnProperty.call(CORRECTION_DISPATCH, toolId);
+}
+
+// Whether a correction's values may only come from an existing proposal held in durable approval
+// state, rather than from the parameters a request states.
+function requiresSourceProposal(toolId) {
+  return isCorrectionTool(toolId) && typeof CORRECTION_DISPATCH[toolId].verify_source === 'function';
+}
+
+// The source check for such a correction: { ok, reason_code, reason }. A correction with no source
+// requirement has nothing to check and is ok.
+function verifyCorrectionSource(toolId, executionRequest, options = {}) {
+  if (!requiresSourceProposal(toolId)) return { ok: true, reason_code: null, reason: null };
+  const verdict = CORRECTION_DISPATCH[toolId].verify_source(executionRequest, options);
+  return { ok: Boolean(verdict && verdict.ok), reason_code: verdict ? verdict.reason_code : 'source_unverified', reason: verdict ? verdict.reason : 'The source proposal could not be verified.' };
 }
 
 function refuse(reasonCode, reason) {
@@ -259,7 +326,9 @@ function normalizeBusinessId(businessId) {
 }
 
 function missingParameters(entry, params) {
-  return entry.required_params.filter((name) => params[name] === undefined || params[name] === null || params[name] === '');
+  return entry.required_params.filter(
+    (name) => params[name] === undefined || params[name] === null || params[name] === '' || (Array.isArray(params[name]) && params[name].length === 0)
+  );
 }
 
 // The idempotency key of one intended entity change, in the shared verification store's own
@@ -327,6 +396,10 @@ async function verifyCorrectionEntity({ toolId, businessId, target, outcome, ena
       now,
       rootDir: verificationRootDir,
       persist: false,
+      // The "nothing else changed" check, where the correction declares the fields that must not change
+      // and its integration read them immediately before the write - never asserted without that read.
+      baseline: Array.isArray(target.unexpected_fields) && outcome.baseline ? outcome.baseline : null,
+      unexpectedFields: Array.isArray(target.unexpected_fields) ? target.unexpected_fields : [],
     });
   } else {
     // The mutation was accepted but the integration's own re-read did not confirm it. The two
@@ -428,6 +501,16 @@ async function executeApprovedCorrection(
     );
   }
 
+  // --- A correction that applies an existing proposal is re-checked against it NOW ----
+  // The proposal may have been rejected or cancelled since this approval was created. Checked before
+  // the idempotency check and the claim, so a withdrawn proposal consumes nothing and writes nothing.
+  if (requiresSourceProposal(toolId)) {
+    const source = verifyCorrectionSource(toolId, stored.execution_request, { storeDir, now });
+    if (!source.ok) {
+      return refuse('source_proposal_invalid', `Approval '${requestId}' no longer matches an applicable proposal (${source.reason_code}): ${source.reason} Nothing was executed.`);
+    }
+  }
+
   const params = (stored.execution_request && stored.execution_request.research_params) || {};
   const missing = missingParameters(entry, params);
 
@@ -525,6 +608,8 @@ module.exports = {
   CORRECTION_PLATFORM,
   DISPATCH_REFUSAL_REASONS,
   isCorrectionTool,
+  requiresSourceProposal,
+  verifyCorrectionSource,
   buildCorrectionComplianceInput,
   checkCorrectionAlreadyVerified,
   executeApprovedCorrection,

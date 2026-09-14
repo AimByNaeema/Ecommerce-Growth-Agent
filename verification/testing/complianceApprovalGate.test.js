@@ -443,7 +443,7 @@ test('THE ONLY EXTERNALLY-EXECUTING TOOLS ARE THE THREE GATED SHOPIFY CORRECTION
   // without approval. Each is classified 'externally_executable', which
   // approvals/approvalArchitecture.js never auto-approves, and each is reachable only
   // through an integrations/shopify*.js wrapper that re-runs authorizePublishing() first.
-  const EXPECTED_EXECUTE_TOOL_IDS = ['shopify_collection_membership_update', 'shopify_inventory_correction', 'shopify_vendor_correction'];
+  const EXPECTED_EXECUTE_TOOL_IDS = ['shopify_collection_membership_update', 'shopify_inventory_correction', 'shopify_product_seo_update', 'shopify_vendor_correction'];
   const executeTools = TOOL_REGISTRY.filter((tool) => tool.operation === 'execute');
   assert.deepStrictEqual(executeTools.map((tool) => tool.id).sort(), EXPECTED_EXECUTE_TOOL_IDS);
   for (const tool of executeTools) {

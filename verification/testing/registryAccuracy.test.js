@@ -124,6 +124,7 @@ test('the three corrections are reachable ONLY through an approved execution', (
   assert.deepStrictEqual(CORRECTION_TOOL_IDS.slice().sort(), [
     'shopify_collection_membership_update',
     'shopify_inventory_correction',
+    'shopify_product_seo_update',
     'shopify_vendor_correction',
   ]);
 

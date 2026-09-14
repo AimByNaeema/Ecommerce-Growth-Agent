@@ -172,6 +172,7 @@ test('the three corrections are dispatchable, and nothing else is', () => {
   assert.deepStrictEqual(CORRECTION_TOOL_IDS.slice().sort(), [
     'shopify_collection_membership_update',
     'shopify_inventory_correction',
+    'shopify_product_seo_update',
     'shopify_vendor_correction',
   ]);
   assert.strictEqual(isCorrectionTool('shopify_vendor_correction'), true);

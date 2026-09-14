@@ -368,6 +368,23 @@ function selectedByLegacyRouter(objective) {
 
   await testAsync('EXPLICIT mutation intent still faces every existing gate - approval, never execution', async () => {
     for (const toolId of CORRECTION_TOOL_IDS) {
+      // A correction that only applies an EXISTING proposal is stricter still: explicit wording is not
+      // enough, and without a stored proposal it is denied before any approval exists
+      // (verification/testing/proposalExecution.test.js covers the resolved path).
+      if (require('../../integrations/approvedCorrectionDispatch').requiresSourceProposal(toolId)) {
+        const tool = getToolById(toolId);
+        const request = orchestratorExecutionContract.createExecutionRequest(
+          'Fix the vendor and inventory on these Shopify products',
+          { tool, category: tool.category },
+          { productId: 'gid://fixture/Product/1', appliedChanges: [{ shopify_field: 'seo.title', before: '', after: 'Fixture Title' }] },
+          null
+        );
+        const approvalTracker = { requests: [] };
+        const outcome = await orchestratorExecutionContract.executeSelectedCapability(request, { tokensUsedThisRun: 0 }, approvalTracker);
+        assert.strictEqual(outcome.status, 'denied', `${toolId} returned ${outcome.status}`);
+        assert.strictEqual(approvalTracker.requests.length, 0, `${toolId} created an approval without a stored proposal`);
+        continue;
+      }
       const tool = getToolById(toolId);
       const request = orchestratorExecutionContract.createExecutionRequest(
         'Fix the vendor and inventory on these Shopify products',

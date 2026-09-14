@@ -417,6 +417,33 @@ function describeContinuation(runResult, added) {
   return lines.join('\n');
 }
 
+// The Chief's reply for a turn that asked to apply an existing proposal: which stored proposal it
+// resolved to, exactly what will be written, and the approval it waits on. Built only from the run's
+// own proposal_execution.
+function describeProposalExecution(execution) {
+  const lines = [];
+  const changes = asArray(execution.applied_changes);
+  if (execution.approval_id) {
+    lines.push(
+      `Found the ${execution.source_approval_status || 'stored'} SEO proposal ${execution.source_approval_id} for "${execution.product_reference}". ` +
+        'Prepared exactly its approved value(s) for Shopify:'
+    );
+    for (const change of changes) lines.push(`  ${change.shopify_field}: before "${change.before || ''}" -> after "${change.after}"`);
+    if (asArray(execution.not_applied).length > 0) {
+      lines.push(`Not included, because you did not ask for it: ${execution.not_applied.join(', ')}.`);
+    }
+    lines.push(
+      `Approval ${execution.approval_id} is waiting for your decision. Nothing has been written to your store. ` +
+        'Once you approve it, only these field(s) are written; the product is then re-read from Shopify, and the change is recorded as done only if ' +
+        'Shopify shows exactly these values with no other field changed. If the store no longer shows the "before" value, nothing is written.'
+    );
+  } else {
+    lines.push(`No approval was created for the SEO proposal on "${execution.product_reference || 'this product'}": ${execution.reason || 'it did not pass the checks.'}`);
+    lines.push('Nothing was written to your store.');
+  }
+  return lines.join('\n');
+}
+
 // A compact record of the plan, for the session. The FULL execution state stays in the run
 // record - this is what a conversation view needs, not a second copy of the run.
 function summarizePlan(runResult, summarize) {
@@ -680,6 +707,8 @@ async function runSessionTurn(
   const chiefText =
     runResult.routing && runResult.routing.status === 'clarification_required'
       ? runResult.routing.reason || 'I need more detail before I can route this.'
+      : runResult.proposal_execution
+        ? describeProposalExecution(runResult.proposal_execution)
       : runResult.store_opportunity_priorities
         ? describeContinuation(runResult, added)
         : added.length > 0

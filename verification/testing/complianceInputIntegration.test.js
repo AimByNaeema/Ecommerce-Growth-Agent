@@ -322,7 +322,11 @@ async function main() {
     // Every correction must describe its content, or it cannot be approved at all.
     for (const toolId of CORRECTION_TOOL_IDS) {
       const built = buildCorrectionComplianceInput(toolId, {
-        research_params: { productId: 'p', newVendor: 'v', inventoryItemId: 'i', locationId: 'l', delta: 1, idempotencyKey: 'k', collectionId: 'c' },
+        research_params: {
+          productId: 'p', newVendor: 'v', inventoryItemId: 'i', locationId: 'l', delta: 1, idempotencyKey: 'k', collectionId: 'c',
+          // What shopify_product_seo_update writes: an existing proposal's approved SEO value.
+          sourceApprovalId: 'a', appliedChanges: [{ shopify_field: 'seo.title', before: '', after: 't' }],
+        },
       });
       assert.ok(built && typeof built.content === 'string' && built.content.length > 0, `${toolId} produces no compliance content`);
       assert.ok(built.content_reference, `${toolId} produces no content reference`);

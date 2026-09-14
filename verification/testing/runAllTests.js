@@ -281,6 +281,7 @@ const TEST_FILES = [
   'chiefObjectiveIntent.test.js',
   'seoStoreAudit.test.js',
   'researchContinuity.test.js',
+  'proposalExecution.test.js',
 ];
 
 function runAll() {

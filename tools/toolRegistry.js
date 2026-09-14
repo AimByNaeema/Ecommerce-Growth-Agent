@@ -531,6 +531,16 @@ const TOOL_REGISTRY = [
     status: 'implemented',
     platforms: ['shopify'],
   },
+  {
+    id: 'shopify_product_seo_update',
+    title: 'Shopify product SEO update from an existing proposal',
+    description:
+      "Apply the SEO title and/or meta description an existing SEO change proposal (agent/core/seoChangeProposal.js) put in front of the owner, via integrations/adapters/shopifyClient.js's productUpdate-backed updateProductSeo(), reached only through integrations/shopifyProductSeoUpdate.js's applyApprovedProductSeo() and its compliance/approval/publish-authorization re-check. Its values are never stated by a request: agent/core/proposalExecution.js resolves the owner's request to one stored proposal, and every value must equal that proposal's before/after exactly, re-checked from durable approval state before the approval is created and again before execution. Writes nothing if the store no longer shows the proposal's before value, changes no other field, and is independently re-read afterwards. REACHABLE ONLY THROUGH AN APPROVED EXECUTION: it has no TOOL_EXECUTORS entry, and agent/core/orchestratorExecutionContract.js's resumeApprovedExecution() routes it to integrations/approvedCorrectionDispatch.js only for a stored, Ed25519-approved request.",
+    category: 'products',
+    operation: 'execute',
+    status: 'implemented',
+    platforms: ['shopify'],
+  },
 ];
 
 function getToolRegistry() {

@@ -279,6 +279,25 @@ function listPendingApprovals({ businessId = null, storeDir = getDefaultApproval
   return pending.sort((a, b) => String(b.stored_at).localeCompare(String(a.stored_at)));
 }
 
+// Every readable stored approval, in any state, newest first - for a caller that must find a
+// record by what it describes rather than by id (agent/core/proposalExecution.js resolving "the
+// pending approval" for a named product). Unscoped by design: the caller applies its own exact
+// business match, so a null business can never widen into "every business".
+function listStoredApprovals({ storeDir = getDefaultApprovalStoreDir() } = {}) {
+  let fileNames;
+  try {
+    fileNames = fs.readdirSync(storeDir).filter((name) => name.endsWith('.json'));
+  } catch (err) {
+    return [];
+  }
+  const envelopes = [];
+  for (const fileName of fileNames) {
+    const envelope = readEnvelope(path.join(storeDir, fileName));
+    if (envelope) envelopes.push(envelope);
+  }
+  return envelopes.sort((a, b) => String(b.stored_at).localeCompare(String(a.stored_at)));
+}
+
 const CLAIM_REFUSAL_REASONS = {
   not_found: 'No stored approval with that id is readable for this business.',
   not_approved: 'That approval was not approved, so the action it gates may not execute.',
@@ -347,6 +366,7 @@ module.exports = {
   findCredentialKeyPath,
   saveApprovalRecord,
   loadApprovalRecord,
+  listStoredApprovals,
   listPendingApprovals,
   claimApprovalForExecution,
   cancelStoredApproval,

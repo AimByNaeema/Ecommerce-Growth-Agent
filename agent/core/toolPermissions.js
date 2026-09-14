@@ -183,6 +183,11 @@ const TOOL_CLASSIFICATIONS = {
   shopify_vendor_correction: 'externally_executable',
   shopify_inventory_correction: 'externally_executable',
   shopify_collection_membership_update: 'externally_executable',
+  // Writes a product's SEO title/meta description on the live store - the same productUpdate
+  // mutation and write_products scope as shopify_vendor_correction, so the same classification:
+  // always approval-required, never auto-approved. Its values come only from an existing SEO
+  // proposal (integrations/shopifyProductSeoUpdate.js), re-checked before approval and execution.
+  shopify_product_seo_update: 'externally_executable',
 };
 
 // Which tools/toolRegistry.js `operation` types ('read'/'write'/'execute') each of

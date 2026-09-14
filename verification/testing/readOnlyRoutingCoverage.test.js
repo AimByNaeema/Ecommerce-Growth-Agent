@@ -259,6 +259,23 @@ const ACCEPTABLE_READ_TOOLS = ['product_data_retrieval', 'collection_data_retrie
   await testAsync('MUTATION REQUESTS still stop at the approval gate, never execute', async () => {
     for (const toolId of CORRECTION_TOOL_IDS) {
       const tool = getToolById(toolId);
+      // A correction that only applies an EXISTING stored proposal never even reaches approval from
+      // wording alone - it is denied, with nothing queued and nothing written.
+      if (require('../../integrations/approvedCorrectionDispatch').requiresSourceProposal(toolId)) {
+        const request = orchestratorExecutionContract.createExecutionRequest(
+          'Fix the vendor and inventory on these Shopify products',
+          { tool, category: tool.category },
+          { productId: 'gid://fixture/Product/1', appliedChanges: [{ shopify_field: 'seo.title', before: '', after: 'Fixture Title' }] },
+          null
+        );
+        const approvalTracker = { requests: [] };
+        const mutationsBefore = MUTATION_CALLS.length;
+        const outcome = await orchestratorExecutionContract.executeSelectedCapability(request, { tokensUsedThisRun: 0 }, approvalTracker);
+        assert.strictEqual(outcome.status, 'denied', `${toolId} returned ${outcome.status}`);
+        assert.strictEqual(approvalTracker.requests.length, 0);
+        assert.strictEqual(MUTATION_CALLS.length - mutationsBefore, 0, 'a mutation actually executed');
+        continue;
+      }
       const request = orchestratorExecutionContract.createExecutionRequest(
         'Fix the vendor and inventory on these Shopify products',
         { tool, category: tool.category }, CORRECTION_PARAMS[toolId], null

@@ -104,6 +104,12 @@ const OUTCOME_VERBS = new Set([
 // EXECUTE: the store corrections, gated downstream. Reused from mutationIntent.js.
 const CHANGE_VERBS = new Set(MUTATION_VERBS);
 
+// Applying a change the system did not produce through a gated correction. Named on its own because
+// ONE object makes this operation performable: an existing proposal held in the approval system
+// ("Apply the proposed SEO title ... from the pending approval"). agent/core/proposalExecution.js
+// resolves that object against durable approval state; without it these verbs stay refused below.
+const APPLY_CHANGE_VERBS = ['apply', 'implement', 'push', 'sync', 'enable', 'activate'];
+
 // Operations with real-world consequences that NO tool in this system performs (there is no
 // payment, publishing, outbound messaging, deletion or hiring tool - tools/toolRegistry.js).
 // Grouped by consequence, not by phrasing: a request for one of them is refused with a reason.
@@ -120,7 +126,7 @@ const CONSEQUENTIAL_ACTION_VERBS = new Set([
   'hire', 'fire', 'book', 'commission', 'sign', 'subscribe', 'install', 'uninstall', 'deploy',
   'connect', 'integrate',
   // applying a change outside the gated corrections
-  'apply', 'implement', 'push', 'sync', 'enable', 'activate',
+  ...APPLY_CHANGE_VERBS,
 ]);
 
 // --- Closed grammatical classes -------------------------------------------------------
@@ -506,6 +512,8 @@ module.exports = {
   SAFETY_CONSTRAINT_REGEX,
   READ_VERBS,
   PRODUCE_VERBS,
+  APPLY_CHANGE_VERBS,
+  lemmaCandidates,
   OUTCOME_VERBS,
   ANSWER_STRUCTURE_WORDS,
   FUNCTION_WORDS,

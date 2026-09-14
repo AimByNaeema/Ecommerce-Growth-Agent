@@ -119,7 +119,7 @@ test('known-decision spot checks: product_research is now allowed, market_resear
   const productEntry = getSpecialistCapabilityById('product');
   const productResearchAccess = productEntry.permissions.tool_access.find((a) => a.tool_id === 'product_research');
   assert.strictEqual(productResearchAccess.decision, 'allowed');
-  const EXTERNALLY_EXECUTABLE_TOOL_IDS = ['shopify_vendor_correction', 'shopify_inventory_correction', 'shopify_collection_membership_update'];
+  const EXTERNALLY_EXECUTABLE_TOOL_IDS = ['shopify_vendor_correction', 'shopify_inventory_correction', 'shopify_collection_membership_update', 'shopify_product_seo_update'];
   for (const access of productEntry.permissions.tool_access) {
     const expected = EXTERNALLY_EXECUTABLE_TOOL_IDS.includes(access.tool_id) ? 'approval_required' : 'allowed';
     assert.strictEqual(access.decision, expected, `product's decision for ${access.tool_id} should be ${expected}`);

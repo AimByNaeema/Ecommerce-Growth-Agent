@@ -186,6 +186,81 @@ function stubbedFetch({ scopes, onMutation, onNodes, onOrders }) {
     });
   });
 
+  // --- updateProductSeo --------------------------------------------------------------
+
+  await testAsync('updateProductSeo: invalid productId/values -> throws before any fetch', async () => {
+    let fetchCalls = 0;
+    await withMockedFetch(async () => { fetchCalls += 1; return jsonResponse(200, {}); }, async () => {
+      await assert.rejects(() => shopifyClient.updateProductSeo({ productId: '', seoTitle: 'T', seoDescription: null }), /non-empty productId/);
+      await assert.rejects(() => shopifyClient.updateProductSeo({ productId: 'gid://shopify/Product/1', seoTitle: 5, seoDescription: null }), /seoTitle to be a string or null/);
+      await assert.rejects(() => shopifyClient.updateProductSeo({ productId: 'gid://shopify/Product/1', seoTitle: 'T' }), /seoDescription to be a string or null/);
+    });
+    assert.strictEqual(fetchCalls, 0, 'zero fetch calls for invalid arguments');
+  });
+
+  await testAsync('updateProductSeo: missing write_products scope -> zero mutation attempts', async () => {
+    await withEnvConfigured(async () => {
+      clearAccessScopesCache();
+      let mutations = 0;
+      await withMockedFetch(
+        stubbedFetch({ scopes: ['read_products'], onMutation: () => { mutations += 1; return jsonResponse(200, {}); } }),
+        async () => {
+          await assert.rejects(
+            () => shopifyClient.updateProductSeo({ productId: 'gid://shopify/Product/1', seoTitle: 'T', seoDescription: 'D' }),
+            new RegExp(REQUIRED_PRODUCT_WRITE_SCOPE)
+          );
+        }
+      );
+      assert.strictEqual(mutations, 0, 'no mutation may be attempted without the scope');
+      clearAccessScopesCache();
+    });
+  });
+
+  await testAsync('updateProductSeo: success sends ONLY id+seo, returns Shopify\'s real values', async () => {
+    await withEnvConfigured(async () => {
+      clearAccessScopesCache();
+      let mutationBody = null;
+      await withMockedFetch(
+        stubbedFetch({
+          scopes: [REQUIRED_PRODUCT_WRITE_SCOPE],
+          onMutation: (body) => {
+            mutationBody = body;
+            return jsonResponse(200, {
+              data: { productUpdate: { product: { id: body.variables.input.id, seo: body.variables.input.seo }, userErrors: [] } },
+            });
+          },
+        }),
+        async () => {
+          const result = await shopifyClient.updateProductSeo({ productId: 'gid://shopify/Product/1', seoTitle: 'Placeholder SEO Title', seoDescription: null });
+          assert.deepStrictEqual(result, { id: 'gid://shopify/Product/1', seo: { title: 'Placeholder SEO Title', description: null } });
+        }
+      );
+      assert.deepStrictEqual(mutationBody.variables.input, { id: 'gid://shopify/Product/1', seo: { title: 'Placeholder SEO Title', description: null } });
+      assert.ok(/productUpdate/.test(mutationBody.query));
+      clearAccessScopesCache();
+    });
+  });
+
+  await testAsync('updateProductSeo: userErrors is a FAILURE, never fabricated values', async () => {
+    await withEnvConfigured(async () => {
+      clearAccessScopesCache();
+      await withMockedFetch(
+        stubbedFetch({
+          scopes: [REQUIRED_PRODUCT_WRITE_SCOPE],
+          onMutation: () =>
+            jsonResponse(200, { data: { productUpdate: { product: null, userErrors: [{ field: ['seo', 'title'], message: 'Too long (placeholder)' }] } } }),
+        }),
+        async () => {
+          await assert.rejects(
+            () => shopifyClient.updateProductSeo({ productId: 'gid://shopify/Product/1', seoTitle: 'X', seoDescription: 'Y' }),
+            /Too long \(placeholder\)/
+          );
+        }
+      );
+      clearAccessScopesCache();
+    });
+  });
+
   // --- addProductsToCollection --------------------------------------------------------
 
   await testAsync('addProductsToCollection: missing collectionId/productIds -> throws before any fetch', async () => {

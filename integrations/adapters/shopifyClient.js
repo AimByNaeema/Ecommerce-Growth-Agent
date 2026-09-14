@@ -983,6 +983,86 @@ async function updateProductVendor({ productId, vendor, businessId = null } = {}
   return payload.product;
 }
 
+// Sets ONE product's SEO title and meta description via the same real Admin API `productUpdate`
+// mutation updateProductVendor() uses. Sends only `id` and `seo { title description }` and requests
+// back only `id` and `seo` - no other product field (title, description, handle, vendor, price,
+// images, status, tags, collections) is ever read or written by this function.
+//
+// BOTH SEO fields are always sent, so what Shopify stores is exactly what the caller stated: a field
+// the caller is not changing is passed at its current value (integrations/shopifyProductSeoUpdate.js
+// reads it immediately before), never omitted and left to the API's defaulting.
+//
+//   productId      - the product's gid://shopify/Product/... id. Required.
+//   seoTitle       - the SEO title to store: a string, or null for "no custom SEO title".
+//   seoDescription - the meta description to store: a string, or null for "none".
+//   businessId     - optional, selects that business's own Shopify credentials.
+//
+// Returns: { id, seo: { title, description } } - Shopify's own values, relayed unchanged.
+// Throws: on invalid arguments or when not configured (BEFORE any network call), when
+// REQUIRED_PRODUCT_WRITE_SCOPE is missing (BEFORE sending any mutation), on a network/transport
+// failure, on GraphQL errors, or when Shopify returns userErrors. Never fabricated values.
+async function updateProductSeo({ productId, seoTitle, seoDescription, businessId = null } = {}) {
+  if (typeof productId !== 'string' || productId.trim() === '') {
+    throw new Error('updateProductSeo requires a non-empty productId. No Shopify mutation was attempted.');
+  }
+  for (const [name, value] of [['seoTitle', seoTitle], ['seoDescription', seoDescription]]) {
+    if (value !== null && typeof value !== 'string') {
+      throw new Error(`updateProductSeo requires ${name} to be a string or null. No Shopify mutation was attempted.`);
+    }
+  }
+
+  if (!isConfigured({ businessId })) {
+    throw new Error(
+      businessId
+        ? `Business '${businessId}' has no configured Shopify credentials. Create ` +
+          `configuration/businesses/${businessId}/.env with either SHOPIFY_ADMIN_API_ACCESS_TOKEN ` +
+          'or SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET (plus SHOPIFY_STORE_DOMAIN) before calling updateProductSeo().'
+        : 'SHOPIFY_STORE_DOMAIN is not set, or neither SHOPIFY_ADMIN_API_ACCESS_TOKEN nor ' +
+          'SHOPIFY_CLIENT_ID+SHOPIFY_CLIENT_SECRET is set. Copy .env.example to .env and add real ' +
+          "values for the owner's Shopify store before calling updateProductSeo()."
+    );
+  }
+
+  const granted = await getGrantedAccessScopes({ businessId });
+  if (!granted.includes(REQUIRED_PRODUCT_WRITE_SCOPE)) {
+    throw new Error(
+      `Shopify product SEO update is not permitted: this store's app has not been granted the '${REQUIRED_PRODUCT_WRITE_SCOPE}' ` +
+        `Admin API scope (granted: ${granted.join(', ') || 'none'}). Add '${REQUIRED_PRODUCT_WRITE_SCOPE}' to the app's ` +
+        'access scopes and re-deploy/re-install it, then try again. No Shopify mutation was attempted.'
+    );
+  }
+
+  const mutation = `mutation UpdateProductSeo($input: ProductInput!) {
+    productUpdate(input: $input) {
+      product { id seo { title description } }
+      userErrors { field message }
+    }
+  }`;
+
+  const { raw } = await runAdminGraphqlQuery(mutation, 'updateProductSeo', businessId, {
+    input: { id: productId.trim(), seo: { title: seoTitle, description: seoDescription } },
+  });
+
+  const payload = raw && raw.data && raw.data.productUpdate;
+  if (!payload) {
+    throw new Error('Shopify Admin API response did not include a productUpdate result.');
+  }
+  if (Array.isArray(payload.userErrors) && payload.userErrors.length > 0) {
+    const details = payload.userErrors
+      .map((entry) => `${Array.isArray(entry.field) ? entry.field.join('.') : entry.field || 'product'}: ${entry.message}`)
+      .join('; ');
+    throw new Error(`Shopify refused to update the product SEO fields: ${details}`);
+  }
+  if (!payload.product || !payload.product.id) {
+    throw new Error('Shopify reported no error but returned no product - refusing to report an unconfirmed SEO update as a success.');
+  }
+
+  return {
+    id: payload.product.id,
+    seo: payload.product.seo ? { title: payload.product.seo.title, description: payload.product.seo.description } : null,
+  };
+}
+
 // Adds one or more existing products to one existing collection via the real Admin API
 // `collectionAddProducts` mutation. Never creates a collection, never removes a product
 // from any collection, never touches any other field.
@@ -1219,6 +1299,7 @@ module.exports = {
   REQUIRED_PRODUCT_WRITE_SCOPE,
   REQUIRED_INVENTORY_WRITE_SCOPE,
   updateProductVendor,
+  updateProductSeo,
   addProductsToCollection,
   adjustInventoryQuantities,
 };

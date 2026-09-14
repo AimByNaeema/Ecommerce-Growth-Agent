@@ -80,6 +80,16 @@ const ACTION_DESCRIPTIONS = {
     entity_id: str(params.productId),
     proposed_value: str(params.collectionId) ? `Add to collection ${params.collectionId}` : null,
   }),
+  shopify_product_seo_update: (params) => ({
+    what_changes: 'SEO title / meta description (written to Shopify only after your approval)',
+    entity_type: 'product',
+    entity_id: str(params.productId),
+    proposed_value:
+      asArray(params.appliedChanges)
+        .filter(isPlainObject)
+        .map((change) => `${change.shopify_field}: "${change.before || ''}" → "${change.after}"`)
+        .join('; ') || null,
+  }),
 };
 
 // The platform a tool is registered for, when the registry names exactly one. A tool that

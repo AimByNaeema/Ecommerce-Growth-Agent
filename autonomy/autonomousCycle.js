@@ -75,7 +75,7 @@ const circuitBreaker = require('../reliability/circuitBreaker');
 const executionVerification = require('../reliability/executionVerification');
 const { resolveBusinessPolicy } = require('../agent/core/autonomyPolicy');
 const { isExpiredEnvelope } = require('./approvalResolution');
-const { checkCorrectionAlreadyVerified } = require('../integrations/approvedCorrectionDispatch');
+const { checkCorrectionAlreadyVerified, requiresSourceProposal } = require('../integrations/approvedCorrectionDispatch');
 const { createAndPersistApprovalRequest } = require('../approvals/approvalWorkflow');
 const approvalStore = require('../approvals/approvalStore');
 const { createAuditTracker, appendAuditEvent } = require('../audit/auditTrail');
@@ -503,6 +503,14 @@ async function runAutonomousCycle({
             // than restated: a mutation with no explicit instruction to mutate is never queued,
             // and a correction's compliance input is computed and evaluated for real
             // (prepareApprovalExecutionRequest). A BLOCK queues nothing at all.
+            // A correction that only applies an existing proposal (shopify_product_seo_update) is the owner's
+            // request to the Chief about one proposal they were shown - a scheduled job never queues it.
+            if (requiresSourceProposal(toolId)) {
+              const reason = `'${toolId}' only applies an existing proposal the owner asks the Chief to apply, so a scheduled job never queues it.`;
+              appendAuditEvent(audit, { type: 'error', toolId, status: 'denied', summary: reason });
+              steps.push(cycleStep(jobResult.job_id, 'blocked', { reason_code: 'source_proposal_required', reason, policy_decision: jobResult.decision }));
+              return;
+            }
             if (isCorrectionTool(toolId) && !maySelectMutationTool(jobResult.execution_request.objective)) {
               const reason = mutationIntentRefusalReason(toolId, jobResult.execution_request.objective);
               appendAuditEvent(audit, { type: 'error', toolId, status: 'denied', summary: reason });

@@ -259,7 +259,7 @@ function proposedListingRecord(source, changes) {
   return record;
 }
 
-function proposeSeoChanges({ steps = [], priorities = null, objective = '', businessId = null, sourceRunId = null } = {}) {
+function proposeSeoChanges({ steps = [], priorities = null, objective = '', businessId = null, sourceRunId = null, storeReference = null } = {}) {
   const requested = requestedProductCount(objective);
   const base = {
     kind: PROPOSAL_KIND,
@@ -348,6 +348,9 @@ function proposeSeoChanges({ steps = [], priorities = null, objective = '', busi
           shopify_product_id: source.shopify_product_id || null,
           proposed_changes: changes,
           source_run_id: sourceRunId,
+          // The opaque reference of the store these values were read from (researchContext.js), so the
+          // proposal can only ever be applied to that store.
+          store_reference: storeReference || null,
           store_write_note: STORE_WRITE_NOTE,
           listingRecords: [proposedListingRecord(source, changes)],
           listingStoreFields: [storeFields],
