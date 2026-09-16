@@ -264,6 +264,13 @@ const TEST_FILES = [
   'opportunityPreparationWorkflow.test.js',
   'geminiWebGrounding.test.js',
   'tavilySearchProvider.test.js',
+  'researchProviderFailures.test.js',
+  'evidenceValidation.test.js',
+  'trendEvidence.test.js',
+  'externalResearchMemory.test.js',
+  'researchRouting.test.js',
+  'competitorResearchProviders.test.js',
+  'productEconomics.test.js',
   'workflowDocumentation.test.js',
   // Production-readiness accuracy: every claim the registries make - about files, about
   // executability, about platforms, about configuration - checked against reality.

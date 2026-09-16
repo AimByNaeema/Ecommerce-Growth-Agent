@@ -1219,6 +1219,12 @@ test('planRouting does NOT merge a genuinely separate unmatched instruction that
   await testAsync('MOCKED: an objective that resolves to competitor_research with no researchParams dispatches live_competitor_research instead, and returns a real, verified result', async () => {
     const savedKey = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+    // This case exercises the Anthropic web_search path of the shared research call, so that provider pair is
+    // pinned: the tool follows AI_PROVIDER + SEARCH_PROVIDER, and a local .env must not change what it proves.
+    const savedProviders = { AI_PROVIDER: process.env.AI_PROVIDER, SEARCH_PROVIDER: process.env.SEARCH_PROVIDER, SEARCH_FALLBACK_PROVIDERS: process.env.SEARCH_FALLBACK_PROVIDERS };
+    process.env.AI_PROVIDER = 'claude';
+    process.env.SEARCH_PROVIDER = 'claude_web_search';
+    delete process.env.SEARCH_FALLBACK_PROVIDERS;
     const originalSendMessage = claudeClient.sendMessage;
     const replyJson = {
       topic: 'Top competitor',
@@ -1271,12 +1277,22 @@ test('planRouting does NOT merge a genuinely separate unmatched instruction that
       claudeClient.sendMessage = originalSendMessage;
       if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = savedKey;
+      for (const [name, value] of Object.entries(savedProviders)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
     }
   });
 
   await testAsync('MOCKED: live_competitor_research honestly reports "empty" (never fabricates) when nothing could be verified, and never fabricates through the full orchestrator pipeline', async () => {
     const savedKey = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+    // This case exercises the Anthropic web_search path of the shared research call, so that provider pair is
+    // pinned: the tool follows AI_PROVIDER + SEARCH_PROVIDER, and a local .env must not change what it proves.
+    const savedProviders = { AI_PROVIDER: process.env.AI_PROVIDER, SEARCH_PROVIDER: process.env.SEARCH_PROVIDER, SEARCH_FALLBACK_PROVIDERS: process.env.SEARCH_FALLBACK_PROVIDERS };
+    process.env.AI_PROVIDER = 'claude';
+    process.env.SEARCH_PROVIDER = 'claude_web_search';
+    delete process.env.SEARCH_FALLBACK_PROVIDERS;
     const originalSendMessage = claudeClient.sendMessage;
     claudeClient.sendMessage = async () => ({
       text: JSON.stringify({ competitors: [] }),
@@ -1296,6 +1312,10 @@ test('planRouting does NOT merge a genuinely separate unmatched instruction that
       claudeClient.sendMessage = originalSendMessage;
       if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = savedKey;
+      for (const [name, value] of Object.entries(savedProviders)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
     }
   });
 

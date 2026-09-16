@@ -423,9 +423,13 @@ async function main() {
         assert.ok(top.evidence.every((e) => [REAL_URL_A, REAL_URL_B].includes(e.source_url)));
         // Ranking is labelled for what it is.
         assert.ok(/NOT a prediction of sales or profit/i.test(top.scores.rank_basis));
-        // Seasonality survived as seasonality.
+        // A label is not a trend. The pages were read as seasonal, and that reading is kept - but with no
+        // dated values over time the trend itself is unknown and NOT VERIFIED (agent/core/trendEvidence.js).
         const halloween = result.top_opportunities.find((o) => /halloween/i.test(o.product));
-        assert.strictEqual(halloween.trend.classification, 'seasonal');
+        assert.strictEqual(halloween.trend.source_assessment.classification, 'seasonal');
+        assert.strictEqual(halloween.trend.classification, 'unknown');
+        assert.strictEqual(halloween.trend.verification, 'NOT_VERIFIED');
+        assert.strictEqual(halloween.trend.evidence_status, 'INSUFFICIENT');
         // The measured competition figure survived with its unit.
         assert.strictEqual(halloween.competition.value, 1200);
         assert.strictEqual(halloween.competition.unit, 'listings');

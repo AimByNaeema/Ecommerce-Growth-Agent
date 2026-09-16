@@ -53,6 +53,111 @@ const {
 const { evaluateCompliance } = require('../compliance/complianceEngine');
 const { detectProtectedMarks } = require('../compliance/etsyIpRiskDetector');
 const { createEmptyCustomerOpportunityResearch } = require('../agent/core/customerOpportunityResearchModel');
+const { validateEvidence, minConfidence } = require('../agent/core/evidenceValidation');
+const { classifyTrend, parseObservationDate } = require('../agent/core/trendEvidence');
+const externalResearchMemory = require('../agent/core/externalResearchMemory');
+
+// The tool id this research is stored and found again under (tools/toolRegistry.js).
+const RESEARCH_TOOL_ID = 'catalogue_expansion_opportunities';
+
+// Dated values a cited page itself states, for trend reasoning (agent/core/trendEvidence.js). Kept only when
+// the page is one the search tool returned for this candidate, the date is real and the value is a number.
+// Graded OBSERVED: the source states it; this system did not measure it.
+function normalizeTrendObservations(raw, sources, provider) {
+  const allowed = new Set(asArray(sources));
+  const kept = [];
+  for (const entry of asArray(raw)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const source = typeof entry.source === 'string' ? entry.source.trim() : null;
+    if (!source || !allowed.has(source)) continue;
+    if (parseObservationDate(entry.date) === null) continue;
+    if (entry.value === null || entry.value === '' || !Number.isFinite(Number(entry.value)) || Number(entry.value) < 0) continue;
+    kept.push({
+      date: String(entry.date).trim(),
+      value: Number(entry.value),
+      unit: nonEmptyString(entry.unit) ? entry.unit.trim() : null,
+      metric: nonEmptyString(entry.metric) ? entry.metric.trim() : 'value',
+      grade: 'OBSERVED',
+      source,
+      provider: provider || null,
+      retrieved_at: new Date().toISOString(),
+    });
+  }
+  return kept;
+}
+
+// The trend of one candidate, decided from dated observations only. The AI's own label is kept as
+// source_assessment - what the pages were read as saying - and is never the classification.
+function evidenceTrend({ entry, sources, provider, history }) {
+  const label = entry && entry.trend && nonEmptyString(entry.trend.classification) ? entry.trend.classification.trim().toLowerCase() : 'unknown';
+  const observations = normalizeTrendObservations(entry && entry.trend && entry.trend.observations, sources, provider);
+  // This run's own measured/observed signal values join the series, dated now, so repeated research
+  // builds real history over time.
+  const now = new Date().toISOString();
+  const current = [];
+  for (const metric of ['demand', 'competition']) {
+    const signal = entry && entry[metric];
+    if (!signal || signal.value === null || signal.value === undefined || !Number.isFinite(Number(signal.value))) continue;
+    if (!['measured', 'observed'].includes(String(signal.grade).toLowerCase())) continue;
+    current.push({ date: now, value: Number(signal.value), unit: signal.unit || null, metric: `${metric}${signal.unit ? `:${signal.unit}` : ''}`, grade: String(signal.grade).toUpperCase(), source: sources[0] || null, provider });
+  }
+  const verdict = classifyTrend(asArray(history).concat(observations, current));
+  const verified = verdict.verification === 'VERIFIED';
+  return {
+    metric: 'trend',
+    classification: verdict.classification,
+    evidence_status: verdict.evidence_status,
+    verification: verdict.verification,
+    assessment: verdict.reason,
+    time_window: verdict.time_window,
+    observations_used: verdict.observations_used,
+    observations,
+    evidence_sources: verdict.sources,
+    providers: verdict.providers,
+    source_assessment: {
+      classification: label,
+      assessment: entry && entry.trend && nonEmptyString(entry.trend.assessment) ? entry.trend.assessment : 'Not available from current research sources.',
+      grade: 'inferred',
+      note: 'What the cited pages were read as saying. Not a trend verdict: a trend needs dated values over time.',
+    },
+    grade: verified ? 'observed' : 'unknown',
+    value: null,
+    source: sources,
+    confidence: verified ? (verdict.observations_used >= 8 ? 'medium' : 'low') : 'low',
+  };
+}
+
+// The claims one ranked candidate rests on, for corroboration: every cited source with its grade, and
+// each signal's value or classification against each source that supports it.
+function corroborationClaims(candidate) {
+  const claims = asArray(candidate.evidence).map((entry) => ({
+    source_url: entry.source_url,
+    grade: entry.grade,
+    metric: entry.metric,
+    retrieved_at: entry.retrieved_at || null,
+  }));
+  for (const metric of ['demand', 'competition', 'commercial']) {
+    const signal = candidate[metric];
+    if (!signal) continue;
+    for (const url of asArray(signal.source)) {
+      claims.push({ source_url: url, grade: signal.grade, metric, value: signal.value, unit: signal.unit, retrieved_at: signal.retrieved_at || null });
+    }
+  }
+  const trend = candidate.trend;
+  if (trend) {
+    for (const url of asArray(trend.source)) {
+      claims.push({ source_url: url, grade: trend.grade, metric: 'trend', classification: trend.classification });
+    }
+  }
+  return claims;
+}
+
+// Evidence coverage caps confidence as before; corroboration can only lower it further.
+function coverageConfidenceCap(percentage) {
+  if (percentage >= 75) return 'high';
+  if (percentage >= 50) return 'medium';
+  return 'low';
+}
 
 const WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search', max_uses: 6 };
 // Matches tools/webCompetitorResearchTool.js's own ceiling and reason: the shared
@@ -98,7 +203,10 @@ const VALIDATION_SYSTEM_PROMPT = [
   '- If a page gives a NUMBER, report it with its unit and grade it "measured".',
   '- If you are characterising rather than measuring, set the value to null and grade it "inferred".',
   '- NEVER invent search volume, revenue, market size, growth %, competitor counts or buyer numbers.',
-  '- trend.classification must be one of: growing, stable, seasonal, declining, emerging, unknown.',
+  '- trend.classification must be one of: growing, stable, seasonal, declining, emerging, fad, unknown.',
+  '- trend.observations: ONLY dated numeric values a page itself states (e.g. a year-by-year or month-by-month figure),',
+  '  each with its exact date (YYYY-MM or YYYY-MM-DD), value, unit, what it measures, and that page\'s exact URL.',
+  '  If no page states dated values, return "observations":[] - never estimate, interpolate or read values off a chart.',
   '- A product that spikes yearly around one date is "seasonal", NOT "growing".',
   '- "unknown" is a correct answer when no source supports a classification.',
   '',
@@ -106,7 +214,7 @@ const VALIDATION_SYSTEM_PROMPT = [
   '{"validated":[{"product":"exact name from the shortlist",',
   '"demand":{"assessment":"...","value":null,"unit":null,"grade":"measured|estimated|derived|inferred|unknown"},',
   '"competition":{"assessment":"...","value":null,"unit":null,"grade":"..."},',
-  '"trend":{"classification":"...","assessment":"...","grade":"..."},',
+  '"trend":{"classification":"...","assessment":"...","grade":"...","observations":[{"date":"YYYY-MM","value":0,"unit":"...","metric":"...","source":"https://exact-url"}]},',
   '"commercial":{"assessment":"...","price_low":null,"price_high":null,"currency":null,"grade":"..."},',
   '"source":["https://exact-url"]}]}',
 ].join('\n');
@@ -119,205 +227,20 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() !== '';
 }
 
-// Same JSON extraction tools/webCompetitorResearchTool.js uses - a model reply may carry
-// prose around the object even when told not to.
-function tryParseJson(text) {
-  if (typeof text !== 'string') return null;
-  const trimmed = text.trim();
-  const first = trimmed.indexOf('{');
-  const last = trimmed.lastIndexOf('}');
-  if (first === -1 || last === -1 || last <= first) return null;
-  try {
-    return JSON.parse(trimmed.slice(first, last + 1));
-  } catch (err) {
-    return null;
-  }
-}
-
-function extractFinalTextBlock(content) {
-  const blocks = asArray(content).filter((block) => block && block.type === 'text' && nonEmptyString(block.text));
-  return blocks.length > 0 ? blocks[blocks.length - 1].text : null;
-}
-
-// An entry survives only when a URL it claims is one web_search really returned.
-function verifiedSources(entry, verifiedUrls) {
-  return asArray(entry && entry.source).filter((url) => typeof url === 'string' && verifiedUrls.has(url));
-}
-
-// Adds one call's real usage to the run total. The model name is kept from the first call
-// that reported one - every call in a run uses the same configured model.
-function recordUsage(totals, usage) {
-  if (!usage) return;
-  totals.inputTokens += usage.inputTokens || 0;
-  totals.outputTokens += usage.outputTokens || 0;
-  totals.tokensUsed += usage.tokensUsed || 0;
-  if (!totals.model && usage.model) totals.model = usage.model;
-}
-
-// Search accounting, kept separate from TOKEN accounting because they are separate costs:
-// a search request is billed by the search provider, tokens by the AI provider. Counts
-// only what actually happened - a cache hit is recorded as a hit, never as a request.
-function recordSearch(stats, outcome) {
-  if (!stats || !outcome) return;
-  if (!outcome.searchOutcome) return; // model-native mode performs no separate search
-  const search = outcome.searchOutcome;
-  stats.provider = search.provider || stats.provider;
-  if (search.cached) {
-    stats.cacheHits += 1;
-    return;
-  }
-  stats.cacheMisses += 1;
-  stats.requests += 1;
-  if (search.status && search.status !== 'SEARCH_OK') stats.statuses.push(search.status);
-  // Usage/credit figures ONLY when the provider actually reported them.
-  if (search.usage) stats.usage.push(search.usage);
-  stats.resultsReturned += Array.isArray(search.results) ? search.results.length : 0;
-}
-
-// Provider-aware on purpose: agent/core/tokenControls.js's normalizeUsage already reads
-// BOTH Anthropic's input_tokens/output_tokens and Gemini's promptTokenCount/
-// candidatesTokenCount. A local Claude-only copy used to live here, which silently
-// reported 0 tokens for every Gemini call and left the per-run budget never decrementing.
-function totalTokensFromUsage(usage) {
-  const { input, output } = normalizeUsage(usage);
-  return input + output;
-}
-
-// Anthropic reports 'max_tokens'; Gemini reports 'MAX_TOKENS'. Compared case-insensitively
-// so the same cut-off guidance fires for both rather than only for Claude.
-function isMaxTokensStopReason(stopReason) {
-  return typeof stopReason === 'string' && stopReason.toLowerCase() === 'max_tokens';
-}
-
-// In EXTERNAL search mode the model is handed results and is given NO tools. The system
-// prompts above still open with "Use the web_search tool to ..." because that is correct for
-// model-native mode - but leaving it in place for an external run tells the model to call a
-// tool that does not exist.
-//
-// PROVEN, NOT GUESSED: against the live API, the validation call with that instruction and no
-// tools terminated with finishReason MALFORMED_FUNCTION_CALL and an EMPTY text part, which
-// the pipeline could only report as "did not return a parsable JSON result". Replacing this
-// one directive - nothing else - returned valid JSON with all 7 entries.
-//
-// Applied here, where the mode is already known, so the prompt constants stay correct for the
-// model-native providers and both stages are fixed by one change. The provenance rules in
-// those prompts are deliberately untouched: the model must still cite exact source URLs, and
-// verification against the search tool's own URL set is unchanged.
-function adaptSystemPromptForExternalSearch(system) {
-  if (typeof system !== 'string') return system;
-  return system.replace(
-    /^Use the web_search tool to .*$/gm,
-    'Use ONLY the SEARCH RESULTS supplied in the user message as your evidence. You have no tools available; do not attempt to call one.'
-  );
-}
-
-// Real search results, rendered for the synthesis call. Only what the search provider
-// actually returned appears here - url, title and snippet - so the model reasons over real
-// pages instead of its own recollection. The instruction is belt-and-braces: verification
-// downstream is mechanical either way, and a URL outside this list is dropped.
-function formatSearchResults(searchOutcome) {
-  const lines = ['SEARCH RESULTS (these are the ONLY sources you may cite - copy a source_url EXACTLY from this list):'];
-  searchOutcome.results.forEach((result, index) => {
-    lines.push('');
-    lines.push(`[${index + 1}] ${result.title || '(no title reported)'}`);
-    lines.push(`source_url: ${result.url}`);
-    if (result.content) lines.push(`excerpt: ${result.content}`);
-  });
-  return lines.join('\n');
-}
-
-// One batched web-search call. Returns the parsed payload plus the set of URLs SEARCH
-// ITSELF returned, so the caller can verify every entry against real results.
-//
-// TWO MODES, selected by agent/core/webSearchProvider.js (SEARCH_PROVIDER):
-//
-//   external     - a real search runs FIRST (e.g. Tavily), and its results are handed to
-//                  the AI provider as context. The verified URL set is the search
-//                  provider's own result list; the model contributes analysis, never
-//                  sources.
-//   model_native - the AI provider searches during its own turn (Anthropic web_search,
-//                  Gemini Google Search grounding). The verified URL set is read back out
-//                  of the response's search metadata.
-//
-// Either way `verifiedUrls` holds only URLs a SEARCH TOOL returned. A URL the model wrote
-// in prose never enters it, which is what makes the downstream evidence check meaningful.
-async function runSearchCall({ system, prompt, query, businessId, tokensUsedThisRun, searchCache = null }) {
-  const budget = checkTokenBudget({ requestedMaxTokens: MAX_TOKENS, tokensUsedThisRun });
-  if (!budget.allowed) return { ok: false, reason: budget.reason, usage: null };
-
-  const mode = webSearchProvider.getSearchProviderMode();
-  let verifiedUrls = null;
-  let searchOutcome = null;
-  let effectivePrompt = prompt;
-
-  if (mode === 'external') {
-    searchOutcome = await webSearchProvider.search({ query: query || prompt, cache: searchCache });
-    if (!searchOutcome.ok) {
-      // The provider's own classified status travels with the failure, so the caller can
-      // tell "allowance exhausted" from "found nothing" instead of flattening both.
-      return { ok: false, reason: searchOutcome.detail, searchStatus: searchOutcome.status, searchOutcome, usage: null, verifiedUrls: new Set() };
-    }
-    verifiedUrls = new Set(webSearchProvider.verifiedUrlsFromSearch(searchOutcome));
-    if (verifiedUrls.size === 0) {
-      return { ok: false, reason: 'The web search ran and returned no results for this query.', searchStatus: searchOutcome.status, searchOutcome, usage: null, verifiedUrls };
-    }
-    effectivePrompt = `${prompt}\n\n${formatSearchResults(searchOutcome)}`;
-  }
-
-  let response;
-  try {
-    response = await aiProviderSelector.sendMessage({
-      messages: [{ role: 'user', content: effectivePrompt }],
-      system: mode === 'external' ? adaptSystemPromptForExternalSearch(system) : system,
-      // The hosted search tool is offered ONLY in model-native mode. In external mode the
-      // search already happened, and asking the model to search again would spend a second
-      // allowance for sources that could not be verified against the first.
-      ...(mode === 'model_native' ? { tools: [WEB_SEARCH_TOOL] } : {}),
-      maxTokens: budget.capped_max_tokens,
-      businessId,
-    });
-  } catch (err) {
-    return { ok: false, reason: err.message, searchStatus: null, searchOutcome, usage: null };
-  }
-
-  const usage = {
-    model: response.model,
-    stopReason: response.stopReason,
-    tokensUsed: totalTokensFromUsage(response.usage),
-    inputTokens: normalizeUsage(response.usage).input,
-    outputTokens: normalizeUsage(response.usage).output,
-  };
-  if (mode === 'model_native') {
-    verifiedUrls = new Set(aiProviderSelector.extractWebSearchResultUrls(response.raw));
-    if (verifiedUrls.size === 0) {
-      return { ok: false, reason: 'The web search returned no real results for this query.', usage, verifiedUrls };
-    }
-  }
-  // Claude emits interim text blocks around the final JSON, so its LAST text block is the
-  // answer; Gemini returns one text, already on response.text.
-  const answerText = extractFinalTextBlock(response.raw && response.raw.content) || response.text;
-  const parsed = tryParseJson(answerText);
-  if (!parsed) {
-    // "No text at all" and "text that was not JSON" are different failures with different
-    // fixes, and collapsing them cost a full investigation once: a provider that terminated
-    // abnormally (Gemini's MALFORMED_FUNCTION_CALL, with an empty part) was reported as if
-    // the model had simply answered badly. The provider's own stop reason is named here so
-    // the next occurrence is diagnosable from the run record. Only the stop reason is
-    // reported - never the model's raw output, which is not persisted anywhere.
-    const reason =
-      isMaxTokensStopReason(response.stopReason)
-        ? "The research assistant's answer was cut off before it finished (the per-call output-token limit was reached). Raise MAX_TOKENS_PER_CALL in .env (e.g. to 8192) and try again."
-        : !nonEmptyString(answerText)
-          ? `The research assistant returned no text at all (provider stop reason: ${response.stopReason || 'not reported'}).`
-          : 'The research assistant did not return a parsable JSON result.';
-    // `searchOutcome` travels with this failure too. In external mode the search has ALREADY
-    // executed and been billed by the time the model answers, so omitting it here made
-    // recordSearch skip a request that really happened - a real run showed 3 Tavily searches
-    // recorded as 2. An unusable model answer does not un-bill the search that preceded it.
-    return { ok: false, reason, usage, verifiedUrls, searchOutcome, searchStatus: searchOutcome ? searchOutcome.status : null };
-  }
-  return { ok: true, parsed, verifiedUrls, usage, searchOutcome, searchStatus: searchOutcome ? searchOutcome.status : null };
-}
+// The live research call - provider chain, fallback, failure classification, budgeting and source verification -
+// lives in agent/core/liveResearchCall.js, shared with live competitor research.
+const {
+  tryParseJson,
+  extractFinalTextBlock,
+  verifiedSources,
+  recordUsage,
+  recordSearch,
+  totalTokensFromUsage,
+  isMaxTokensStopReason,
+  adaptSystemPromptForExternalSearch,
+  formatSearchResults,
+  runSearchCall,
+} = require('../agent/core/liveResearchCall');
 
 // --- Stage 2: broad discovery -------------------------------------------------------
 // Several batched queries, each aimed at a different slice of the customer's scope, so the
@@ -325,6 +248,8 @@ async function runSearchCall({ system, prompt, query, businessId, tokensUsedThis
 function buildDiscoveryPrompts(marketScope, batches) {
   const related = asArray(marketScope.related_markets);
   const intents = asArray(marketScope.buyer_intents);
+  const targets = asArray(marketScope.requested_markets);
+  const targetLine = targets.length > 0 ? `Target markets (countries/regions): ${targets.join(', ')}. Report demand evidence per market only where a source states it for that market.` : '';
   // Each entry pairs the model PROMPT with a concise SEARCH QUERY. An external provider
   // is given the query; a model-native provider composes its own from the prompt.
   const prompts = [
@@ -332,6 +257,7 @@ function buildDiscoveryPrompts(marketScope, batches) {
       `Business's primary market: ${marketScope.primary_market}.`,
       related.length > 0 ? `It also sells in: ${related.join(', ')}.` : '',
       intents.length > 0 ? `Recurring themes in its catalogue: ${intents.slice(0, 10).join(', ')}.` : '',
+      targetLine,
       '',
       'Find as many distinct PRODUCT OPPORTUNITIES as real sources support that are adjacent to this market -',
       'products this business could plausibly add next. Aim for breadth.',
@@ -344,6 +270,7 @@ function buildDiscoveryPrompts(marketScope, batches) {
       [
         `Business's primary market: ${marketScope.primary_market}.`,
         intents.length > 0 ? `Buyer themes: ${intents.slice(0, 10).join(', ')}.` : '',
+        targetLine,
         '',
         'Find PRODUCT OPPORTUNITIES that are currently in demand, newly emerging, or seasonally strong in this market',
         'and closely-related markets. Report what real sources say, including seasonality where stated.',
@@ -361,9 +288,11 @@ async function discoverCandidates({ marketScope, batches, businessId, tokenTrack
   let calls = 0;
 
   const related = asArray(marketScope.related_markets);
+  const targets = asArray(marketScope.requested_markets);
+  const inMarkets = targets.length > 0 ? ` in ${targets.join(', ')}` : '';
   const discoveryQueries = [
-    `products related to ${marketScope.primary_market} that online stores sell`,
-    `trending and seasonal products in ${marketScope.primary_market}${related.length > 0 ? ` and ${related[0]}` : ''}`,
+    `products related to ${marketScope.primary_market} that online stores sell${inMarkets}`,
+    `trending and seasonal products in ${marketScope.primary_market}${related.length > 0 ? ` and ${related[0]}` : ''}${inMarkets}`,
   ];
   const prompts = buildDiscoveryPrompts(marketScope, batches);
   for (let i = 0; i < prompts.length; i += 1) {
@@ -449,7 +378,7 @@ async function validateShortlist({ shortlist, businessId, tokenTracker, stages, 
     recordUsage(usageTotals, outcome.usage);
   }
   if (!outcome.ok) {
-    stages.push({ stage: 'validation', status: 'failed', detail: outcome.reason });
+    stages.push({ stage: 'validation', status: 'failed', detail: outcome.reason, search_status: outcome.searchStatus || null });
     return { validated: new Map(), sourcesUsed: new Set(), calls: 1 };
   }
 
@@ -558,6 +487,14 @@ async function runCustomerMarketOpportunityResearch({
   shortlistSize = DEFAULT_SHORTLIST_SIZE,
   businessId = null,
   tokensUsedThisRun = 0,
+  // Countries/regions the request names. Scoping only: never a claim about those markets.
+  requestedMarkets = [],
+  // Cross-run reuse (agent/core/externalResearchMemory.js). Off unless the caller asks, so a direct call
+  // never reads another run's research implicitly.
+  reuseResearch = false,
+  storeReference = null,
+  researchStoreDir = undefined,
+  now = Date.now(),
 } = {}) {
   const result = createEmptyCustomerOpportunityResearch();
   const stages = [];
@@ -579,6 +516,9 @@ async function runCustomerMarketOpportunityResearch({
     resultsReturned: 0,
     statuses: [],
     usage: [],
+    attempts: [],
+    failures: [],
+    successfulCalls: 0,
   };
   const limitations = [];
 
@@ -597,6 +537,47 @@ async function runCustomerMarketOpportunityResearch({
     ]);
     result.research_summary = { stages, sources_used: [], verified_source_count: 0, model_calls: 0, usage: { ...usageTotals }, generated_at: new Date().toISOString() };
     return result;
+  }
+
+  result.market_scope.requested_markets = [...new Set(asArray(requestedMarkets).filter(nonEmptyString).map((m) => m.trim()))];
+
+  // CROSS-RUN REUSE. The same question for the same business and store, answered successfully within the
+  // freshness limit, is served from the stored run - with its original sources, timestamps and run id -
+  // instead of spending new searches. Anything else (a different scope, a failed or partial run, stale
+  // research) is researched fresh. Checked BEFORE the provider checks: valid research stays usable even
+  // while a provider is unavailable.
+  const researchKey = externalResearchMemory.buildResearchKey({
+    toolId: RESEARCH_TOOL_ID,
+    businessId,
+    storeReference,
+    scope: result.market_scope,
+    requestedMarkets: result.market_scope.requested_markets,
+    excludedCategories,
+    limit,
+  });
+  let freshMode = 'fresh';
+  let freshReason = 'No stored research answered this question, so live research ran.';
+  if (reuseResearch) {
+    const found = externalResearchMemory.findReusableExternalResearch({ toolId: RESEARCH_TOOL_ID, researchKey, businessId, now, storeDir: researchStoreDir });
+    if (found.research) {
+      const reused = JSON.parse(JSON.stringify(found.research.result));
+      const reason = `Reused live research from run ${found.research.source_run_id}, produced ${found.research.produced_at} (${found.research.age_hours} hour(s) old, within the ${externalResearchMemory.getExternalResearchMaxAgeHours()}-hour limit). No new search or model call was made.`;
+      reused.research_memory = {
+        ...reused.research_memory,
+        mode: 'reused',
+        reason,
+        source_run_id: found.research.source_run_id,
+        reused_at: new Date(now).toISOString(),
+      };
+      reused.limitations = [reason].concat(asArray(reused.limitations).filter((line) => !/^Reused live research from run/.test(line)));
+      return reused;
+    }
+    if (found.considered.stale > 0) {
+      freshMode = 'refreshed';
+      freshReason = `Stored research for this question was older than the ${externalResearchMemory.getExternalResearchMaxAgeHours()}-hour limit (newest produced ${found.considered.newest_stale_produced_at}), so it was refreshed with live research.`;
+    } else if (found.considered.not_successful > 0) {
+      freshReason = 'Stored research for this question did not complete successfully, so it was not reused; live research ran.';
+    }
   }
 
   searchStats.provider = webSearchProvider.getActiveSearchProvider();
@@ -686,6 +667,8 @@ async function runCustomerMarketOpportunityResearch({
   modelCalls += validation.calls;
   validation.sourcesUsed.forEach((url) => sourcesUsed.add(url));
 
+  const history = (product) =>
+    reuseResearch ? externalResearchMemory.collectHistoricalObservations({ toolId: RESEARCH_TOOL_ID, businessId, productKey: product, storeDir: researchStoreDir }) : [];
   const enriched = shortlist.map((candidate) => {
     const match = validation.validated.get(candidate.product.toLowerCase());
     if (!match) {
@@ -693,12 +676,11 @@ async function runCustomerMarketOpportunityResearch({
         ...candidate,
         demand: normalizeSignal(null, [], 'demand'),
         competition: normalizeSignal(null, [], 'competition'),
-        trend: { metric: 'trend', classification: 'unknown', assessment: 'Not available from current research sources.', grade: 'unknown', value: null, source: [], confidence: 'low' },
+        trend: evidenceTrend({ entry: null, sources: [], provider: searchStats.provider, history: history(candidate.product) }),
         commercial: normalizeSignal(null, [], 'commercial'),
       };
     }
     const { entry, sources } = match;
-    const trendClassification = nonEmptyString(entry.trend && entry.trend.classification) ? entry.trend.classification : 'unknown';
     return {
       ...candidate,
       evidence: candidate.evidence.concat(
@@ -706,15 +688,7 @@ async function runCustomerMarketOpportunityResearch({
       ),
       demand: normalizeSignal(entry.demand, sources, 'demand'),
       competition: normalizeSignal(entry.competition, sources, 'competition'),
-      trend: {
-        metric: 'trend',
-        classification: trendClassification,
-        assessment: nonEmptyString(entry.trend && entry.trend.assessment) ? entry.trend.assessment : 'Not available from current research sources.',
-        grade: nonEmptyString(entry.trend && entry.trend.grade) ? entry.trend.grade : 'inferred',
-        value: null,
-        source: sources,
-        confidence: trendClassification === 'unknown' ? 'low' : 'medium',
-      },
+      trend: evidenceTrend({ entry, sources, provider: searchStats.provider, history: history(candidate.product) }),
       commercial: normalizeSignal(entry.commercial, sources, 'commercial'),
     };
   });
@@ -751,6 +725,9 @@ async function runCustomerMarketOpportunityResearch({
   const ranking = rankCandidates(scored, { limit });
   result.candidate_count.ranked = ranking.ranked.length;
 
+  for (const candidate of ranking.ranked) {
+    candidate.validation = validateEvidence({ claims: corroborationClaims(candidate) });
+  }
   result.top_opportunities = ranking.ranked.map((candidate) => ({
     rank: candidate.rank,
     product: candidate.product,
@@ -769,7 +746,10 @@ async function runCustomerMarketOpportunityResearch({
       matched_terms: candidate.customer_fit.matched_terms,
     },
     compliance: candidate.compliance,
-    confidence: candidate.coverage_score.percentage >= 75 ? 'medium' : 'low',
+    // Multi-source corroboration (agent/core/evidenceValidation.js): one site, however many pages, is
+    // one source, and too few independent sources can never produce more than low confidence.
+    validation: candidate.validation,
+    confidence: minConfidence(candidate.validation.confidence, coverageConfidenceCap(candidate.coverage_score.percentage)),
     evidence: candidate.evidence,
     variant_names: candidate.variant_names,
     mention_count: candidate.mention_count,
@@ -787,9 +767,21 @@ async function runCustomerMarketOpportunityResearch({
   if (result.candidate_count.discovered === 0) {
     limitations.push('Live discovery returned no candidate with a verifiable source URL, so no opportunity could be ranked.');
   }
+  const uncorroborated = result.top_opportunities.filter((item) => item.validation.status !== 'corroborated');
+  if (uncorroborated.length > 0) {
+    limitations.push(
+      `${uncorroborated.length} of ${result.top_opportunities.length} ranked opportunit(ies) are not corroborated by at least ${uncorroborated[0].validation.min_independent_sources} independent source domain(s) without conflict, so their confidence is capped (see each opportunity's validation).`
+    );
+  }
   if (ranking.ranked.length < limit) {
     limitations.push(
       `Fewer than ${limit} opportunities are reported (${ranking.ranked.length}). Remaining slots are deliberately left empty rather than filled with weakly-evidenced or irrelevant candidates.`
+    );
+  }
+  const unverifiedTrends = result.top_opportunities.filter((item) => item.trend && item.trend.verification !== 'VERIFIED').length;
+  if (unverifiedTrends > 0) {
+    limitations.push(
+      `Trend is NOT VERIFIED for ${unverifiedTrends} of ${result.top_opportunities.length} ranked opportunit(ies): a trend is decided only from dated measured or observed values over time, and not enough were available. The pages' own reading is kept as source_assessment, not as a trend.`
     );
   }
   if (asArray(result.market_scope.geographies).length === 0) {
@@ -799,12 +791,19 @@ async function runCustomerMarketOpportunityResearch({
   // An OPERATIONAL search failure (allowance gone, rate limited, provider down) is a
   // different fact from 'we searched and found nothing', and is reported as such so a
   // caller can keep prior research and tell the user why this run is not fresh.
-  const operationalStatus = searchStats.statuses.find((status) => webSearchProvider.isOperationalFailure(status)) || null;
-  if (operationalStatus) {
-    result.search_status = operationalStatus;
-    result.search_status_message = webSearchProvider.userFacingStatusMessage(operationalStatus);
+  // Only failures that ENDED a call count here: one a fallback provider recovered from left that call
+  // with real research, and is kept in research_summary.search.attempts for the record.
+  const unrecovered = asArray(searchStats.unrecoveredFailures);
+  const operationalStatus = unrecovered.find((status) => webSearchProvider.isOperationalFailure(status)) || null;
+  // No call succeeded at all, and the reason was not an outage: the provider answered with nothing
+  // usable (empty, unreadable, unsupported). Still a failure - never SEARCH_OK.
+  const nothingSucceeded = (searchStats.successfulCalls || 0) === 0 && unrecovered.length > 0;
+  const failureStatus = operationalStatus || (nothingSucceeded ? unrecovered[0] : null);
+  if (failureStatus) {
+    result.search_status = failureStatus;
+    result.search_status_message = webSearchProvider.userFacingStatusMessage(failureStatus);
     limitations.push(
-      `${webSearchProvider.userFacingStatusMessage(operationalStatus)} (search provider: ${searchStats.provider}, status: ${operationalStatus}).`
+      `${webSearchProvider.userFacingStatusMessage(failureStatus)} (search provider: ${searchStats.provider}, status: ${failureStatus}).`
     );
   } else if (searchStats.mode) {
     result.search_status = 'SEARCH_OK';
@@ -812,6 +811,12 @@ async function runCustomerMarketOpportunityResearch({
   }
 
   result.limitations = limitations;
+  result.research_memory = externalResearchMemory.describeResearchMemory({
+    researchKey,
+    mode: freshMode,
+    reason: freshReason,
+    provider: searchStats.provider,
+  });
   result.research_summary = {
     stages,
     sources_used: [...sourcesUsed],
@@ -825,7 +830,7 @@ async function runCustomerMarketOpportunityResearch({
   };
   // 'complete' only when real opportunities came back. A run whose SEARCH failed
   // operationally is never 'complete', even if the pipeline itself ran cleanly.
-  result.status = result.top_opportunities.length > 0 && !operationalStatus ? 'complete' : 'partial';
+  result.status = result.top_opportunities.length > 0 && !failureStatus ? 'complete' : 'partial';
   return result;
 }
 

@@ -62,12 +62,27 @@ const CATALOGUE_EXPANSION_GOALS = [
   'Research related products with strong market opportunity.',
 ];
 
+// LIVE MARKET RESEARCH. "What is trending in the market?" used to route to the Research specialist, whose
+// trend capability only structures trend data a caller already supplies - so the question was answered with
+// nothing. Live market questions (demand, trends, rising, seasonal, fads, named markets) now reach the live
+// research capability. Store-record trends, competitor questions and supplied trend data keep their owners.
+const LIVE_MARKET_RESEARCH_GOALS = [
+  'What is trending in the market?',
+  'What are the current rising trends in printable clipart, and which are fads?',
+  'Compare global market demand for SVG cut files across the United States, United Kingdom, Canada and Australia.',
+  'Is there demand for Halloween SVG files in the UK?',
+];
+const LIVE_MARKET_RESEARCH_BOUNDARIES = [
+  ['Look at my orders from the last 30 days and summarise the trends.', 'analytics_optimization'],
+  ['Run trend research on trending topics we have observed', 'research'],
+  ['Research competitor products.', 'research'],
+];
+
 // Each must keep its existing owner. A null expectation means "anything except product" -
 // used where the pre-existing router already returns a clarification for that wording, a
 // behaviour this change does not touch and must not silently alter.
 const BOUNDARY_GOALS = [
   ['What are our competitors doing?', null],
-  ['What is trending in the market?', 'research'],
   ['Analyze our sales performance.', 'analytics_optimization'],
   ['Why did our revenue fall?', null],
   ['Improve SEO for our existing products.', 'seo'],
@@ -101,6 +116,19 @@ async function main() {
         `selected ${JSON.stringify(step.tool_calls)}`
       );
       assert.strictEqual(step.selected_specialist.id, 'product');
+    });
+  }
+
+  for (const goal of LIVE_MARKET_RESEARCH_GOALS) {
+    test(`LIVE MARKET RESEARCH: ${JSON.stringify(goal)} reaches live research`, () => {
+      const routed = routedSpecialists(goal);
+      assert.deepStrictEqual(routed.ids, ['product'], `${goal} -> ${routed.ids.join(',') || `[${routed.status}]`}`);
+    });
+  }
+  for (const [goal, expected] of LIVE_MARKET_RESEARCH_BOUNDARIES) {
+    test(`LIVE MARKET RESEARCH BOUNDARY: ${JSON.stringify(goal)} keeps ${expected}`, () => {
+      const routed = routedSpecialists(goal);
+      assert.ok(routed.ids.includes(expected) && !routed.ids.includes('product'), `${goal} -> ${routed.ids.join(',') || `[${routed.status}]`}`);
     });
   }
 

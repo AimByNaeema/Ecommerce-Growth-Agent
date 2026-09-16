@@ -39,15 +39,30 @@ async function testAsync(name, fn) {
   }
 }
 
-function withApiKeyConfigured(fn) {
-  const saved = process.env.ANTHROPIC_API_KEY;
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
+// These suites exercise the ANTHROPIC web_search path of the shared research call, so they pin that provider
+// pair explicitly: the tool now follows the configured provider chain (AI_PROVIDER + SEARCH_PROVIDER), and a
+// local .env naming another provider must not change what these tests prove.
+const CLAUDE_PROVIDER_ENV = { AI_PROVIDER: 'claude', SEARCH_PROVIDER: 'claude_web_search', SEARCH_FALLBACK_PROVIDERS: undefined };
+
+function withEnv(vars, fn) {
+  const saved = {};
+  for (const [k, v] of Object.entries(vars)) {
+    saved[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   return Promise.resolve()
     .then(fn)
     .finally(() => {
-      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
-      else process.env.ANTHROPIC_API_KEY = saved;
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
     });
+}
+
+function withApiKeyConfigured(fn) {
+  return withEnv({ ...CLAUDE_PROVIDER_ENV, ANTHROPIC_API_KEY: 'sk-ant-test-key-not-real' }, fn);
 }
 
 // Builds a mocked claudeClient.sendMessage response shaped like a real Messages API
@@ -98,16 +113,11 @@ test('exports the expected function', () => {
 
   await testAsync('throws no exception and reports a clear not-configured failure when ANTHROPIC_API_KEY is unset (real claudeClient, no mock)', async () => {
     claudeClient.loadEnvOnce();
-    const savedKey = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-    try {
+    await withEnv({ ...CLAUDE_PROVIDER_ENV, ANTHROPIC_API_KEY: undefined }, async () => {
       const outcome = await runWebCompetitorResearchTool({ objective: 'Find my top competitors.' });
       assert.strictEqual(outcome.status, 'failed');
       assert.ok(/ANTHROPIC_API_KEY is not set/.test(outcome.error));
-    } finally {
-      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-      else process.env.ANTHROPIC_API_KEY = savedKey;
-    }
+    });
   });
 
   await testAsync('refuses to call Claude at all once this run\'s shared token budget is exhausted', async () => {
@@ -325,7 +335,7 @@ test('exports the expected function', () => {
         // The web_search tool was actually requested, and the objective (not some
         // structured research_params shape) was sent as the user message.
         assert.strictEqual(receivedRequest.tools[0].name, 'web_search');
-        assert.strictEqual(receivedRequest.messages[0].content, 'Research my top competitors for handmade candles.');
+        assert.strictEqual(receivedRequest.messages[0].content, 'Research my top competitors for handmade candles.\n\n' + require('../../agent/core/liveResearchCall').MODEL_NATIVE_UNTRUSTED_CONTENT_RULE);
       });
     } finally {
       claudeClient.sendMessage = originalSendMessage;

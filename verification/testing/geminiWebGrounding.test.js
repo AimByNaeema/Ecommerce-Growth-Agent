@@ -218,10 +218,15 @@ function mockFetch(responseBody, capture) {
   // -------------------------------------------------------------------------------------
 
   test('8. the research workflow uses the provider selector, not a Claude-only client', () => {
-    const source = fs.readFileSync(path.join(__dirname, '../../workflows/customerMarketOpportunityWorkflow.js'), 'utf8');
-    const code = source.split('\n').map((l) => l.replace(/\r$/, '').replace(/^\s*\/\/.*$/, '')).join('\n');
-    assert.ok(!code.includes('claudeClient'), 'the workflow must no longer depend on claudeClient directly');
-    assert.ok(code.includes("require('../agent/core/aiProviderSelector')"), 'it must use the existing selector');
+    // The live research call moved to agent/core/liveResearchCall.js (shared with live competitor research); the
+    // workflow uses it, so both files are inspected together.
+    const strip = (text) => text.split('\n').map((l) => l.replace(/\r$/, '').replace(/^\s*\/\/.*$/, '')).join('\n');
+    const workflow = strip(fs.readFileSync(path.join(__dirname, '../../workflows/customerMarketOpportunityWorkflow.js'), 'utf8'));
+    const call = strip(fs.readFileSync(path.join(__dirname, '../../agent/core/liveResearchCall.js'), 'utf8'));
+    const code = `${workflow}\n${call}`;
+    assert.ok(!code.includes('claudeClient'), 'the research code must not depend on claudeClient directly');
+    assert.ok(workflow.includes("require('../agent/core/liveResearchCall')"), 'the workflow must use the shared research call');
+    assert.ok(call.includes("require('./aiProviderSelector')"), 'the shared call must use the existing selector');
     assert.ok(code.includes('aiProviderSelector.extractWebSearchResultUrls'), 'URL verification must go through the selector');
     assert.ok(code.includes('aiProviderSelector.sendMessage'), 'the model call must go through the selector');
     // And it must still verify, not trust.
@@ -296,7 +301,8 @@ function mockFetch(responseBody, capture) {
   // -------------------------------------------------------------------------------------
 
   test('10. both providers\' max-token stop reasons are handled', () => {
-    const source = fs.readFileSync(path.join(__dirname, '../../workflows/customerMarketOpportunityWorkflow.js'), 'utf8');
+    // The helper lives in the shared live research call (agent/core/liveResearchCall.js), which the workflow uses.
+    const source = fs.readFileSync(path.join(__dirname, '../../agent/core/liveResearchCall.js'), 'utf8');
     assert.ok(source.includes('isMaxTokensStopReason'), 'a shared stop-reason check must exist');
     assert.ok(!/stopReason === 'max_tokens'/.test(source), 'the Claude-only literal comparison must be gone');
     // The helper itself, exercised through the file it lives in.

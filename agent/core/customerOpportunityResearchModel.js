@@ -21,12 +21,14 @@
 
 // How a value came to be known. Any claim that is not MEASURED must say which of the
 // weaker grades it is, so an inference can never be read back as a measurement.
-const EVIDENCE_GRADES = ['measured', 'estimated', 'derived', 'inferred', 'unknown'];
+// 'observed': a value a cited source states directly (for example a dated figure used for trend reasoning).
+const EVIDENCE_GRADES = ['measured', 'observed', 'estimated', 'derived', 'inferred', 'unknown'];
 
 // The trend classifications this result may report. 'unknown' is a first-class answer:
 // with no trend source available it is the only honest one, and a seasonal spike must be
 // reported as 'seasonal' rather than promoted to 'growing'.
-const TREND_CLASSIFICATIONS = ['growing', 'stable', 'seasonal', 'declining', 'emerging', 'unknown'];
+// 'fad': a short spike that decayed, decided from dated values over time (agent/core/trendEvidence.js).
+const TREND_CLASSIFICATIONS = ['growing', 'stable', 'seasonal', 'declining', 'emerging', 'fad', 'unknown'];
 
 const RESULT_STATUSES = ['complete', 'partial', 'needs_information'];
 
@@ -51,6 +53,7 @@ const OPPORTUNITY_SUB_KEYS = [
   'variant_names',
   'mention_count',
   'specialized_records',
+  'validation',
 ];
 
 const CUSTOMER_OPPORTUNITY_RESEARCH_FIELDS = [

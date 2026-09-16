@@ -138,6 +138,7 @@ const { proposeSeoChanges, PROPOSAL_TOOL_ID, PROPOSAL_SPECIALIST_ID } = require(
 const {
   decideProposalCheck,
   decideProposalExecution,
+  referencesExistingProposal,
   resolveProposalExecution,
   resolveProposalResearchBasis,
   APPLICATION_TOOL_ID: PROPOSAL_APPLICATION_TOOL_ID,
@@ -176,6 +177,17 @@ const productDataRetrievalTool = require('../../tools/productDataRetrievalTool')
 const productResearchTool = require('../../tools/productResearchTool');
 const collectionDataRetrievalTool = require('../../tools/collectionDataRetrievalTool');
 const customerMarketOpportunityTool = require('../../tools/customerMarketOpportunityTool');
+// What a research request asks for: the markets it names, live market research intent, and named data
+// sources this system has no integration for (agent/core/researchRequestIntent.js).
+const {
+  detectMarketNames,
+  isMarketWord,
+  isMarketListFragment,
+  unsupportedDataSourceIn,
+  unsupportedDataSourceAlternative,
+  hasLiveMarketResearchIntent,
+} = require('./researchRequestIntent');
+const { hasEconomicsIntent } = require('./productEconomics');
 const etsyShopDataTool = require('../../tools/etsyShopDataTool');
 const etsyListingDataTool = require('../../tools/etsyListingDataTool');
 const seoQualityCheckTool = require('../../tools/seoQualityCheckTool');
@@ -309,6 +321,8 @@ const TOOL_EXECUTORS = {
     }),
   product_data_retrieval: (executionRequest) =>
     productDataRetrievalTool.runProductDataRetrievalTool({
+      // A request about profit, margin or cost also reads recorded unit costs (see tools/productDataRetrievalTool.js).
+      unitEconomics: hasEconomicsIntent(executionRequest.objective),
       ...(executionRequest.research_params || {}),
       businessId: executionRequest.business_id,
     }),
@@ -323,6 +337,8 @@ const TOOL_EXECUTORS = {
   // per-run token budget instead of opening a second one.
   catalogue_expansion_opportunities: (executionRequest, runTokenTracker) =>
     customerMarketOpportunityTool.runCustomerMarketOpportunityTool({
+      // The markets the request itself names scope the research, unless the caller supplied them explicitly.
+      markets: detectMarketNames(executionRequest.objective),
       ...(executionRequest.research_params || {}),
       businessId: executionRequest.business_id,
       tokensUsedThisRun: runTokenTracker.tokensUsedThisRun,
@@ -1767,7 +1783,8 @@ function resolveObjectiveIntent(routedClauses) {
     const interpretation = interpretClause(clause.text, {
       previousAct: sameSentence ? previous.interpretation.act : null,
       previousNegated: sameSentence ? Boolean(previous.interpretation.negated) : false,
-      knownWord: isSystemWord,
+      // A market name ("Canada") is scope, never an unknown subject.
+      knownWord: (word) => isSystemWord(word) || isMarketWord(word),
       systemVocabulary: SYSTEM_VOCABULARY,
     });
     const unit = { clause, interpretation, previous: sameSentence ? previous : null, disposition: null };
@@ -1778,6 +1795,10 @@ function resolveObjectiveIntent(routedClauses) {
     // a constraint on the run, never routed to a capability its nouns happen to name.
     if (act === 'safety' || act === 'empty' || (interpretation.negated && interpretation.continuation)) {
       unit.disposition = { kind: 'constraint' };
+    } else if (sameSentence && isMarketListFragment(text)) {
+      // "... for Canada and Australia": the splitter cut a list of markets. The fragment is the previous
+      // clause's scope - never a request of its own, and never an unknown capability.
+      unit.disposition = { kind: 'framing' };
     } else if (act === 'unsupported_platform') {
       // The platform as the owner typed it ("eBay"), falling back to the registry's name.
       const typed = String(text).match(new RegExp(`\\b${interpretation.platform}\\b`, 'i'));
@@ -1847,7 +1868,7 @@ function resolveObjectiveIntent(routedClauses) {
   for (const unit of taskUnits) {
     for (const token of interpretationTokens(unit.clause.text)) taskWords.add(singularForm(token.lower));
   }
-  const knownWord = (word) => isSystemWord(word) || taskWords.has(singularForm(String(word).toLowerCase()));
+  const knownWord = (word) => isSystemWord(word) || isMarketWord(word) || taskWords.has(singularForm(String(word).toLowerCase()));
 
   for (const unit of live) {
     const { kind } = unit.disposition;
@@ -1995,7 +2016,26 @@ function hasCatalogueExpansionIntent(text) {
   return CATALOGUE_EXPANSION_SUPPORTING_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function planRouting(objective) {
+// `liveMarketGate: false` reads the objective clause by clause only, without the whole-objective live-market gate.
+function planRouting(objective, { liveMarketGate = true } = {}) {
+  // A NAMED DATA SOURCE THIS SYSTEM DOES NOT HAVE ("Google Trends search volume", "Jungle Scout sales
+  // estimates", "AliExpress suppliers") is refused by name before any routing, instead of being routed as
+  // ordinary wording into an unrelated capability. Nothing is presented as if that source's data existed.
+  const unsupportedSource = unsupportedDataSourceIn(objective);
+  if (unsupportedSource) {
+    return {
+      status: 'clarification_required',
+      clarification_type: 'unmatched',
+      reason:
+        `${unsupportedSource} is not available: no integration for it is connected to this system, so it cannot be retrieved or used, and nothing will be presented as if it were. ` +
+        unsupportedDataSourceAlternative(unsupportedSource),
+      candidates: null,
+      unmatched_segment: objective,
+      interpretation_blocked: true,
+      unsupported_data_source: unsupportedSource,
+    };
+  }
+
   // CATALOGUE-EXPANSION INTENT, checked on the WHOLE objective before clause splitting.
   //
   // Before splitting on purpose: "Analyze our existing catalogue and identify expansion
@@ -2008,7 +2048,47 @@ function planRouting(objective) {
   // permissions, budgets, audit, compliance - runs exactly as it does for any other
   // routed clause. See hasCatalogueExpansionIntent above for why it cannot hijack
   // Research, Analytics, SEO, Listing, Marketing or Advertising.
-  if (hasCatalogueExpansionIntent(objective)) {
+  // LIVE MARKET RESEARCH (demand, trends, rising, seasonal, fads, in named markets) is answered by the same
+  // live research capability: it is the only capability that retrieves market evidence rather than structuring
+  // evidence a caller already holds. Store-record trends, competitor questions and supplied trend data are
+  // excluded by hasLiveMarketResearchIntent itself and keep their existing routing. A request about an EXISTING
+  // proposal is the proposal workflow (agent/core/proposalExecution.js): a market clause inside it is one more
+  // request that workflow must report, so the whole objective is not taken over as market research.
+  //
+  // The live-market gate never swallows a genuinely unknown request: the same objective is first read clause by
+  // clause, and a clause no capability matches still asks for clarification. Market names in a list are scope, so
+  // they never count as unknown there (see interpretClause and isMarketListFragment).
+  const liveMarketResearch =
+    liveMarketGate && hasLiveMarketResearchIntent(objective) && !referencesExistingProposal(objective);
+  if (hasCatalogueExpansionIntent(objective) || liveMarketResearch) {
+    if (!hasCatalogueExpansionIntent(objective)) {
+      // A clause no capability matched is part of the market question this gate answers only when it is itself
+      // market research, a market list, or a question (act 'inform') in the same sentence as a market-research
+      // clause ("Which themes are seasonal, and when do they peak?"). A new action ("then frobnicate the widgets")
+      // or an unsupported one is never absorbed.
+      const { routedClauses, interpretation } = resolveObjectiveIntent(
+        attemptClauseRecovery(splitIntoClauseUnits(objective).map((unit) => ({ text: unit.text, sentence: unit.sentence, result: routeClause(unit.text) })))
+      );
+      const marketSentences = new Set(routedClauses.filter((clause) => hasLiveMarketResearchIntent(clause.text)).map((clause) => clause.sentence));
+      const actOf = (text) => (interpretation.find((entry) => entry.clause === text) || {}).act;
+      const partOfMarketQuestion = (clause) =>
+        hasLiveMarketResearchIntent(clause.text) ||
+        isMarketListFragment(clause.text) ||
+        (!clause.result.interpretation_blocked && actOf(clause.text) === 'inform' && marketSentences.has(clause.sentence));
+      const unknownClause = routedClauses.find((clause) => clause.result.status === 'unmatched' && !partOfMarketQuestion(clause));
+      const unknown = unknownClause ? unknownClause.result : null;
+      if (unknown) {
+        return {
+          status: 'clarification_required',
+          clarification_type: 'unmatched',
+          reason: unknown.reason || `No known capability matches "${unknown.segment}" - please clarify what you need.`,
+          candidates: null,
+          unmatched_segment: unknown.segment,
+          interpretation_blocked: Boolean(unknown.interpretation_blocked),
+          interpretation,
+        };
+      }
+    }
     const productTarget = ROUTING_TARGETS.find(
       (target) => target.type === 'specialist' && target.id === 'product'
     );
@@ -2627,7 +2707,7 @@ async function buildPlanStep(
     // levels: without this, "Find products related to my existing products." reached the
     // Product specialist and then picked product_data_retrieval, answering "what do we
     // already sell" instead of "what should we sell next".
-    if ((expansionScore > 0 && expansionScore > bestOtherScore) || hasCatalogueExpansionIntent(currentTask)) {
+    if ((expansionScore > 0 && expansionScore > bestOtherScore) || hasCatalogueExpansionIntent(currentTask) || hasLiveMarketResearchIntent(currentTask)) {
       toolMatch = getToolById('catalogue_expansion_opportunities') || toolMatch;
       matchedCapability =
         capabilityEntry.supported_tasks.find((task) => task.id === 'catalogue_expansion_opportunities') || matchedCapability;

@@ -47,6 +47,8 @@ const etsyListingDataTool = require('./etsyListingDataTool');
 // through two differently-named client functions (shopifyClient.isConfigured vs
 // etsyReadClient.canRead).
 const { getReadAdapter } = require('../integrations/adapters/adapterRegistry');
+// The connected store's identity, so stored research is only ever reused for the same store.
+const { currentStoreReference } = require('../agent/core/researchContext');
 const {
   runCustomerMarketOpportunityResearch,
   DEFAULT_TOP_LIMIT,
@@ -241,6 +243,12 @@ async function runCustomerMarketOpportunityTool(researchParams) {
       shortlistSize: params.shortlistSize,
       businessId,
       tokensUsedThisRun: Number(params.tokensUsedThisRun) || 0,
+      // Countries/regions the request names (scoping only).
+      requestedMarkets: asArray(params.markets || params.requestedMarkets),
+      // Valid stored research for the same question, business and store is reused across runs and sessions;
+      // a caller can opt out explicitly.
+      reuseResearch: params.reuseResearch !== false,
+      storeReference: currentStoreReference({ businessId }),
     });
 
     // The tool's own retrieval limitations join the workflow's research limitations, so a

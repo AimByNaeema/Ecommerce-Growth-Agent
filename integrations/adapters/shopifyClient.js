@@ -695,6 +695,58 @@ async function getCollections({ limit = 50, businessId = null } = {}) {
   );
 }
 
+// Reads the recorded unit cost of every variant of specific products, plus the shop's currency - read-only, no
+// mutation. A SEPARATE, narrower query rather than a change to getProducts(): unit cost lives on the inventory
+// item and needs the read_inventory scope, and a store whose token lacks it must still be able to read its
+// products. The caller (tools/productDataRetrievalTool.js) treats a failure here as "cost unknown", never as zero.
+// Not part of the platform adapter contract - a platform without it simply has no recorded cost.
+//
+// Returns: { shopCurrency: string|null, variants: [{ productId, variantId, inventoryItemId,
+// unitCost: { amount, currency } | null }] } - unitCost is null when the store has no cost recorded for that
+// variant. Products that no longer exist are absent, never fabricated.
+async function getProductUnitCosts({ productIds, businessId = null } = {}) {
+  if (!Array.isArray(productIds) || productIds.length === 0) {
+    throw new Error('getProductUnitCosts requires a non-empty array of productIds.');
+  }
+
+  const query = `query GetProductUnitCosts($ids: [ID!]!) {
+    shop { currencyCode }
+    nodes(ids: $ids) {
+      ... on Product {
+        id
+        variants(first: 50) { edges { node {
+          id
+          inventoryItem { id unitCost { amount currencyCode } }
+        } } }
+      }
+    }
+  }`;
+
+  const { raw } = await runAdminGraphqlQuery(query, 'getProductUnitCosts', businessId, { ids: productIds });
+
+  if (!raw || !raw.data || !Array.isArray(raw.data.nodes)) {
+    throw new Error('Shopify Admin API response did not include product unit cost data.');
+  }
+
+  return reshapeOrThrow('getProductUnitCosts', () => ({
+    shopCurrency: raw.data.shop && typeof raw.data.shop.currencyCode === 'string' ? raw.data.shop.currencyCode : null,
+    variants: raw.data.nodes
+      .filter((node) => node && node.id && node.variants)
+      .flatMap((node) =>
+        node.variants.edges.map(({ node: variant }) => {
+          const item = variant.inventoryItem || null;
+          const cost = item && item.unitCost ? item.unitCost : null;
+          return {
+            productId: node.id,
+            variantId: variant.id,
+            inventoryItemId: item ? item.id : null,
+            unitCost: cost ? { amount: cost.amount, currency: cost.currencyCode } : null,
+          };
+        })
+      ),
+  }));
+}
+
 // ---------------------------------------------------------------------------------
 // PUBLISHING: the one mutation in this file, and the scope preflight in front of it.
 // ---------------------------------------------------------------------------------
@@ -1278,6 +1330,7 @@ module.exports = {
   getCustomers,
   getInventoryLevels,
   getInventoryItemsByIds,
+  getProductUnitCosts,
   getCollections,
   sumTestOrderQuantitiesByInventoryItem,
   isConfigured,

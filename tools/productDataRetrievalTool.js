@@ -20,6 +20,7 @@
 // the adapter is contract-checked before use.
 const { getReadAdapter } = require('../integrations/adapters/adapterRegistry');
 const { discoverProducts } = require('../agent/core/productAgent');
+const { computeUnitEconomics } = require('../agent/core/productEconomics');
 
 // Matches tools/toolRegistry.js's `platforms: ['shopify']` binding for
 // product_data_retrieval. Deliberately still Shopify: getProducts() IS a capability
@@ -134,6 +135,81 @@ function buildListingSource(shopifyProduct) {
   return source;
 }
 
+// UNIT ECONOMICS (only when the request asks about profit, margin or cost - params.unitEconomics). The recorded
+// unit cost is read by a SEPARATE query (getProductUnitCosts: it needs read_inventory, and a store without that
+// scope must still read its products), then agent/core/productEconomics.js computes per variant. A failed or
+// unsupported cost read leaves cost UNKNOWN with the reason - the product read itself still succeeds. Selling
+// fees, shipping and duties are not in the store data this tool reads, so they stay UNKNOWN unless the caller
+// supplies them (params.economicsInputs). The price and the unit cost always come from the store, never from
+// the caller.
+const ECONOMICS_INPUT_KEYS = {
+  fees: 'selling fees',
+  feesConfirmedNone: null,
+  inboundShipping: 'inbound shipping cost',
+  inboundShippingConfirmedNone: null,
+  outboundShipping: 'outbound shipping cost',
+  outboundShippingConfirmedNone: null,
+  duties: null,
+  exchangeRates: null,
+};
+
+async function buildProductEconomics(products, params) {
+  const adapter = getReadAdapter(PLATFORM);
+  const supplied = params.economicsInputs && typeof params.economicsInputs === 'object' ? params.economicsInputs : {};
+  const inputs = {};
+  for (const key of Object.keys(ECONOMICS_INPUT_KEYS)) {
+    if (supplied[key] !== undefined) inputs[key] = supplied[key];
+  }
+
+  let costs = null;
+  let costReadError = null;
+  if (typeof adapter.getProductUnitCosts !== 'function') {
+    costReadError = `The ${PLATFORM} adapter cannot read recorded unit costs.`;
+  } else {
+    try {
+      costs = await adapter.getProductUnitCosts({
+        productIds: products.map((product) => product.id).filter(Boolean),
+        businessId: params.businessId || null,
+      });
+    } catch (err) {
+      costReadError = `Recorded unit costs could not be read: ${err.message}`;
+    }
+  }
+  const costByVariant = new Map(costs ? costs.variants.map((entry) => [entry.variantId, entry.unitCost]) : []);
+  const shopCurrency = costs ? costs.shopCurrency : null;
+
+  const summary = { variants_total: 0, unit_cost_known: 0, unit_cost_unknown: 0, gross_profit_known: 0, contribution_known: 0 };
+  const entries = products.map((product) => ({
+    product_reference: product.title || '',
+    shopify_product_id: product.id || '',
+    variants: (Array.isArray(product.variants) ? product.variants : []).map((variant) => {
+      const economics = computeUnitEconomics({
+        ...inputs,
+        price: { amount: variant.price, currency: shopCurrency },
+        unitCost: costByVariant.get(variant.id) || null,
+      });
+      summary.variants_total += 1;
+      if (economics.unit_cost.status === 'KNOWN') summary.unit_cost_known += 1;
+      else summary.unit_cost_unknown += 1;
+      if (economics.gross_profit.status === 'KNOWN') summary.gross_profit_known += 1;
+      if (economics.contribution.status === 'KNOWN') summary.contribution_known += 1;
+      return { variant_id: variant.id || '', variant_title: variant.title || '', sku: variant.sku || '', economics };
+    }),
+  }));
+
+  return {
+    currency: shopCurrency,
+    cost_source: costs ? 'Shopify inventory item unit cost, as recorded in the store' : null,
+    cost_read_error: costReadError,
+    summary,
+    not_supplied: Object.entries(ECONOMICS_INPUT_KEYS)
+      .filter(([key, label]) => label && inputs[key] === undefined)
+      .map(([, label]) => label),
+    rule: 'A missing cost, fee, shipping cost or currency is UNKNOWN - never zero, never assumed. Different currencies are combined only with a supplied exchange rate.',
+    products: entries,
+  };
+}
+
 async function runProductDataRetrievalTool(researchParams) {
   const params = researchParams && typeof researchParams === 'object' ? researchParams : {};
   try {
@@ -143,7 +219,9 @@ async function runProductDataRetrievalTool(researchParams) {
     }
     const candidates = products.map(mapShopifyProductToCandidate);
     const result = discoverProducts(candidates);
-    return { status: 'success', result, error: null, listing_sources: products.map(buildListingSource) };
+    const outcome = { status: 'success', result, error: null, listing_sources: products.map(buildListingSource) };
+    if (params.unitEconomics === true) outcome.product_economics = await buildProductEconomics(products, params);
+    return outcome;
   } catch (err) {
     return { status: 'failed', result: null, error: err.message };
   }

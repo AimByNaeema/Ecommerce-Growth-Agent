@@ -1,81 +1,50 @@
 'use strict';
 
-// The live_competitor_research tool (tools/toolRegistry.js): the Research
-// specialist's LIVE counterpart to competitor_research, for the one case
-// competitor_research itself can never handle - a free-text objective with no
-// caller-supplied structured `research_params` (see tools/competitorResearchTool.js's
-// own honest 'failed' status for that case). Reached automatically instead of
-// competitor_research whenever that happens - see
-// agent/core/orchestratorExecutionContract.js's buildPlanStep, "LIVE WEB COMPETITOR
-// RESEARCH" block, and agent/core/specialistCapabilityRegistry.js's competitor_research
-// task (tool_ids includes this id).
+// The live_competitor_research tool (tools/toolRegistry.js): the Research specialist's LIVE counterpart to
+// competitor_research, for a free-text objective with no caller-supplied structured research_params (see
+// tools/competitorResearchTool.js). Reached automatically instead of competitor_research in that case - see
+// agent/core/orchestratorExecutionContract.js's buildPlanStep, "LIVE WEB COMPETITOR RESEARCH".
 //
-// Unlike every other LIVE data source in this project (Shopify, the business's OWN
-// store - tools/productDataRetrievalTool.js, tools/analyticsDataTool.js), this tool's
-// live source is the public web, reached through Anthropic's own hosted web_search
-// tool via agent/core/claudeClient.js's sendMessage `tools` passthrough. No new
-// third-party credential, no new integration adapter - only the ANTHROPIC_API_KEY
-// this project already requires for ai_reasoning_completion.
+// ITS LIVE SOURCE IS THE PUBLIC WEB, through the SAME research call every live research capability uses
+// (agent/core/liveResearchCall.js): the configured search provider chain (SEARCH_PROVIDER plus
+// SEARCH_FALLBACK_PROVIDERS - Tavily, Gemini Google Search grounding or Anthropic web_search) with the active AI
+// provider (AI_PROVIDER). It used to be bound to Anthropic alone, so an exhausted Anthropic credit left
+// competitor research unavailable even when another configured provider could serve it. No new credential or
+// adapter is involved.
 //
-// NEVER FABRICATES: Claude is instructed to report only competitors it actually finds
-// via web_search, each backed by a source URL - but a model can still describe
-// research it didn't really do, or cite a URL search never actually returned. So every
-// kept competitor record is verified mechanically, never trusted from the model's own
-// text alone: a competitor survives only when at least one of its claimed `source`
-// URLs is present in the set of URLs Anthropic's web_search tool itself actually
-// returned for this call (claudeClient.extractWebSearchResultUrls) - a real fact about
-// what was searched, not the model's self-report. Any competitor whose sources can't
-// be verified this way is dropped, never kept as an unverified guess. If nothing
-// survives verification, this reports status 'empty' - the same honest "no evidence"
-// behavior every other research tool in this project already uses, never inventing a
-// placeholder finding to fill the gap.
+// NEVER FABRICATES. A competitor survives only when at least one of its claimed source URLs is one the SEARCH
+// TOOL itself returned for this call; unverifiable competitors are dropped, never kept as guesses. If nothing
+// survives, the status is 'empty'. A provider failure is reported with its classified status
+// (SEARCH_QUOTA_EXCEEDED, SEARCH_AUTH_FAILED, SEARCH_TIMEOUT ...), never as an empty or successful result.
 //
-// Reuses agent/core/researchAgent.js's runCompetitorResearch() UNCHANGED to actually
-// build/validate the final competitorResearchModel.js records - this tool's only new
-// responsibility is turning a free-text objective into real, verified
-// runCompetitorResearch() input; the record shape, validation, and
-// confidence/verification-status grading are the exact same code path
-// tools/competitorResearchTool.js already uses. confidence is asserted as 'medium'
-// (this tool's own honest, conservative self-grading of unaudited-but-cited web
-// evidence) and verificationStatus as 'verified' (every kept record is grounded in a
-// real, returned search result) - both plain caller assertions researchAgent.js's own
-// composeResult() re-checks and would downgrade to 'unverified' if no evidence/source
-// actually ended up on the record, exactly like any other caller of that function.
+// PROVENANCE AND GRADES. The result carries a `provenance` block: provider, mode, retrieval time, every provider
+// attempt, and per competitor its verified sources, multi-source corroboration (agent/core/evidenceValidation.js)
+// and graded evidence - pricing OBSERVED only when a price is actually quoted from a verified page, positioning
+// and catalogue gaps INFERRED (a reading of the pages), anything absent UNKNOWN. Nothing is estimated here.
 //
-// Returns { status, result, error, model, stopReason, tokensUsed, inputTokens,
-// outputTokens } -
-// never throws. The usage fields are absent only when the Claude API was never
-// actually reached (missing/empty objective, ANTHROPIC_API_KEY not configured, this
-// run's token budget already exhausted, or the sendMessage call itself failed) -
-// present on every other path, since a real call was made and its usage should count
-// exactly like ai_reasoning_completion's own (see agent/core/usageLimits.js's
-// MODEL_CALL_TOOL_IDS and agent/core/tokenControls.js's shared per-run budget).
-//   status 'failed'  - no/empty objective, ANTHROPIC_API_KEY not configured, the
-//                       Claude API call itself failed, or the model's reply was not
-//                       valid structured JSON
-//   status 'empty'   - the web search returned no real results, or none of the
-//                       model's claimed competitors could be verified against them
-//   status 'partial' - some but not all of the model's claimed competitors verified
+// Reuses agent/core/researchAgent.js's runCompetitorResearch() UNCHANGED to build and validate the records.
+//
+// Returns { status, result, error, model, stopReason, tokensUsed, inputTokens, outputTokens, search_status,
+// search_status_message, search_attempts } - never throws. Usage fields are present whenever a model call was
+// actually made, so agent/core/usageLimits.js / tokenControls.js count real cost.
+//   status 'failed'  - no/empty objective, AI provider not configured, budget exhausted, the provider call failed,
+//                       or the reply was not the structured JSON asked for
+//   status 'empty'   - no real search results, or no claimed competitor could be verified against them
+//   status 'partial' - some but not all claimed competitors verified
 //   status 'success' - every claimed competitor verified
 
-const claudeClient = require('../agent/core/claudeClient');
+const aiProviderSelector = require('../agent/core/aiProviderSelector');
+const webSearchProvider = require('../agent/core/webSearchProvider');
+const liveResearchCall = require('../agent/core/liveResearchCall');
 const { runCompetitorResearch } = require('../agent/core/researchAgent');
-const { checkTokenBudget, totalTokensFromUsage } = require('../agent/core/tokenControls');
+const { validateEvidence } = require('../agent/core/evidenceValidation');
 
-// The oldest, most broadly available web_search tool version (per
-// https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool) -
-// this tool needs only basic search, so the newer dynamic-filtering/response-control
-// versions are not adopted (CLAUDE.md rule 15: no premature technical decisions).
+// The oldest, most broadly available web_search tool version - used only when the search runs inside the AI
+// provider's own turn (model-native mode). Basic search is all this tool needs.
 const WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search', max_uses: 5 };
 const MAX_COMPETITORS = 5;
-// Raised from an earlier 4096: agent/core/tokenControls.js's checkTokenBudget() below
-// does Math.min(requestedMaxTokens, the shared MAX_TOKENS_PER_CALL ceiling, remaining
-// run budget) - so THIS constant, not just the .env ceiling, was quietly the binding
-// limit on a real live run (requesting only 4096 here meant raising MAX_TOKENS_PER_CALL
-// past 4096 in .env had no effect at all). 8192 lets a real MAX_TOKENS_PER_CALL=8192
-// .env setting actually be used, while the SYSTEM_PROMPT's new brevity rules below
-// (added at the same time, for the same real truncation this project hit) keep actual
-// usage well under this ceiling in the common case, not just raise the ceiling and hope.
+// agent/core/tokenControls.js takes the minimum of this, MAX_TOKENS_PER_CALL and the remaining run budget, so
+// this constant only raises the ceiling a configured MAX_TOKENS_PER_CALL can reach.
 const MAX_TOKENS = 8192;
 
 const SYSTEM_PROMPT = `You are a competitor research assistant for an e-commerce business. Use the web_search tool to find REAL, currently-operating competitors relevant to the objective you are given. Never invent a competitor, and never describe one from memory alone without actually searching for it first.
@@ -113,59 +82,47 @@ Rules:
 - If you cannot find any real competitors via web_search, return "competitors": [].
 - Return at most ${MAX_COMPETITORS} competitors, the most relevant to the objective.`;
 
-// Returns just the model's FINAL text segment, never claudeClient.extractText()'s
-// full join of every text block in the response. A real web_search-backed reply
-// commonly contains an earlier narration block (e.g. "I'll search for real,
-// currently-operating competitors...") BEFORE the search actually runs, followed by
-// the model's real structured answer once every search this call is going to do has
-// already happened. Naively joining every text block (as extractText() does, for its
-// own different purpose - a plain chat reply) can corrupt JSON extraction below: an
-// earlier narration block can itself carry stray brace characters, or the model can
-// narrate a partial/draft shape before its real final answer, and hunting for the
-// outermost {...} span across the WHOLE joined string would then swallow both non-JSON
-// text and the real JSON together as one invalid blob. The model's true structured
-// answer is always its LAST text block, so only that one is ever handed to
-// tryParseJson() below. Identified as the likely mechanism behind a real
-// "did not return structured competitor data" failure seen against live web_search
-// output (status was 'failed', not 'empty' - so real search results existed and were
-// verifiable, but parsing what claudeClient.extractText() had joined together failed) -
-// this is this project's best available explanation given what claudeClient.js's
-// extractText() is known to do with multiple text blocks, not a claim about the exact
-// live response text, which was never captured for inspection.
-function extractFinalTextBlock(content) {
-  if (!Array.isArray(content)) return '';
-  for (let i = content.length - 1; i >= 0; i -= 1) {
-    const block = content[i];
-    if (block && block.type === 'text' && typeof block.text === 'string') {
-      return block.text;
-    }
-  }
-  return '';
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
-// Finds the outermost {...} span in the model's reply and parses it - tolerates
-// incidental leading/trailing text (a stray "Here is the JSON:" preface, etc.)
-// without ever attempting to repair or guess at malformed JSON itself.
-function tryParseJson(text) {
-  if (typeof text !== 'string') return null;
-  const trimmed = text.trim();
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return null;
-  try {
-    return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
-  } catch (err) {
-    return null;
-  }
-}
-
-// A competitor entry is verified only when at least one of its OWN claimed source
-// URLs is present in the set of URLs Anthropic's web_search tool itself actually
-// returned for this call - never trusted from the model's text alone.
+// A competitor entry is verified only when at least one of its OWN claimed source URLs is present in the set of
+// URLs the search tool itself returned for this call - never trusted from the model's text alone.
 function isVerifiedEntry(entry, verifiedUrls) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
   const claimedSources = Array.isArray(entry.source) ? entry.source : [];
   return claimedSources.some((url) => typeof url === 'string' && verifiedUrls.has(url));
+}
+
+// A quoted price: a currency symbol or code next to a number.
+const PRICE_PATTERN = /(?:[$£€¥₹]\s?\d)|(?:\b(?:usd|gbp|eur|cad|aud|inr|pkr)\s?\d)|(?:\d+(?:[.,]\d{1,2})?\s?(?:usd|gbp|eur|cad|aud|inr|pkr|dollars?|pounds?|euros?)\b)/i;
+
+function gradeTexts(values, observedTest) {
+  return asArray(values)
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => ({ text: value.trim(), grade: observedTest && observedTest(value) ? 'OBSERVED' : 'INFERRED' }));
+}
+
+// Per-competitor provenance and grades. Values the model did not report stay UNKNOWN; nothing is estimated.
+function describeCompetitorEvidence(entry, { provider, retrievedAt }) {
+  const sources = asArray(entry.source);
+  const pricing = gradeTexts(entry.pricingEvidence, (text) => PRICE_PATTERN.test(text));
+  const observedPrice = pricing.some((item) => item.grade === 'OBSERVED');
+  return {
+    competitor: typeof entry.competitor === 'string' ? entry.competitor : null,
+    provider,
+    retrieved_at: retrievedAt,
+    sources,
+    products: gradeTexts(entry.productCategory ? [entry.productCategory] : []),
+    pricing_evidence: pricing.length > 0 ? pricing : [{ text: null, grade: 'UNKNOWN' }],
+    positioning: typeof entry.positioning === 'string' && entry.positioning.trim()
+      ? { text: entry.positioning.trim(), grade: 'INFERRED' }
+      : { text: null, grade: 'UNKNOWN' },
+    catalogue_gaps: gradeTexts(entry.opportunities),
+    validation: validateEvidence({
+      claims: sources.map((url) => ({ source_url: url, grade: observedPrice ? 'observed' : 'inferred', retrieved_at: retrievedAt })),
+    }),
+  };
 }
 
 async function runWebCompetitorResearchTool({ objective, businessId = null, tokensUsedThisRun = 0 } = {}) {
@@ -177,80 +134,66 @@ async function runWebCompetitorResearchTool({ objective, businessId = null, toke
     };
   }
 
-  if (!claudeClient.isConfigured({ businessId })) {
+  if (!aiProviderSelector.isConfigured({ businessId })) {
+    const provider = aiProviderSelector.getActiveProvider();
+    const keyName = provider === 'claude' ? 'ANTHROPIC_API_KEY' : 'GEMINI_API_KEY';
     const message = businessId
-      ? `Business '${businessId}' has no configured ANTHROPIC_API_KEY, so live competitor research (web search) cannot run.`
-      : 'ANTHROPIC_API_KEY is not set, so live competitor research (web search) cannot run. Copy .env.example to .env and add a real key.';
+      ? `Business '${businessId}' has no configured ${keyName}, so live competitor research (web search) cannot run.`
+      : `${keyName} is not set, so live competitor research (web search) cannot run. Copy .env.example to .env and add a real key.`;
     return { status: 'failed', result: null, error: message };
   }
 
-  // Shares agent/core/tokenControls.js's SAME per-run token budget as
-  // ai_reasoning_completion (agent/core/orchestratorExecutionContract.js passes this
-  // run's running total via runTokenTracker) - a plan step can never spend unbounded
-  // Claude tokens just because it happens to call this tool instead of that one.
-  const budget = checkTokenBudget({ requestedMaxTokens: MAX_TOKENS, tokensUsedThisRun });
-  if (!budget.allowed) {
-    return { status: 'failed', result: null, error: budget.reason };
+  // The shared call applies agent/core/tokenControls.js's SAME per-run budget as every other model call, then
+  // tries the configured provider chain.
+  const outcome = await liveResearchCall.runSearchCall({
+    system: SYSTEM_PROMPT,
+    prompt: objective.trim(),
+    query: objective.trim(),
+    businessId,
+    tokensUsedThisRun,
+    maxTokens: MAX_TOKENS,
+    webSearchTool: WEB_SEARCH_TOOL,
+  });
+
+  const usage = outcome.usage
+    ? {
+        model: outcome.usage.model,
+        stopReason: outcome.usage.stopReason,
+        tokensUsed: outcome.usage.tokensUsed,
+        inputTokens: outcome.usage.inputTokens,
+        outputTokens: outcome.usage.outputTokens,
+      }
+    : {};
+  const attempts = asArray(outcome.attempts).map((attempt) => ({ provider: attempt.provider, mode: attempt.mode, status: attempt.status, layer: attempt.layer || null }));
+  const searchFields = outcome.searchStatus
+    ? { search_status: outcome.searchStatus, search_status_message: webSearchProvider.userFacingStatusMessage(outcome.searchStatus), search_attempts: attempts }
+    : { search_attempts: attempts };
+
+  if (!outcome.ok) {
+    // No attempt at all: the shared run budget refused the call before any provider was reached.
+    if (attempts.length === 0) return { status: 'failed', result: null, error: outcome.reason, ...usage };
+    if (outcome.searchStatus === 'SEARCH_EMPTY_RESULTS') {
+      return { status: 'empty', result: null, error: 'The web search returned no real results for this objective, so no competitor could be found.', ...usage, ...searchFields };
+    }
+    if (outcome.searchStatus === 'SEARCH_MALFORMED_RESULTS') {
+      const cutOff = typeof outcome.reason === 'string' && /cut off/.test(outcome.reason);
+      return {
+        status: 'failed',
+        result: null,
+        error: cutOff ? outcome.reason : 'The research assistant did not return structured competitor data in the expected shape.',
+        ...usage,
+        ...searchFields,
+      };
+    }
+    return { status: 'failed', result: null, error: outcome.reason, ...usage, ...searchFields };
   }
 
-  let response;
-  try {
-    response = await claudeClient.sendMessage({
-      messages: [{ role: 'user', content: objective.trim() }],
-      system: SYSTEM_PROMPT,
-      tools: [WEB_SEARCH_TOOL],
-      maxTokens: budget.capped_max_tokens,
-      businessId,
-    });
-  } catch (err) {
-    return { status: 'failed', result: null, error: err.message };
-  }
-
-  // Real token usage was spent the moment sendMessage above succeeded, whatever this
-  // call ultimately reports below - surfaced on every remaining return path so
-  // agent/core/orchestratorExecutionContract.js's runExecutor (which reads
-  // data.tokensUsed/model/inputTokens/outputTokens for any MODEL_CALL_TOOL_IDS entry,
-  // exactly like tools/aiReasoningCompletion.js's own result shape) can record it
-  // against both the token budget above and usage/usageTracker.js's cost ledger,
-  // instead of silently under-reporting real API cost.
-  const usage = {
-    model: response.model,
-    stopReason: response.stopReason,
-    tokensUsed: totalTokensFromUsage(response.usage),
-    inputTokens: Number(response.usage && response.usage.input_tokens) || 0,
-    outputTokens: Number(response.usage && response.usage.output_tokens) || 0,
-  };
-
-  const verifiedUrls = new Set(claudeClient.extractWebSearchResultUrls(response.raw && response.raw.content));
-  if (verifiedUrls.size === 0) {
-    return {
-      status: 'empty',
-      result: null,
-      error: 'The web search returned no real results for this objective, so no competitor could be found.',
-      ...usage,
-    };
-  }
-
-  const parsed = tryParseJson(extractFinalTextBlock(response.raw && response.raw.content));
+  const parsed = outcome.parsed;
   if (!parsed || !Array.isArray(parsed.competitors)) {
-    // A real, common cause: the reply was cut off before it finished (the shared
-    // agent/core/tokenControls.js per-call output ceiling - MAX_TOKENS_PER_CALL in
-    // .env, conservatively 1024 by default - can be too small for a multi-competitor,
-    // multi-field structured answer), producing incomplete/invalid JSON rather than a
-    // model mistake. Surfaced explicitly (never left to read as a generic parsing bug)
-    // whenever the API itself reports stopReason 'max_tokens', so this is diagnosed
-    // from a real, returned fact, never guessed.
-    const error = response.stopReason === 'max_tokens'
-      ? `The research assistant's answer was cut off before it finished (Claude's output-token limit for one call was reached). Raise MAX_TOKENS_PER_CALL in .env (e.g. to 8192) and try again.`
-      : 'The research assistant did not return structured competitor data in the expected shape.';
-    return {
-      status: 'failed',
-      result: null,
-      error,
-      ...usage,
-    };
+    return { status: 'failed', result: null, error: 'The research assistant did not return structured competitor data in the expected shape.', ...usage, ...searchFields };
   }
 
+  const verifiedUrls = outcome.verifiedUrls instanceof Set ? outcome.verifiedUrls : new Set();
   const claimedCount = parsed.competitors.length;
   const verifiedCompetitors = parsed.competitors
     .filter((entry) => isVerifiedEntry(entry, verifiedUrls))
@@ -266,6 +209,7 @@ async function runWebCompetitorResearchTool({ objective, businessId = null, toke
           ? 'None of the competitors the research assistant described could be verified against real web search results, so none are reported.'
           : 'The research assistant found no real competitors for this objective.',
       ...usage,
+      ...searchFields,
     };
   }
 
@@ -277,21 +221,29 @@ async function runWebCompetitorResearchTool({ objective, businessId = null, toke
       verificationStatus: 'verified',
       recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
     });
+    const retrievedAt = new Date().toISOString();
+    const provider = outcome.provider || (attempts.length > 0 ? attempts[attempts.length - 1].provider : null);
+    result.provenance = {
+      provider,
+      mode: outcome.mode || null,
+      retrieved_at: retrievedAt,
+      search_attempts: attempts,
+      evidence_rule:
+        'A competitor is kept only when a source URL it cites was returned by the search tool. Pricing is OBSERVED only when a price is quoted from a verified page; positioning and gaps are INFERRED readings of those pages; anything not reported is UNKNOWN.',
+      competitors: verifiedCompetitors.map((entry) => describeCompetitorEvidence(entry, { provider, retrievedAt })),
+    };
     const status = verifiedCompetitors.length < claimedCount ? 'partial' : 'success';
-    return { status, result, error: null, ...usage };
+    return { status, result, error: null, ...usage, ...searchFields };
   } catch (err) {
-    return { status: 'failed', result: null, error: err.message, ...usage };
+    return { status: 'failed', result: null, error: err.message, ...usage, ...searchFields };
   }
 }
 
-module.exports = { runWebCompetitorResearchTool };
+module.exports = { runWebCompetitorResearchTool, describeCompetitorEvidence };
 
 if (require.main === module) {
-  claudeClient.loadEnvOnce();
-  if (!claudeClient.isConfigured()) {
-    console.log('live_competitor_research tool loaded, but ANTHROPIC_API_KEY is not set.');
-    console.log('Copy .env.example to .env and add a real key from:');
-    console.log('  https://platform.claude.com/settings/keys');
+  if (!aiProviderSelector.isConfigured()) {
+    console.log(`live_competitor_research tool loaded, but the active AI provider (${aiProviderSelector.getActiveProvider()}) is not configured.`);
     process.exit(0);
   }
   runWebCompetitorResearchTool({
@@ -299,6 +251,7 @@ if (require.main === module) {
   })
     .then((outcome) => {
       console.log(`status: ${outcome.status}`);
+      if (outcome.search_status) console.log(`search status: ${outcome.search_status}`);
       if (outcome.error) console.log(`error: ${outcome.error}`);
       if (outcome.result) console.log(JSON.stringify(outcome.result, null, 2));
     })

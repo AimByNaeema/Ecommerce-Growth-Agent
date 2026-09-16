@@ -119,7 +119,9 @@ async function search({ query, maxResults = DEFAULT_MAX_RESULTS, searchDepth = '
     );
   } catch (err) {
     // The message is the transport's, never the key's - nothing here echoes credentials.
-    return { ok: false, status: 'SEARCH_NETWORK_ERROR', provider: 'tavily', query, results: [], detail: `Could not reach the Tavily API: ${err.message}` };
+    // A request that ran out of time is its own status: it may succeed on retry, and it is not "unreachable".
+    const status = /timed out/i.test(String(err && err.message)) ? 'SEARCH_TIMEOUT' : 'SEARCH_NETWORK_ERROR';
+    return { ok: false, status, provider: 'tavily', query, results: [], detail: `Could not reach the Tavily API: ${err.message}` };
   }
 
   const raw = await response.json().catch(() => null);

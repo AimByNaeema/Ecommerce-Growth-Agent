@@ -485,6 +485,58 @@ function describeProposalExecution(execution) {
   return lines.join('\n');
 }
 
+// Why each step that did not complete stopped, from the step's own record: a live research provider's
+// classified status and message first, otherwise the step's first error or the result's own limitation.
+function describeRunProblems(runResult) {
+  const problems = [];
+  const plan = asArray(runResult && runResult.routing && runResult.routing.plan);
+  for (const step of plan) {
+    if (!step || step.completion_state === 'complete') continue;
+    const specialist = (step.selected_specialist && step.selected_specialist.title) || 'A step';
+    const result = step.outputs && step.outputs.result && typeof step.outputs.result === 'object' ? step.outputs.result : null;
+    let reason = null;
+    if (result && typeof result.search_status === 'string' && result.search_status !== 'SEARCH_OK') {
+      reason = `${result.search_status_message || 'Live research could not run.'} (${result.search_status}). No opportunity was invented to fill the gap.`;
+    } else {
+      const error = asArray(step.errors).find((entry) => typeof entry === 'string' && entry.trim());
+      const limitation = result ? asArray(result.limitations).find((entry) => typeof entry === 'string' && entry.trim()) : null;
+      reason = error || limitation || null;
+    }
+    if (reason) problems.push(`${specialist}: ${reason}`);
+  }
+  return problems;
+}
+
+// Where live research was reused from an earlier run, the Chief says so, with that run's id and age.
+function describeResearchReuse(runResult) {
+  const plan = asArray(runResult && runResult.routing && runResult.routing.plan);
+  for (const step of plan) {
+    const result = step && step.outputs && step.outputs.result;
+    if (result && result.research_memory && result.research_memory.mode === 'reused') return result.research_memory.reason;
+  }
+  return null;
+}
+
+// What a profit/margin answer could and could not compute (tools/productDataRetrievalTool.js's product_economics).
+// "Done" alone would let a margin question look answered when no cost is recorded - the counts say how much is
+// known, and what is UNKNOWN stays named as unknown.
+function describeProductEconomics(runResult) {
+  const plan = asArray(runResult && runResult.routing && runResult.routing.plan);
+  for (const step of plan) {
+    const economics = step && step.outputs && step.outputs.product_economics;
+    if (!economics || !economics.summary) continue;
+    const { variants_total: total, unit_cost_known: costKnown, gross_profit_known: grossKnown, contribution_known: contributionKnown } = economics.summary;
+    const parts = [`Unit economics: a unit cost is recorded for ${costKnown} of ${total} variant(s), so gross margin is known for ${grossKnown} and UNKNOWN for ${total - grossKnown}.`];
+    if (economics.cost_read_error) parts.push(economics.cost_read_error);
+    if (!economics.currency) parts.push('The store currency could not be read, so no amount is combined.');
+    if (asArray(economics.not_supplied).length > 0) {
+      parts.push(`Not in store data: ${economics.not_supplied.join(', ')} - so contribution after fees and shipping is known for ${contributionKnown} variant(s).`);
+    }
+    return parts.join(' ');
+  }
+  return null;
+}
+
 // A compact record of the plan, for the session. The FULL execution state stays in the run
 // record - this is what a conversation view needs, not a second copy of the run.
 function summarizePlan(runResult, summarize) {
@@ -744,7 +796,11 @@ async function runSessionTurn(
     session.pending_items = [];
   }
 
-  // The Chief's reply to the user, built from what the run actually reported.
+  // The Chief's reply to the user, built from what the run actually reported. A step that did not complete
+  // says why, in the step's own words - a provider failure is named as one, never hidden behind "Done".
+  const problems = describeRunProblems(runResult);
+  const researchNotes = [describeResearchReuse(runResult), describeProductEconomics(runResult)].filter(Boolean).join(' ') || null;
+  const withProblems = (text) => [text, researchNotes, problems.length > 0 ? `Not completed: ${problems.join(' ')}` : null].filter(Boolean).join(' ');
   const chiefText =
     runResult.routing && runResult.routing.status === 'clarification_required'
       ? runResult.routing.reason || 'I need more detail before I can route this.'
@@ -755,7 +811,9 @@ async function runSessionTurn(
       : runResult.store_opportunity_priorities
         ? describeContinuation(runResult, added)
         : added.length > 0
-        ? `Done. ${added.length} result(s) are now numbered #${added[0].ref}-#${added[added.length - 1].ref} in this session; refer to any of them by number.`
+        ? withProblems(`Done. ${added.length} result(s) are now numbered #${added[0].ref}-#${added[added.length - 1].ref} in this session; refer to any of them by number.`)
+        : problems.length > 0 || researchNotes
+        ? withProblems(null)
         : 'That step completed but produced no referenceable result.';
   session.messages.push({ role: 'chief', text: chiefText, at: nowIso(), run_id: runId });
 

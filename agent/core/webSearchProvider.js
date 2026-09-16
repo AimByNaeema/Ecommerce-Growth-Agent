@@ -47,6 +47,14 @@ const SEARCH_STATUSES = [
   'SEARCH_AUTH_FAILED',
   'SEARCH_PROVIDER_UNAVAILABLE',
   'SEARCH_NETWORK_ERROR',
+  'SEARCH_TIMEOUT',
+  // The provider answered, but with nothing usable: no results at all, or a reply that is not the
+  // structured result the caller asked for. Neither is an outage, and neither is a success.
+  'SEARCH_EMPTY_RESULTS',
+  'SEARCH_MALFORMED_RESULTS',
+  // The configured provider cannot perform this kind of search with the active AI provider (for
+  // example Anthropic's hosted web_search while AI_PROVIDER=gemini).
+  'SEARCH_UNSUPPORTED_CAPABILITY',
   'SEARCH_UNKNOWN_ERROR',
 ];
 
@@ -60,14 +68,21 @@ const OPERATIONAL_FAILURE_STATUSES = [
   'SEARCH_AUTH_FAILED',
   'SEARCH_PROVIDER_UNAVAILABLE',
   'SEARCH_NETWORK_ERROR',
+  'SEARCH_TIMEOUT',
 ];
 
+// `requiresAiProvider`: a model-native search runs INSIDE one specific AI provider's turn, so it can
+// only serve a run whose active AI provider is that one. An external provider serves any AI provider.
 const SEARCH_PROVIDERS = {
-  tavily: { id: 'tavily', mode: 'external', adapter: tavilyClient },
+  tavily: { id: 'tavily', mode: 'external', adapter: tavilyClient, requiresAiProvider: null },
   // Executed by the AI provider during its own turn - no adapter here, by design.
-  claude_web_search: { id: 'claude_web_search', mode: 'model_native', adapter: null },
-  gemini_grounding: { id: 'gemini_grounding', mode: 'model_native', adapter: null },
+  claude_web_search: { id: 'claude_web_search', mode: 'model_native', adapter: null, requiresAiProvider: 'claude' },
+  gemini_grounding: { id: 'gemini_grounding', mode: 'model_native', adapter: null, requiresAiProvider: 'gemini' },
 };
+
+// Ordered fallback search providers, tried only after the active one fails OPERATIONALLY (see
+// getSearchProviderChain). Configuration, never inferred from which keys happen to be present.
+const SEARCH_FALLBACK_PROVIDERS_ENV = 'SEARCH_FALLBACK_PROVIDERS';
 
 // Deliberate configured default (not a judgment about which provider is better):
 // SEARCH_PROVIDER unset/blank means the model-native Claude path this project shipped
@@ -96,6 +111,52 @@ function getSearchProviderMode(providerId = null) {
   return SEARCH_PROVIDERS[id].mode;
 }
 
+// Whether a provider can serve a run on the given AI provider at all.
+function supportsAiProvider(providerId, aiProviderId) {
+  const entry = SEARCH_PROVIDERS[providerId];
+  if (!entry) return false;
+  return !entry.requiresAiProvider || entry.requiresAiProvider === aiProviderId;
+}
+
+// The providers a search call may use, in order: the active provider first, exactly as before,
+// then each configured fallback that is a known provider, not already listed, compatible with the
+// active AI provider (a fallback that would fail by construction is never offered) and configured.
+// An unrecognised fallback name is ignored rather than guessed at.
+function getSearchProviderChain({ aiProviderId = null } = {}) {
+  const active = getActiveSearchProvider();
+  const chain = [active];
+  const raw = process.env[SEARCH_FALLBACK_PROVIDERS_ENV];
+  if (typeof raw !== 'string' || raw.trim() === '') return chain;
+  for (const name of raw.split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean)) {
+    if (!SEARCH_PROVIDERS[name] || chain.includes(name)) continue;
+    if (aiProviderId && !supportsAiProvider(name, aiProviderId)) continue;
+    if (!isSearchConfigured(name)) continue;
+    chain.push(name);
+  }
+  return chain;
+}
+
+// Maps a failure raised by an AI provider call that performed (or followed) a search onto the shared
+// vocabulary. The clients report failures as messages naming the HTTP status ("Gemini API request
+// failed (429): ..."); this reads those, never guesses a success. Anything unrecognised is
+// SEARCH_UNKNOWN_ERROR - still a failure.
+function classifyProviderFailure(message) {
+  const text = String(message || '');
+  const lower = text.toLowerCase();
+  const code = Number((text.match(/\((\d{3})\)/) || [])[1]);
+  if (/timed out|timeout/.test(lower)) return 'SEARCH_TIMEOUT';
+  if (/credit balance|insufficient.?(credit|funds|quota)|exceeded your current quota|quota exceeded|usage limit|billing/.test(lower)) {
+    return 'SEARCH_QUOTA_EXCEEDED';
+  }
+  if (code === 401 || code === 403 || /invalid (api key|authentication)|unauthori[sz]ed|permission denied/.test(lower)) return 'SEARCH_AUTH_FAILED';
+  if (code === 402) return 'SEARCH_QUOTA_EXCEEDED';
+  if (code === 429) return 'SEARCH_RATE_LIMITED';
+  if (code >= 500) return 'SEARCH_PROVIDER_UNAVAILABLE';
+  if (/unexpected\/missing|unexpected .*shape|not valid json|malformed/.test(lower)) return 'SEARCH_MALFORMED_RESULTS';
+  if (/could not reach|network|econn|enotfound|fetch failed/.test(lower)) return 'SEARCH_NETWORK_ERROR';
+  return 'SEARCH_UNKNOWN_ERROR';
+}
+
 function isSearchConfigured(providerId = null) {
   const entry = SEARCH_PROVIDERS[providerId || getActiveSearchProvider()];
   // A model-native provider is configured exactly when its AI provider is - which the
@@ -116,6 +177,10 @@ const USER_FACING_MESSAGES = {
   SEARCH_AUTH_FAILED: 'Live market research is not configured correctly, so it could not run.',
   SEARCH_PROVIDER_UNAVAILABLE: 'Live market research is temporarily unavailable.',
   SEARCH_NETWORK_ERROR: 'Live market research is temporarily unavailable.',
+  SEARCH_TIMEOUT: 'Live market research is temporarily unavailable because the research provider did not answer in time.',
+  SEARCH_EMPTY_RESULTS: 'Live market research ran but the research provider returned no usable results.',
+  SEARCH_MALFORMED_RESULTS: 'Live market research ran but the research provider returned a result that could not be read.',
+  SEARCH_UNSUPPORTED_CAPABILITY: 'The configured research provider cannot perform this kind of live research with the active AI provider.',
   SEARCH_UNKNOWN_ERROR: 'Live market research could not run.',
 };
 
@@ -183,7 +248,11 @@ module.exports = {
   OPERATIONAL_FAILURE_STATUSES,
   SEARCH_PROVIDERS,
   DEFAULT_SEARCH_PROVIDER,
+  SEARCH_FALLBACK_PROVIDERS_ENV,
   getActiveSearchProvider,
+  getSearchProviderChain,
+  supportsAiProvider,
+  classifyProviderFailure,
   getSearchProviderMode,
   isSearchConfigured,
   isOperationalFailure,
