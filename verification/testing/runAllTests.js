@@ -274,6 +274,7 @@ const TEST_FILES = [
   'competitorResearchProviders.test.js',
   'productEconomics.test.js',
   'researchCostControls.test.js',
+  'vendorCorrectionChief.test.js',
   'workflowDocumentation.test.js',
   // Production-readiness accuracy: every claim the registries make - about files, about
   // executability, about platforms, about configuration - checked against reality.

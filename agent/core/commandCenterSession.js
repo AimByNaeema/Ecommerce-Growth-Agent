@@ -443,6 +443,45 @@ function describeProposalCheck(check) {
   return lines.join('\n');
 }
 
+// The Chief's reply for a vendor correction turn (agent/core/orchestratorExecutionContract.js runVendorCorrection):
+// the exact change and the approval it waits on, or each stored correction with its approval status. Built only
+// from the run's own vendor_correction. A clarification is answered by the routing reason instead.
+function describeVendorCorrection(result) {
+  const quote = (value) => (value === null || value === undefined ? '(not recorded)' : `"${value}"`);
+  const lines = [];
+  if (result.kind === 'propose') {
+    if (result.status === 'awaiting_approval') {
+      lines.push(`Proposed vendor correction for "${result.product_reference}" (${result.product_id}):`);
+      lines.push(`  vendor: current ${quote(result.current_vendor)} -> proposed ${quote(result.new_vendor)}`);
+      if (result.compliance_status) lines.push(`Compliance: ${result.compliance_status}.`);
+      lines.push(
+        `Approval ${result.approval_id} is waiting for your decision. Nothing has been written to your store. ` +
+          'Only after you sign it is the vendor field - and nothing else - changed, and the product is then re-read from Shopify to confirm it.'
+      );
+    } else if (result.status === 'existing') {
+      lines.push(
+        `This vendor correction already exists: approval ${result.approval_id} (${result.approval_status}, ${result.execution_state}) changes the vendor of "${result.product_reference}" from ${quote(result.current_vendor)} to ${quote(result.new_vendor)}. No new approval was created, and nothing was written to your store.`
+      );
+    } else {
+      lines.push(`No approval was created for the vendor of "${result.product_reference || 'this product'}": ${result.reason || 'it did not pass the checks.'}`);
+      lines.push('Nothing was written to your store.');
+    }
+    return lines.join('\n');
+  }
+  const corrections = asArray(result.corrections);
+  lines.push(`${corrections.length} stored vendor correction(s) found (read-only):`);
+  for (const entry of corrections) {
+    const executed = entry.executed_at ? `, executed ${entry.executed_at}` : '';
+    const expired = entry.expired ? ', expired' : '';
+    lines.push(
+      `  ${entry.approval_id} for "${entry.product_reference || entry.product_id}": vendor ${quote(entry.current_vendor_at_proposal)} -> ${quote(entry.new_vendor)} | approval status: ${entry.approval_status} | execution: ${entry.execution_state}${executed}${expired}` +
+        ` | store vendor now: ${quote(entry.store_vendor_now)}`
+    );
+  }
+  lines.push('No approval was created, approved or executed, and nothing was written to your store.');
+  return lines.join('\n');
+}
+
 // The Chief's reply for a turn that asked to apply an existing proposal: which stored proposal it
 // resolved to, exactly what will be written, and the approval it waits on. Built only from the run's
 // own proposal_execution.
@@ -804,6 +843,8 @@ async function runSessionTurn(
   const chiefText =
     runResult.routing && runResult.routing.status === 'clarification_required'
       ? runResult.routing.reason || 'I need more detail before I can route this.'
+      : runResult.vendor_correction
+        ? describeVendorCorrection(runResult.vendor_correction)
       : runResult.proposal_check
         ? describeProposalCheck(runResult.proposal_check)
       : runResult.proposal_execution

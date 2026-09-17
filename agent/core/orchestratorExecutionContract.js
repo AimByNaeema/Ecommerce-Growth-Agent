@@ -189,6 +189,8 @@ const {
 } = require('./researchRequestIntent');
 const { hasEconomicsIntent } = require('./productEconomics');
 const researchUsageGuard = require('./researchUsageGuard');
+const vendorCorrection = require('./vendorCorrectionRequest');
+const { currentStoreReference } = require('./researchContext');
 const etsyShopDataTool = require('../../tools/etsyShopDataTool');
 const etsyListingDataTool = require('../../tools/etsyListingDataTool');
 const seoQualityCheckTool = require('../../tools/seoQualityCheckTool');
@@ -3089,6 +3091,7 @@ function buildRoutingResponse({
   seoChangeProposal = null,
   proposalExecution = null,
   proposalCheck = null,
+  vendorCorrectionResult = null,
 }) {
   const needsMoreInfo = routing.status === 'clarification_required';
   const { verification_status: verificationStatus, task_status: taskStatus } = routing.plan
@@ -3156,6 +3159,8 @@ function buildRoutingResponse({
     ...(proposalExecution ? { proposal_execution: proposalExecution } : {}),
     // Present only when the objective asked to check an existing proposal against the store, read-only.
     ...(proposalCheck ? { proposal_check: proposalCheck } : {}),
+    // Present only when the objective proposed or asked about a vendor correction (agent/core/vendorCorrectionRequest.js).
+    ...(vendorCorrectionResult ? { vendor_correction: vendorCorrectionResult } : {}),
   };
 }
 
@@ -3310,6 +3315,15 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   // action when its object is a proposal the approval system already holds. It is resolved against
   // durable approval state and answered with one gated approval - or a precise question back, with no
   // approval - and never continues into research or routing.
+  // VENDOR CORRECTIONS (agent/core/vendorCorrectionRequest.js). Decided BEFORE the SEO proposal decisions below,
+  // which only know SEO proposals: a request to propose a vendor change is resolved against the live store and
+  // becomes one gated approval, and a question about an existing vendor correction is answered from the stored
+  // vendor corrections - never from SEO proposals.
+  const vendorDecision = vendorCorrection.decideVendorCorrection({ objective, routingResult });
+  if (vendorDecision.kind) {
+    return runVendorCorrection({ objective, decision: vendorDecision, businessId, runId, runAuditTracker, runUsageLedger });
+  }
+
   const proposalDecision = decideProposalExecution({ objective, routingResult });
   if (proposalDecision.applies) {
     return runProposalExecution({ objective, decision: proposalDecision, businessId, researchContext, runId, runAuditTracker, runUsageLedger });
@@ -3945,6 +3959,225 @@ async function runProposalCheck({ objective, businessId, researchContext, runId,
   );
 }
 
+// Answers a vendor correction request (agent/core/vendorCorrectionRequest.js).
+//
+//   propose - reads the store through the gated Product read, resolves the ONE product by its exact title, checks
+//             a stated current vendor against the store and validates the new vendor, then asks for
+//             shopify_vendor_correction through the ordinary gated path: compliance is evaluated and ONE pending
+//             approval is created for the owner's signature. Nothing is written - the correction runs only after a
+//             verified signed approval, through integrations/approvedCorrectionDispatch.js.
+//   review  - reads the stored vendor corrections for this business (and the store, to identify the product) and
+//             reports each one's exact proposed change and approval status. Creates, approves and executes nothing.
+// Anything missing, ambiguous or inconsistent is a question back, with no approval.
+async function runVendorCorrection({ objective, decision, businessId, runId, runAuditTracker, runUsageLedger }) {
+  const tool = getToolById(vendorCorrection.TOOL_ID);
+  const respond = (routing, extra = {}) =>
+    buildRoutingResponse({
+      objective,
+      routing,
+      auditTrail: runAuditTracker.events,
+      usageLedger: runUsageLedger.events,
+      usageSummary: summarizeUsage(runUsageLedger),
+      ...extra,
+    });
+  const base = { kind: decision.kind, store_writes: 0 };
+  const clarify = (clarificationType, reason, detail = {}) => {
+    appendAuditEvent(runAuditTracker, { type: 'agent', toolId: tool.id, status: 'not_resolved', summary: `Vendor correction ${decision.kind} not completed: ${reason}` });
+    return respond(
+      { status: 'clarification_required', clarification_type: clarificationType, reason, candidates: null, unmatched_segment: null, plan: null },
+      { vendorCorrectionResult: { ...base, status: 'not_resolved', reason, approvals_created: 0, ...detail } }
+    );
+  };
+
+  if ((decision.additional_requests || []).length > 0) {
+    return clarify(
+      'vendor_correction_mixed',
+      `This message asks about a vendor correction and also for something else (${decision.additional_requests.map((clause) => `"${clause}"`).join(', ')}). Send the other request separately so each gets its own checks. Nothing was changed.`,
+      { additional_requests: decision.additional_requests }
+    );
+  }
+
+  const parsed = decision.parsed;
+  const approvalIdNamed = (String(objective || '').match(/\b[\w-]*apr-\d+\b/) || [])[0] || null;
+  if (decision.kind === 'propose' && !parsed.product_name) {
+    return clarify('vendor_correction_missing_parameters', 'Which product\'s vendor should change? Name the product exactly as it appears in your store, in quotes. No approval was created and nothing was changed.');
+  }
+  if (decision.kind === 'propose' && !parsed.to_vendor) {
+    return clarify('vendor_correction_missing_parameters', `What should the vendor of "${parsed.product_name}" become? State the new vendor, in quotes. No approval was created and nothing was changed.`);
+  }
+  if (decision.kind === 'review' && !parsed.product_name && !approvalIdNamed) {
+    const stored = vendorCorrection.listStoredVendorCorrections({ businessId });
+    return clarify(
+      'vendor_correction_missing_parameters',
+      stored.length === 0
+        ? 'There is no vendor correction stored in the approval system for this business. Nothing was changed.'
+        : `Which product's vendor correction? Vendor corrections are stored for: ${[...new Set(stored.map((entry) => entry.product_reference || entry.product_id))].slice(0, 10).map((name) => `"${name}"`).join(', ')}. Nothing was changed.`
+    );
+  }
+
+  // ONE read of the store's products, through the gated Product read.
+  const basis = STORE_RESEARCH_BASIS[0];
+  const readStep = await buildPlanStep(
+    buildSpecialistTarget(basis.specialistId),
+    objective,
+    objective,
+    { tokensUsedThisRun: 0 },
+    null,
+    [],
+    { requests: [], id_prefix: runId },
+    runAuditTracker,
+    createToolResultCache(),
+    createUsageTracker(),
+    businessId,
+    runUsageLedger,
+    { toolId: basis.toolId, capabilityId: basis.capabilityId },
+    null
+  );
+  const sources = readStep.completion_state === 'complete' && readStep.outputs && Array.isArray(readStep.outputs.listing_sources)
+    ? readStep.outputs.listing_sources
+    : null;
+
+  if (decision.kind === 'review') {
+    return reviewVendorCorrections({ objective, parsed, approvalIdNamed, sources, readStep, businessId, runAuditTracker, respond, clarify, base });
+  }
+
+  if (!sources) {
+    return clarify('vendor_correction_store_unreadable', 'Your Shopify products could not be read, so the product and its current vendor could not be confirmed. No approval was created and nothing was changed.', { read_error: readStep.errors && readStep.errors[0] ? readStep.errors[0] : null });
+  }
+  const found = vendorCorrection.resolveStoreProduct(sources, parsed.product_name);
+  if (found.status === 'ambiguous') {
+    return clarify('vendor_correction_product_ambiguous', `More than one product in your store is titled "${parsed.product_name}" (${found.candidates.map((entry) => entry.product_id).join(', ')}). Name the product id to change. No approval was created and nothing was changed.`, { candidates: found.candidates });
+  }
+  if (found.status !== 'resolved') {
+    const similar = found.candidates.length > 0 ? ` Similar titles: ${found.candidates.map((entry) => `"${entry.title}"`).join(', ')}.` : '';
+    return clarify('vendor_correction_product_not_found', `No product in your store is titled exactly "${parsed.product_name}".${similar} No approval was created and nothing was changed.`, { candidates: found.candidates });
+  }
+  const product = found.product;
+  if (product.vendor === null) {
+    return clarify('vendor_correction_store_unreadable', `The store read did not return the current vendor of "${product.title}", so the change could not be confirmed. No approval was created and nothing was changed.`);
+  }
+  if (parsed.from_vendor !== null && product.vendor.trim() !== parsed.from_vendor.trim()) {
+    return clarify(
+      'vendor_correction_current_mismatch',
+      `"${product.title}" currently has the vendor "${product.vendor}" in your store, not "${parsed.from_vendor}". No approval was created and nothing was changed.`,
+      { product_id: product.product_id, product_reference: product.title, current_vendor: product.vendor }
+    );
+  }
+  const checked = vendorCorrection.validateNewVendor(parsed.to_vendor, product.vendor);
+  if (!checked.ok) {
+    return clarify('vendor_correction_invalid_parameters', `${checked.reason} No approval was created and nothing was changed.`, { product_id: product.product_id, product_reference: product.title, current_vendor: product.vendor });
+  }
+
+  const change = { product_id: product.product_id, product_reference: product.title, current_vendor: product.vendor, new_vendor: checked.value };
+  // The same change already waiting for, or holding, the owner's approval is shown, never requested twice.
+  const open = vendorCorrection
+    .listStoredVendorCorrections({ businessId })
+    .find((entry) => vendorCorrection.isOpenCorrection(entry) && entry.product_id === product.product_id && entry.new_vendor === checked.value);
+  if (open) {
+    appendAuditEvent(runAuditTracker, { type: 'agent', toolId: tool.id, status: 'existing', summary: `Vendor correction for '${product.title}' to '${checked.value}' already exists as approval '${open.approval_id}' (${open.approval_status}); no new approval was created.` });
+    return respond(
+      { status: 'planned', clarification_type: null, reason: null, candidates: null, unmatched_segment: null, plan: [readStep] },
+      { growthOpportunityDrafts: [], pendingApprovals: [], vendorCorrectionResult: { ...base, status: 'existing', approvals_created: 0, ...change, approval_id: open.approval_id, approval_status: open.approval_status, execution_state: open.execution_state } }
+    );
+  }
+
+  const researchParams = {
+    platform: vendorCorrection.PLATFORM,
+    proposal_kind: vendorCorrection.PROPOSAL_KIND,
+    productId: product.product_id,
+    productReference: product.title,
+    currentVendor: product.vendor,
+    newVendor: checked.value,
+    storeReference: currentStoreReference({ businessId }),
+  };
+  const executionRequest = createExecutionRequest(objective, { category: tool.category, tool }, researchParams, businessId);
+  const alreadyVerified = checkCorrectionAlreadyVerified(tool.id, executionRequest);
+  if (!alreadyVerified.allowed) {
+    return clarify('vendor_correction_already_applied', `The vendor of "${product.title}" has already been changed to "${checked.value}" and verified, so no new approval was created. Nothing was changed.`, change);
+  }
+
+  const runApprovalTracker = { requests: [], id_prefix: runId };
+  const outcome = await executeSelectedCapability(executionRequest, { tokensUsedThisRun: 0 }, runApprovalTracker, runAuditTracker, null, createUsageTracker(), runUsageLedger);
+  const step = deriveExecutionState({
+    request: objective,
+    currentTask: objective,
+    target: buildSpecialistTarget(executionRequest.specialist_id),
+    category: tool.category,
+    toolId: tool.id,
+    capabilityId: null,
+    inputContract: null,
+    requiredContextIds: gatherMinimumContext(executionRequest).map((boundary) => boundary.id),
+    outcome,
+    verificationStatus: validateResult(outcome),
+    approvalRequestId: outcome ? outcome.approval_request_id || null : null,
+  });
+  const awaiting = Boolean(outcome && outcome.status === 'approval_required' && outcome.approval_request_id);
+  return respond(
+    { status: 'planned', clarification_type: null, reason: null, candidates: null, unmatched_segment: null, plan: [readStep, step] },
+    {
+      growthOpportunityDrafts: [],
+      pendingApprovals: runApprovalTracker.requests,
+      vendorCorrectionResult: {
+        ...base,
+        status: awaiting ? 'awaiting_approval' : 'not_created',
+        approvals_created: runApprovalTracker.requests.length,
+        ...change,
+        approval_id: awaiting ? outcome.approval_request_id : null,
+        approval_status: awaiting ? 'pending' : null,
+        compliance_status: runApprovalTracker.requests[0] && runApprovalTracker.requests[0].execution_request && runApprovalTracker.requests[0].execution_request.compliance
+          ? runApprovalTracker.requests[0].execution_request.compliance.compliance_status || null
+          : null,
+        reason: awaiting ? null : (outcome && outcome.error) || 'No approval could be created.',
+      },
+    }
+  );
+}
+
+// The review half of runVendorCorrection: stored vendor corrections for the named product or approval id, each
+// with its exact proposed change and approval status, beside the store's current vendor. Read-only.
+function reviewVendorCorrections({ objective, parsed, approvalIdNamed, sources, readStep, businessId, runAuditTracker, respond, clarify, base }) {
+  const stored = vendorCorrection.listStoredVendorCorrections({ businessId });
+  let matched;
+  let product = null;
+  if (approvalIdNamed) {
+    matched = stored.filter((entry) => entry.approval_id === approvalIdNamed);
+  } else {
+    const found = sources ? vendorCorrection.resolveStoreProduct(sources, parsed.product_name) : { status: 'unread', candidates: [] };
+    if (found.status === 'resolved') product = found.product;
+    const nameKey = String(parsed.product_name || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const productIds = found.status === 'resolved' ? [found.product.product_id] : found.status === 'ambiguous' ? found.candidates.map((entry) => entry.product_id) : [];
+    matched = stored.filter((entry) => productIds.includes(entry.product_id) || (entry.product_reference && entry.product_reference.replace(/\s+/g, ' ').trim().toLowerCase() === nameKey));
+  }
+  appendAuditEvent(runAuditTracker, {
+    type: 'data_access',
+    toolId: vendorCorrection.TOOL_ID,
+    status: matched.length > 0 ? 'resolved' : 'not_resolved',
+    summary: `Read-only vendor correction lookup: ${stored.length} stored vendor correction(s) for this business, ${matched.length} for the request. No approval was created, approved or executed.`,
+  });
+  const target = approvalIdNamed ? `approval ${approvalIdNamed}` : `"${parsed.product_name}"`;
+  if (matched.length === 0) {
+    const unreadable = !approvalIdNamed && !sources ? ' Your Shopify products could not be read, so a correction recorded only by product id could not be matched.' : '';
+    return clarify(
+      'vendor_correction_not_found',
+      `No vendor correction is stored in the approval system for ${target}.${unreadable} (SEO proposals are separate and were not considered.) Nothing was created, approved, executed or changed.`,
+      { stored_vendor_corrections: stored.length }
+    );
+  }
+  const corrections = matched.map((entry) => {
+    const live = sources ? sources.find((source) => source && source.shopify_product_id === entry.product_id) : null;
+    const liveVendor = live && live.store_fields && !((live.store_fields.unavailable_fields || []).includes('vendor')) ? live.store_fields.vendor : null;
+    return { ...entry, product_reference: entry.product_reference || (live ? live.product_reference : null), store_vendor_now: liveVendor };
+  });
+  return respond(
+    { status: 'planned', clarification_type: null, reason: null, candidates: null, unmatched_segment: null, plan: [readStep] },
+    {
+      growthOpportunityDrafts: [],
+      pendingApprovals: [],
+      vendorCorrectionResult: { ...base, status: 'found', approvals_created: 0, product_id: product ? product.product_id : null, corrections },
+    }
+  );
+}
+
 // Answers an objective that asks to apply an existing proposal (agent/core/proposalExecution.js).
 //
 // Resolves the ONE stored proposal and the exact fields meant, then asks for the store change through
@@ -4161,6 +4394,7 @@ module.exports = {
   // clause the gate declined.
   hasCatalogueExpansionIntent,
   attemptAiAssistedSegmentation,
+  runVendorCorrection,
   extractJsonArray,
   buildPlanStep,
   buildSpecialistTarget,
