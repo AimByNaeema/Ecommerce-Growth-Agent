@@ -15,7 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { RetryableError, retryAsync, withTimeout, parseRetryAfterMs } = require('./networkRetry');
+const { RetryableError, retryAsync, withTimeout, parseRetryAfterMs, isQuotaExhaustedMessage } = require('./networkRetry');
 const businessRegistry = require('../../configuration/businessRegistry');
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -199,7 +199,9 @@ async function sendMessage({ messages, system, model, maxTokens, businessId = nu
     if (!response.ok) {
       const apiMessage = raw && raw.error && raw.error.message ? raw.error.message : response.statusText;
       const message = `Claude API request failed (${response.status}): ${apiMessage}`;
-      if (response.status === 429 || response.status >= 500) {
+      // A 429 that says the quota or credit itself is exhausted is not retried: the refusal will not change
+      // within a backoff, and every retry is one more call against an exhausted allowance.
+      if ((response.status === 429 && !isQuotaExhaustedMessage(message)) || response.status >= 500) {
         throw new RetryableError(message, { retryAfterMs: parseRetryAfterMs(response) });
       }
       throw new Error(message);

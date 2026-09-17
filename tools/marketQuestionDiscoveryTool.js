@@ -50,6 +50,21 @@
 const claudeClient = require('../agent/core/claudeClient');
 const { checkTokenBudget, totalTokensFromUsage, normalizeUsage } = require('../agent/core/tokenControls');
 const { buildQuestionEvidence, toGapFinderQuestions, resolveLimit } = require('../agent/core/questionDiscoveryEngine');
+const webSearchProvider = require('../agent/core/webSearchProvider');
+const researchUsageGuard = require('../agent/core/researchUsageGuard');
+
+// The research provider this tool calls, for research usage accounting (agent/core/researchUsageGuard.js).
+const PROVIDER_ID = 'claude_web_search';
+
+// Counts the one provider call this tool made. A count that cannot be written is returned as a message, never thrown.
+function recordAttemptSafely(searchStatus) {
+  try {
+    researchUsageGuard.recordProviderAttempt(PROVIDER_ID, searchStatus);
+    return null;
+  } catch (err) {
+    return `Research usage could not be recorded: ${err.message}`;
+  }
+}
 
 // Same tool version and rationale as tools/webCompetitorResearchTool.js - basic search
 // is all this needs, so the newer filtering/response-control versions are not adopted
@@ -145,6 +160,13 @@ async function runMarketQuestionDiscoveryTool({
     ? `Find real questions people publicly ask about: ${topic.trim()} (market: ${market.trim()})`
     : `Find real questions people publicly ask about: ${topic.trim()}`;
 
+  // This is a real Anthropic web-search call: it is checked and counted against the run's and business's research
+  // usage limits and Anthropic's quota cooldown, like every other research provider call.
+  const gate = researchUsageGuard.checkProviderAttempt(PROVIDER_ID);
+  if (!gate.allowed) {
+    return { status: 'failed', result: null, error: gate.reason, search_status: gate.searchStatus };
+  }
+
   let response;
   try {
     response = await claudeClient.sendMessage({
@@ -158,8 +180,11 @@ async function runMarketQuestionDiscoveryTool({
     // A source being unavailable is a normal outcome, not a crash: the existing
     // agent/core/networkRetry.js timeout/retry behavior inside claudeClient already
     // applied, and whatever it ultimately reported is surfaced honestly here.
+    recordAttemptSafely(webSearchProvider.classifyProviderFailure(err.message));
     return { status: 'failed', result: null, error: err.message };
   }
+  // The call already happened and its tokens are reported below either way; this tool makes no further call.
+  recordAttemptSafely('SEARCH_OK');
 
   // Real tokens were spent the moment the call succeeded, whatever this reports below.
   const usage = {

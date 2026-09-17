@@ -95,13 +95,15 @@ function* storedResults({ toolId, businessId, storeDir, scanLimit }) {
 
 // Returns { research: { result, source_run_id, produced_at, age_hours } | null, considered }.
 function findReusableExternalResearch({ toolId, researchKey, businessId = null, now = Date.now(), maxAgeHours = getExternalResearchMaxAgeHours(), storeDir = undefined, scanLimit = RETRIEVAL_SCAN_LIMIT } = {}) {
-  const considered = { same_key: 0, not_successful: 0, stale: 0, newest_stale_produced_at: null };
+  const considered = { same_key: 0, not_successful: 0, stale: 0, newest_stale_produced_at: null, newest_failure: null };
   if (!toolId || !researchKey) return { research: null, considered };
   for (const { runId, result } of storedResults({ toolId, businessId, storeDir, scanLimit })) {
     const memory = result.research_memory;
     if (!memory || memory.research_key !== researchKey) continue;
     considered.same_key += 1;
     if (result.status !== 'complete' || result.search_status !== 'SEARCH_OK') {
+      // The newest stored answer to this exact question failed: remembered for the failed-research cooldown.
+      if (considered.same_key === 1) considered.newest_failure = { run_id: runId, result };
       considered.not_successful += 1;
       continue;
     }
@@ -122,6 +124,44 @@ function findReusableExternalResearch({ toolId, researchKey, businessId = null, 
     };
   }
   return { research: null, considered };
+}
+
+// FAILED-RESEARCH COOLDOWN. When the newest stored answer to this exact research question failed OPERATIONALLY
+// (allowance exhausted, rate limited, provider down, usage limit) a few minutes ago, asking the same providers the
+// same question again would most likely fail the same way and spend calls doing it. Returns the failure to report
+// instead, or null. Never applies when a provider that was not tried then is configured now, so a newly added
+// fallback is used at once. RESEARCH_FAILURE_COOLDOWN_MINUTES (default 15; 0 disables).
+const FAILURE_COOLDOWN_ENV = 'RESEARCH_FAILURE_COOLDOWN_MINUTES';
+const DEFAULT_FAILURE_COOLDOWN_MINUTES = 15;
+
+function getFailureCooldownMinutes() {
+  const raw = process.env[FAILURE_COOLDOWN_ENV];
+  if (raw !== undefined && raw.trim() === '0') return 0;
+  const minutes = Number(raw);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_FAILURE_COOLDOWN_MINUTES;
+}
+
+function findFailedResearchCooldown({ found, now = Date.now(), providerChain = [], isOperationalFailure, cooldownMinutes = getFailureCooldownMinutes() } = {}) {
+  const failure = found && found.considered ? found.considered.newest_failure : null;
+  if (!failure || cooldownMinutes <= 0 || typeof isOperationalFailure !== 'function') return null;
+  const { result } = failure;
+  if (!isOperationalFailure(result.search_status)) return null;
+  const producedMs = Date.parse(result.research_memory && result.research_memory.produced_at);
+  if (!Number.isFinite(producedMs) || producedMs - now > MAX_CLOCK_SKEW_MS) return null;
+  const ageMinutes = Math.max(0, now - producedMs) / 60000;
+  if (ageMinutes >= cooldownMinutes) return null;
+  const search = result.research_summary && result.research_summary.search;
+  const tried = new Set(asArray(search && search.attempts).map((attempt) => attempt && attempt.provider).filter(Boolean));
+  if (asArray(providerChain).some((provider) => !tried.has(provider))) return null;
+  return {
+    result,
+    run_id: failure.run_id,
+    search_status: result.search_status,
+    produced_at: result.research_memory.produced_at,
+    age_minutes: Math.round(ageMinutes * 10) / 10,
+    retry_after: new Date(producedMs + cooldownMinutes * 60000).toISOString(),
+    cooldown_minutes: cooldownMinutes,
+  };
 }
 
 // Dated observations of one product from earlier research runs, for trend reasoning over time
@@ -165,5 +205,8 @@ module.exports = {
   buildResearchKey,
   describeResearchMemory,
   findReusableExternalResearch,
+  FAILURE_COOLDOWN_ENV,
+  getFailureCooldownMinutes,
+  findFailedResearchCooldown,
   collectHistoricalObservations,
 };

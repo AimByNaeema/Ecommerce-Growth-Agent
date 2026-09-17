@@ -572,6 +572,30 @@ async function runCustomerMarketOpportunityResearch({
       reused.limitations = [reason].concat(asArray(reused.limitations).filter((line) => !/^Reused live research from run/.test(line)));
       return reused;
     }
+    // The same question failed operationally a few minutes ago with the same providers: report that failure again
+    // instead of spending new provider calls on a failure that has most likely not cleared.
+    let providerChain = [];
+    try {
+      providerChain = webSearchProvider.getSearchProviderChain({ aiProviderId: aiProviderSelector.getActiveProvider() });
+    } catch (err) {
+      providerChain = [];
+    }
+    const cooldown = providerChain.length > 0
+      ? externalResearchMemory.findFailedResearchCooldown({ found, now, providerChain, isOperationalFailure: webSearchProvider.isOperationalFailure })
+      : null;
+    if (cooldown) {
+      const repeated = JSON.parse(JSON.stringify(cooldown.result));
+      const reason = `The same research failed ${cooldown.age_minutes} minute(s) ago in run ${cooldown.run_id} (${cooldown.search_status}) with the same research providers, so it was not retried before ${cooldown.retry_after}. No new search or model call was made.`;
+      repeated.research_memory = {
+        ...repeated.research_memory,
+        mode: 'failure_cooldown',
+        reason,
+        source_run_id: cooldown.run_id,
+        reported_at: new Date(now).toISOString(),
+      };
+      repeated.limitations = [reason].concat(asArray(repeated.limitations).filter((line) => !/^The same research failed /.test(line)));
+      return repeated;
+    }
     if (found.considered.stale > 0) {
       freshMode = 'refreshed';
       freshReason = `Stored research for this question was older than the ${externalResearchMemory.getExternalResearchMaxAgeHours()}-hour limit (newest produced ${found.considered.newest_stale_produced_at}), so it was refreshed with live research.`;

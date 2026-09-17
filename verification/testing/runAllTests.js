@@ -19,6 +19,8 @@
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
+const NETWORK_GUARD = path.join(__dirname, 'testNetworkGuard.js');
+
 const TEST_FILES = [
   'configValidator.test.js',
   'businessConfigSample.test.js',
@@ -271,6 +273,7 @@ const TEST_FILES = [
   'researchRouting.test.js',
   'competitorResearchProviders.test.js',
   'productEconomics.test.js',
+  'researchCostControls.test.js',
   'workflowDocumentation.test.js',
   // Production-readiness accuracy: every claim the registries make - about files, about
   // executability, about platforms, about configuration - checked against reality.
@@ -295,7 +298,9 @@ const TEST_FILES = [
 
 function runAll() {
   for (const file of TEST_FILES) {
-    const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: 'inherit' });
+    // Every test process starts behind the test network guard: no external network, no root .env, no real
+    // credentials (see testNetworkGuard.js). A test can never spend a real API allowance or touch a real store.
+    const result = spawnSync(process.execPath, ['--require', NETWORK_GUARD, path.join(__dirname, file)], { stdio: 'inherit' });
     if (result.error) {
       console.error(`Could not start ${file}: ${result.error.message}`);
       return 1;

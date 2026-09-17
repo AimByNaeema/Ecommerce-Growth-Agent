@@ -162,7 +162,23 @@ function tempStore() {
       const failedRun = await research({ storeDir, searchStatus: 'SEARCH_QUOTA_EXCEEDED' });
       assert.notStrictEqual(failedRun.result.status, 'complete');
       store(storeDir, failedRun.result, { runId: 'cc-run-failed' });
-      const next = await research({ storeDir });
+      // Within the failed-research cooldown the same failure is reported again - still a failure, never evidence -
+      // and no provider is called.
+      const repeat = await research({ storeDir });
+      assert.strictEqual(repeat.calls.search, 0, 'no provider call for a just-failed identical question');
+      assert.strictEqual(repeat.result.research_memory.mode, 'failure_cooldown');
+      assert.strictEqual(repeat.result.search_status, 'SEARCH_QUOTA_EXCEEDED', 'reported as the failure it was');
+      assert.notStrictEqual(repeat.result.status, 'complete');
+      // With no cooldown (or once it has passed) the failed research is not reused, and live research runs.
+      const savedCooldown = process.env.RESEARCH_FAILURE_COOLDOWN_MINUTES;
+      process.env.RESEARCH_FAILURE_COOLDOWN_MINUTES = '0';
+      let next;
+      try {
+        next = await research({ storeDir });
+      } finally {
+        if (savedCooldown === undefined) delete process.env.RESEARCH_FAILURE_COOLDOWN_MINUTES;
+        else process.env.RESEARCH_FAILURE_COOLDOWN_MINUTES = savedCooldown;
+      }
       assert.ok(next.calls.search > 0, 'the failed research was not served');
       assert.strictEqual(next.result.research_memory.mode, 'fresh');
       assert.ok(/did not complete successfully/.test(next.result.research_memory.reason));

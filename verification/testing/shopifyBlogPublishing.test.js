@@ -202,9 +202,9 @@ async function withStubbedTransport({ scopes, articleResult = null, userErrors =
   // leave this process. Reassigning an exported function would not work: the client calls
   // its own internal functions directly, so a swapped export is never consulted.
   //
-  // The store's REAL .env credentials may be read to build the request, but no value ever
-  // leaves - the OAuth token endpoint is answered here with a canary, so the token the
-  // client actually sends is this file's placeholder, not a real one.
+  // The client is configured with PLACEHOLDER store credentials for the duration of the case - never the store's
+  // real .env values, which the test network guard keeps out of every test process - and the OAuth token
+  // endpoint is answered here with a canary, so no real value is ever read or sent.
   global.fetch = async (url, options) => {
     if (String(url).includes('/admin/oauth/access_token')) {
       counts.tokenRequests += 1;
@@ -249,6 +249,19 @@ async function withStubbedTransport({ scopes, articleResult = null, userErrors =
     };
   };
 
+  const placeholderCredentials = {
+    SHOPIFY_STORE_DOMAIN: 'placeholder-store.invalid',
+    SHOPIFY_ADMIN_API_ACCESS_TOKEN: 'shpat_placeholder-not-real',
+    SHOPIFY_CLIENT_ID: undefined,
+    SHOPIFY_CLIENT_SECRET: undefined,
+  };
+  const savedCredentials = {};
+  for (const [key, value] of Object.entries(placeholderCredentials)) {
+    savedCredentials[key] = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+
   // One stubbed scope answer must never leak into the next case.
   shopifyClient.clearAccessScopesCache();
   try {
@@ -256,6 +269,10 @@ async function withStubbedTransport({ scopes, articleResult = null, userErrors =
   } finally {
     global.fetch = savedFetch;
     shopifyClient.clearAccessScopesCache();
+    for (const [key, value] of Object.entries(savedCredentials)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }
 

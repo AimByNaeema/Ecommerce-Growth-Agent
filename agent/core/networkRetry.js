@@ -157,7 +157,21 @@ async function withTimeout(fetchFn, timeoutMs = getRequestTimeoutMs()) {
   }
 }
 
+// A provider refusal that says the ALLOWANCE itself is gone (credit balance, billing, plan or daily quota)
+// rather than "slow down". Retrying one only repeats a refusal that will not change within a retry's backoff,
+// so the AI clients throw it as a plain, non-retryable Error even on HTTP 429. A per-minute quota is a rate
+// limit and stays retryable. Shared by agent/core/webSearchProvider.js's failure classification, so the
+// retry decision and the reported status can never disagree.
+const QUOTA_EXHAUSTED_PATTERN = /credit balance|insufficient.?(credit|funds|quota)|exceeded your current quota|quota exceeded|usage limit|billing/i;
+const PER_MINUTE_PATTERN = /per[\s_-]?minute|perminute|requests? per min\b|rpm\b/i;
+
+function isQuotaExhaustedMessage(message) {
+  const text = String(message || '');
+  return QUOTA_EXHAUSTED_PATTERN.test(text) && !PER_MINUTE_PATTERN.test(text);
+}
+
 module.exports = {
+  isQuotaExhaustedMessage,
   RetryableError,
   getMaxRetryAttempts,
   getRetryBaseDelayMs,

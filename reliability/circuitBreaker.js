@@ -235,17 +235,23 @@ function recordSuccess({ businessId = null, platform = null, action, now = new D
 // Records a failed attempt. At the threshold the circuit opens for a cooldown; a failure
 // during a recovery trial opens it immediately, because a trial failing IS the evidence
 // that it is still broken.
-function recordFailure({ businessId = null, platform = null, action, now = new Date(), rootDir = getDefaultCircuitStoreDir() } = {}) {
+//
+// failureThreshold / cooldownMinutes (optional) let a caller whose failure is conclusive on its own - a provider
+// reporting its quota exhausted - open the circuit on the first failure with its own cooldown. Omitted, the
+// configured defaults apply exactly as before.
+function recordFailure({ businessId = null, platform = null, action, now = new Date(), rootDir = getDefaultCircuitStoreDir(), failureThreshold = null, cooldownMinutes = null } = {}) {
   const key = circuitKey({ businessId, platform, action });
   if (!key) return null;
 
   const current = withCooldownApplied(readCircuit(key, rootDir, now.toISOString()), now);
   const failures = current.consecutive_failures + 1;
   const wasTrial = current.state === 'half_open';
-  const shouldOpen = wasTrial || failures >= getFailureThreshold();
+  const threshold = Number.isInteger(failureThreshold) && failureThreshold > 0 ? failureThreshold : getFailureThreshold();
+  const cooldown = Number.isInteger(cooldownMinutes) && cooldownMinutes > 0 ? cooldownMinutes : getCooldownMinutes();
+  const shouldOpen = wasTrial || failures >= threshold;
 
   const cooldownUntil = shouldOpen
-    ? new Date(now.getTime() + getCooldownMinutes() * 60 * 1000).toISOString()
+    ? new Date(now.getTime() + cooldown * 60 * 1000).toISOString()
     : null;
 
   return saveCircuit(

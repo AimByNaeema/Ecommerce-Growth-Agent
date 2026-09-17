@@ -188,6 +188,7 @@ const {
   hasLiveMarketResearchIntent,
 } = require('./researchRequestIntent');
 const { hasEconomicsIntent } = require('./productEconomics');
+const researchUsageGuard = require('./researchUsageGuard');
 const etsyShopDataTool = require('../../tools/etsyShopDataTool');
 const etsyListingDataTool = require('../../tools/etsyListingDataTool');
 const seoQualityCheckTool = require('../../tools/seoQualityCheckTool');
@@ -611,7 +612,12 @@ async function runExecutor(toolId, executionRequest, runTokenTracker, classifica
   });
 
   try {
-    const data = await executor(executionRequest, runTokenTracker);
+    // Every research provider call inside the tool - fallbacks included - is checked and counted against this run
+    // and business (agent/core/researchUsageGuard.js).
+    const data = await researchUsageGuard.runWithResearchUsageContext(
+      { businessId: executionRequest ? executionRequest.business_id : null, usageTracker: runUsageTracker },
+      () => executor(executionRequest, runTokenTracker)
+    );
     appendAuditEvent(runAuditTracker, {
       type: 'result',
       toolId,
@@ -3352,10 +3358,15 @@ async function runOrchestratorContract(rawTask, { researchParams = null, busines
   // one; a failed/unreachable/unparseable attempt silently falls back to the original,
   // honest clarification_required result below - never worse than before this fallback
   // existed.
+  //
+  // NO MODEL CALL FOR TEXT THE SYSTEM CANNOT RECOGNISE AT ALL: re-segmentation only helps when the unmatched part
+  // names something this system does (a known system word). Gibberish, or an instruction about something no
+  // capability covers, asks for clarification without spending a call.
   if (
     routingResult.status === 'clarification_required' &&
     routingResult.clarification_type === 'unmatched' &&
-    !routingResult.interpretation_blocked
+    !routingResult.interpretation_blocked &&
+    tokenize(routingResult.unmatched_segment || objective).some(isSystemWord)
   ) {
     const recovered = await attemptAiAssistedSegmentation(objective);
     if (recovered) {

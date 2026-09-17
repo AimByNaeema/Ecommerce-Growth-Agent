@@ -35,6 +35,7 @@
 // fix, and only a caller that can tell them apart can report either honestly.
 
 const tavilyClient = require('../../integrations/adapters/tavilyClient');
+const { isQuotaExhaustedMessage } = require('./networkRetry');
 const { getCachedResult, setCachedResult } = require('./toolResultCache');
 
 // The one place a search outcome's meaning is defined. Every provider adapter maps its own
@@ -55,6 +56,11 @@ const SEARCH_STATUSES = [
   // The configured provider cannot perform this kind of search with the active AI provider (for
   // example Anthropic's hosted web_search while AI_PROVIDER=gemini).
   'SEARCH_UNSUPPORTED_CAPABILITY',
+  // No provider call was made: a research usage limit for this run or business-day was reached
+  // (agent/core/researchUsageGuard.js).
+  'SEARCH_USAGE_LIMIT_REACHED',
+  // This provider was not called: it recently reported its quota or credit exhausted and is cooling down.
+  'SEARCH_PROVIDER_COOLDOWN',
   'SEARCH_UNKNOWN_ERROR',
 ];
 
@@ -69,6 +75,8 @@ const OPERATIONAL_FAILURE_STATUSES = [
   'SEARCH_PROVIDER_UNAVAILABLE',
   'SEARCH_NETWORK_ERROR',
   'SEARCH_TIMEOUT',
+  'SEARCH_USAGE_LIMIT_REACHED',
+  'SEARCH_PROVIDER_COOLDOWN',
 ];
 
 // `requiresAiProvider`: a model-native search runs INSIDE one specific AI provider's turn, so it can
@@ -145,7 +153,7 @@ function classifyProviderFailure(message) {
   const lower = text.toLowerCase();
   const code = Number((text.match(/\((\d{3})\)/) || [])[1]);
   if (/timed out|timeout/.test(lower)) return 'SEARCH_TIMEOUT';
-  if (/credit balance|insufficient.?(credit|funds|quota)|exceeded your current quota|quota exceeded|usage limit|billing/.test(lower)) {
+  if (isQuotaExhaustedMessage(text)) {
     return 'SEARCH_QUOTA_EXCEEDED';
   }
   if (code === 401 || code === 403 || /invalid (api key|authentication)|unauthori[sz]ed|permission denied/.test(lower)) return 'SEARCH_AUTH_FAILED';
@@ -181,6 +189,8 @@ const USER_FACING_MESSAGES = {
   SEARCH_EMPTY_RESULTS: 'Live market research ran but the research provider returned no usable results.',
   SEARCH_MALFORMED_RESULTS: 'Live market research ran but the research provider returned a result that could not be read.',
   SEARCH_UNSUPPORTED_CAPABILITY: 'The configured research provider cannot perform this kind of live research with the active AI provider.',
+  SEARCH_USAGE_LIMIT_REACHED: 'Live market research was not run because the research usage limit has been reached. Existing research remains available.',
+  SEARCH_PROVIDER_COOLDOWN: 'Live market research is temporarily unavailable because the research provider recently reported its allowance exhausted. Existing research remains available.',
   SEARCH_UNKNOWN_ERROR: 'Live market research could not run.',
 };
 

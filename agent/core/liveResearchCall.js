@@ -17,6 +17,7 @@
 const aiProviderSelector = require('./aiProviderSelector');
 const webSearchProvider = require('./webSearchProvider');
 const { checkTokenBudget, normalizeUsage } = require('./tokenControls');
+const researchUsageGuard = require('./researchUsageGuard');
 
 const DEFAULT_WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search', max_uses: 6 };
 const DEFAULT_MAX_TOKENS = 8192;
@@ -90,12 +91,13 @@ function recordSearch(stats, outcome) {
         if (search.usage) stats.usage.push(search.usage);
         stats.resultsReturned += Array.isArray(search.results) ? search.results.length : 0;
       }
-    } else if (attempt.mode === 'model_native') {
+    } else if (attempt.mode === 'model_native' && !attempt.skipped) {
       // A model-native search is a real request too: it runs inside the AI provider's turn.
       stats.requests += 1;
     }
     if (!attempt.status) continue;
-    stats.attempts.push({ provider: attempt.provider || null, mode: attempt.mode || null, status: attempt.status, layer: attempt.layer || null, query: attempt.query || null, at: attempt.at || null });
+    // A skipped attempt (usage limit, provider cooldown) sent nothing; it is kept on record, marked as such.
+    stats.attempts.push({ provider: attempt.provider || null, mode: attempt.mode || null, status: attempt.status, layer: attempt.layer || null, query: attempt.query || null, at: attempt.at || null, ...(attempt.skipped ? { skipped: true } : {}) });
     if (attempt.status === 'SEARCH_OK') {
       stats.successfulCalls += 1;
     } else {
@@ -321,10 +323,38 @@ async function runSearchCall({ system, prompt, query, businessId, tokensUsedThis
   const usageTotal = { model: null, stopReason: null, tokensUsed: 0, inputTokens: 0, outputTokens: 0 };
   let sawUsage = false;
   let last = null;
-  for (const providerId of chain) {
-    const outcome = await attemptSearchCall({ providerId, system, prompt, query, businessId, maxTokens: budget.capped_max_tokens, searchCache, webSearchTool });
+  const withUsage = (outcome) => ({ ...outcome, usage: sawUsage ? usageTotal : null, attempts });
+  for (const [index, providerId] of chain.entries()) {
+    // THE BUDGET IS RE-CHECKED BEFORE EVERY ATTEMPT, fallbacks included: a fallback spends real tokens too, so it
+    // may only run while this run's budget still covers another call.
+    let attemptBudget = budget;
+    if (index > 0) {
+      attemptBudget = checkTokenBudget({ requestedMaxTokens: maxTokens, tokensUsedThisRun: (tokensUsedThisRun || 0) + usageTotal.tokensUsed });
+      if (!attemptBudget.allowed) return withUsage({ ...last, ok: false, reason: attemptBudget.reason, budgetExhausted: true });
+    }
+
+    // Research usage limits and the provider's quota cooldown (agent/core/researchUsageGuard.js), checked before
+    // anything is sent. A cooling-down provider is skipped for the next one; a reached limit stops the chain.
+    const gate = researchUsageGuard.checkProviderAttempt(providerId);
+    if (!gate.allowed) {
+      const mode = webSearchProvider.getSearchProviderMode(providerId);
+      last = { provider: providerId, mode, ok: false, layer: 'search', searchStatus: gate.searchStatus, reason: gate.reason, searchOutcome: null, usage: null, verifiedUrls: new Set() };
+      attempts.push({ provider: providerId, mode, status: gate.searchStatus, layer: 'search', query: query || null, at: new Date().toISOString(), searchOutcome: null, skipped: true });
+      if (gate.searchStatus === 'SEARCH_PROVIDER_COOLDOWN') continue;
+      break;
+    }
+
+    const outcome = await attemptSearchCall({ providerId, system, prompt, query, businessId, maxTokens: attemptBudget.capped_max_tokens, searchCache, webSearchTool });
     // Provider, mode, query and time of every attempt: the provenance of what was actually asked, of whom, and when.
     attempts.push({ provider: outcome.provider, mode: outcome.mode, status: outcome.searchStatus, layer: outcome.ok ? null : outcome.layer, query: query || null, at: new Date().toISOString(), searchOutcome: outcome.searchOutcome || null });
+    // Every attempt that reached a provider counts - the first provider and each fallback alike. If today's count
+    // cannot be recorded, no further provider is called: spending is never left uncounted.
+    let usageRecordError = null;
+    try {
+      researchUsageGuard.recordProviderAttempt(providerId, outcome.searchStatus);
+    } catch (err) {
+      usageRecordError = `Research usage could not be recorded, so no further provider is called: ${err.message}`;
+    }
     if (outcome.usage) {
       sawUsage = true;
       usageTotal.model = outcome.usage.model || usageTotal.model;
@@ -333,12 +363,12 @@ async function runSearchCall({ system, prompt, query, businessId, tokensUsedThis
       usageTotal.inputTokens += outcome.usage.inputTokens || 0;
       usageTotal.outputTokens += outcome.usage.outputTokens || 0;
     }
-    last = outcome;
-    if (outcome.ok) break;
+    last = usageRecordError ? { ...outcome, usageRecordError } : outcome;
+    if (outcome.ok || usageRecordError) break;
     const fallbackWorthy = outcome.layer === 'search' && webSearchProvider.isOperationalFailure(outcome.searchStatus);
     if (!fallbackWorthy) break;
   }
-  return { ...last, usage: sawUsage ? usageTotal : null, attempts };
+  return withUsage(last);
 }
 
 module.exports = {

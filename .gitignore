@@ -64,6 +64,8 @@ memory/state/schedules/
 # records are what stop a consequential action being applied twice - never committed.
 memory/state/circuits/
 memory/state/verifications/
+# Per-business daily research provider usage and provider quota circuits (agent/core/researchUsageGuard.js).
+memory/state/research-usage/
 
 data/business/*
 !data/business/README.md
