@@ -17,6 +17,10 @@
 
 const { getToolById } = require('../../tools/toolRegistry');
 const { summarizeExecutionState } = require('./resultSummary');
+// The one truthful answer to "how far does this project go with platform X" - derived in that
+// module from the adapter registry and the publishing paths that genuinely exist, never
+// asserted. It is what lets this file state an access mode without writing one down.
+const { describePlatformSupport } = require('../../integrations/adapters/platformSupportRegistry');
 // The single source of truth for which tools change real store data - the same list
 // agent/core/mutationIntent.js re-exports. A store change is only ever one of these.
 const { isCorrectionTool } = require('../../integrations/approvedCorrectionDispatch');
@@ -98,6 +102,92 @@ function platformForTool(toolId) {
   const tool = typeof toolId === 'string' ? getToolById(toolId) : null;
   const platforms = tool && Array.isArray(tool.platforms) ? tool.platforms : [];
   return platforms.length === 1 ? platforms[0] : null;
+}
+
+// WHAT A PLATFORM READ STEP TELLS THE OWNER ABOUT THE STORE IT READ.
+//
+// The same shape as ACTION_DESCRIPTIONS above, and there for the same reason: a step's own
+// returned record is turned into labelled lines, and a field the platform did not return is
+// reported as unavailable rather than filled in. Nothing is looked up, computed or inferred.
+//
+// WHY A TOOL-KEYED MAP RATHER THAN EVERY READ. Each platform's shop record has its own field
+// names - they are that platform's names, not this project's (see normalizeEtsyShop in
+// integrations/adapters/etsyReadClient.js, which renames nothing) - so there is no generic
+// record shape to read. A read whose fields are not described here simply keeps the existing
+// generic step summary, exactly as before.
+const STORE_READ_FIELDS = {
+  etsy_shop_data_retrieval: [
+    { id: 'shop_name', label: 'Etsy shop name' },
+    { id: 'shop_id', label: 'Etsy shop ID' },
+    { id: 'listing_active_count', label: 'Active listing count' },
+    { id: 'digital_listing_count', label: 'Digital listing count' },
+  ],
+};
+
+const ACCESS_TEXT = {
+  read_only:
+    'Read-only. This system can read this platform and has no publishing path to it, so it cannot change anything there.',
+  read_write:
+    'Read and write. Real write paths exist, and every one of them still requires your explicit approval before it runs.',
+  no_access:
+    'No access. No read adapter for this platform is registered, so nothing can be read from it or changed on it.',
+};
+
+// HOW MUCH ACCESS THIS SYSTEM HAS TO A PLATFORM - DERIVED, NEVER DECLARED HERE.
+//
+// Both inputs come from integrations/adapters/platformSupportRegistry.js, which computes them
+// from the modules that actually decide them: whether a conforming read adapter is registered,
+// and whether a publishing path genuinely exists and can publish. For Etsy that is
+// read_adapter_registered true and publishing_available false - so 'read_only' is a
+// consequence of the code that exists, not a status anyone typed. Adding a working Etsy
+// publishing path would change this answer by itself, with no edit here.
+function accessModeFor(platform) {
+  const support = describePlatformSupport(platform);
+  if (!support.read_adapter_registered) return 'no_access';
+  return support.publishing_available ? 'read_write' : 'read_only';
+}
+
+// One plan step's store connection, or null when that step read no platform this file
+// describes. Reported whether or not the read succeeded: the access mode is a fact about the
+// integration, while `connected` says whether this run actually reached the store.
+function storeConnectionFrom(step) {
+  const inputs = isPlainObject(step) && isPlainObject(step.inputs) ? step.inputs : {};
+  const described = STORE_READ_FIELDS[inputs.tool_id];
+  if (!described) return null;
+  const platform = platformForTool(inputs.tool_id);
+  if (!platform) return null;
+
+  const outputs = isPlainObject(step.outputs) ? step.outputs : {};
+  const record = isPlainObject(outputs.result) ? outputs.result : null;
+  const support = describePlatformSupport(platform);
+  const accessMode = accessModeFor(platform);
+
+  const fields = described.map(({ id, label }) => {
+    // undefined and missing are the same thing here, and both mean unavailable. A value the
+    // platform really returned as null stays null and unavailable too - it is never defaulted.
+    const value = record && record[id] !== undefined && record[id] !== null ? record[id] : null;
+    return { id, label, value, available: value !== null };
+  });
+
+  return {
+    platform,
+    connected: outputs.status === 'success' && Boolean(record),
+    access_mode: accessMode,
+    access_text: ACCESS_TEXT[accessMode],
+    publishing_available: support.publishing_available,
+    fields,
+    unavailable_fields: fields.filter((field) => !field.available).map((field) => field.id),
+  };
+}
+
+// The owner-facing sentence for such a step: the fields they asked for and the access mode,
+// both stated outright. An unavailable field says so rather than being left out, so a missing
+// value can never read as if it had not been asked for.
+function storeConnectionSummary(connection) {
+  const values = connection.fields
+    .map((field) => `${field.label}: ${field.available ? field.value : 'unavailable'}`)
+    .join('; ');
+  return `${values}. Connection: ${connection.access_mode.replace(/_/g, '-')}.`;
 }
 
 // How much is at stake if this action runs, from its approval classification alone.
@@ -351,7 +441,12 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
     platform: str(channel) || (toolPlatforms.length === 1 ? toolPlatforms[0] : null),
     findings: plan
       .map((step) => {
-        const summary = stepSummary(step);
+        // A completed platform read answers with the fields it actually returned and the
+        // access mode it has, rather than the generic "completed this request successfully"
+        // - which is all the owner used to get back from an Etsy shop inspection. A step
+        // that did NOT complete keeps its own honest failure/blocked sentence.
+        const connection = step.completion_state === 'complete' ? storeConnectionFrom(step) : null;
+        const summary = connection ? storeConnectionSummary(connection) : stepSummary(step);
         const reused = isPlainObject(step.reused_research) ? step.reused_research : null;
         return {
           specialist: specialistTitle(step),
@@ -361,6 +456,9 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
       })
       .filter((finding) => finding.summary)
       .slice(0, MAX_LIST_ENTRIES),
+    // Each platform this run actually read, with the fields it returned and how much access
+    // this system has to it. Empty for every run that read no such platform.
+    store_connections: plan.map(storeConnectionFrom).filter(Boolean),
     recommendations: (proposalRecommendations || rankedRecommendations || recommendations).slice(0, MAX_LIST_ENTRIES),
     // Where a continued run's evidence came from - null for every other run.
     research_continuity: continuity

@@ -266,6 +266,22 @@ function isConnectedPlatformName(word) {
   return knownPlatformNames().includes(lower) && isPlatformIntegrated(lower);
 }
 
+// Every connected platform a piece of text names, deduped, in the order it names them.
+// Returns [] when it names none - the ordinary case, which every caller treats as "no platform
+// constraint" rather than as a constraint that matches nothing.
+//
+// A LIST, NOT A SINGLE PLATFORM, on purpose: tools/toolRegistry.js's `platforms` is an array
+// ('catalogue_expansion_opportunities' really does reach both), and a request may legitimately
+// name two ("my Etsy listings and my Shopify products"). Collapsing that to one platform here
+// would silently discard half of such a request.
+function connectedPlatformNamesIn(text) {
+  const named = [];
+  for (const token of tokens(text)) {
+    if (isConnectedPlatformName(token.lower) && !named.includes(token.lower)) named.push(token.lower);
+  }
+  return named;
+}
+
 // The act an embedded verb names after a desire ("I want to <verb>", "we need help <verb>ing").
 function actForEmbeddedVerb(word) {
   if (isConsequentialAction(word)) return { act: 'unsupported_action', verb: word };
@@ -538,6 +554,7 @@ module.exports = {
   unsupportedPlatformIn,
   isConsequentialAction,
   isConnectedPlatformName,
+  connectedPlatformNamesIn,
   interpretClause,
   unrelatedNounPhrase,
   endsInPrepositionalPhrase,

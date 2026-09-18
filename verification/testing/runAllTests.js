@@ -289,6 +289,14 @@ const TEST_FILES = [
   'localSigningHelper.test.js',
   'chiefControlCenter.test.js',
   'chiefObjectiveRouting.test.js',
+  // The Etsy read-only inspection routing regression - a Chief routing test, so it belongs with
+  // the others here, and it runs after specialistCapabilityRegistry.test.js and
+  // etsyShopDataTool.test.js above, which pin the capability and the tool it depends on.
+  'etsyShopInspectionRouting.test.js',
+  // The owner-facing half of the same request: the shop fields and the derived read-only
+  // access mode reaching agent/core/ownerRunView.js's owner_view. Runs after the routing test
+  // above, which is what proves the step it reads from is selected at all.
+  'etsyOwnerReadOnlyStatus.test.js',
   'chiefSeoDataFlow.test.js',
   'chiefInstructionParsing.test.js',
   'chiefObjectiveIntent.test.js',

@@ -119,6 +119,7 @@ const {
   refersBack,
   collectSafetyConstraints,
   isConnectedPlatformName,
+  connectedPlatformNamesIn,
   interpretClause,
   unrelatedNounPhrase,
   endsInPrepositionalPhrase,
@@ -1776,12 +1777,99 @@ function candidateSummary(target) {
   return { type: target.type, id: target.id, title: target.title };
 }
 
+// A CAPABILITY THAT NAMES THE PLATFORM THE CLAUSE NAMES.
+//
+// distinctiveRoutingWords above drops a connected platform's name on purpose: "my Shopify sales"
+// is about sales, and the platform only says WHERE to look. That is right for a platform named
+// beside an ordinary subject - and wrong for the one case where the platform name is the subject:
+// a capability that carries the platform in its OWN id/title (etsy_shop_inspection - "the Etsy
+// shop's own record") is asked for by naming that platform and that object, and nothing else in
+// the clause has to carry the route. Without this, "inspect my connected Etsy store" had no Etsy
+// evidence left at all and was routed to Analytics on the single incidental word "store" (from
+// "Store performance ..." in that specialist's description), which then read SHOPIFY.
+//
+// Narrow by construction, in three ways:
+//   1. Exactly ONE connected platform may be named. Two ("my Etsy listings and my Shopify
+//      products") is a request about both, and this rule says nothing about it.
+//   2. Only tasks whose platforms include it AND whose own id/title names it are eligible - so a
+//      task that merely reaches the platform (catalogue_expansion_opportunities, ['etsy',
+//      'shopify']) is not pulled in by the platform name, and a clause naming a platform no
+//      capability is named after resolves to nothing and keeps its existing routing untouched.
+//   3. It DECLINES to a specialist the clause names by that specialist's own id/title/
+//      ROUTING_SYNONYMS vocabulary, which is a stronger signal than the platform. "Analyse my
+//      Etsy invitation listings" is Listing's, not the Etsy shop record's; only a competitor
+//      resting on description-level wording (Analytics' "store") is overridden.
+// Ties across two specialists select nothing, exactly like capabilityFallbackTarget above.
+function platformNamedCapabilityTarget(clauseText) {
+  const platforms = connectedPlatformNamesIn(clauseText);
+  if (platforms.length !== 1) return null;
+  const [platform] = platforms;
+  const words = new Set(
+    tokenize(clauseText).map(singularForm).filter((word) => !GENERIC_ROUTING_WORDS.has(word) && !isInstructionWord(word))
+  );
+  if (!words.has(platform)) return null;
+
+  const owners = [];
+  for (const specialist of getSpecialistCapabilityRegistry()) {
+    const named = specialist.supported_tasks.filter((task) => {
+      if (!Array.isArray(task.platforms) || !task.platforms.includes(platform)) return false;
+      const names = new Set(tokenize(`${task.id.replace(/_/g, ' ')} ${task.title}`).map(singularForm));
+      if (!names.has(platform)) return false;
+      return [...words].some((word) => names.has(word));
+    });
+    if (named.length > 0) owners.push({ id: specialist.id, tasks: named });
+  }
+  if (owners.length !== 1) return null;
+
+  const target = ROUTING_TARGETS.find((entry) => entry.type === 'specialist' && entry.id === owners[0].id) || null;
+  if (!target) return null;
+
+  // A specialist the clause names by its OWN name/synonyms outranks the platform pairing.
+  const competitor = distinctiveRoute(clauseText);
+  if (competitor && competitor.status === 'matched' && competitor.target.type === 'specialist' && competitor.target.id !== target.id) {
+    const synonyms = ROUTING_SYNONYMS[competitor.target.id] || [];
+    const ownName = new Set(tokenize(`${competitor.target.id.replace(/_/g, ' ')} ${competitor.target.title} ${synonyms.join(' ')}`));
+    if (distinctiveRoutingWords(clauseText, competitor.target).some((word) => ownName.has(word))) return null;
+  }
+  return { target, task: owners[0].tasks[0] };
+}
+
+// A FIELD OF THE ANSWER THAT CAPABILITY ALREADY RETURNS.
+//
+// "... show me the current shop name, shop ID, listing count, and whether Etsy is connected as
+// read-only" is one question with a list of FIELDS. The clause splitter has no grammar, so each
+// field arrives as its own clause, and "listing count" then scored 3 for the Listing specialist
+// purely because "listing" repeats three times in that specialist's own routing text - selecting
+// a second specialist for a word that is a column of the answer the first one already produces.
+//
+// Judged against the selected capability's OWN declared output_contract.fields, never a word
+// list: "listing count" is {listing, count} and etsy_shop_inspection really does return
+// listing_active_count and digital_listing_count. Adding a capability widens this automatically,
+// and a capability that does not return a field cannot absorb a clause asking for it.
+//
+// It can only fire inside the same sentence as a clause that platformNamedCapabilityTarget
+// already resolved, so "Check my SEO and listing quality" - no platform named anywhere - never
+// reaches it and keeps routing "listing quality" to Listing.
+function namesOnlyAnswerFields(clauseText, task) {
+  const fields = task && task.output_contract && Array.isArray(task.output_contract.fields) ? task.output_contract.fields : [];
+  if (fields.length === 0) return false;
+  // Split on '_' first: tokenize() keeps underscores, so 'listing_active_count' would stay one
+  // token and never match the words an owner actually types.
+  const fieldWords = new Set(tokenize(fields.join(' ').replace(/_/g, ' ')).map(singularForm));
+  const clauseWords = tokenize(clauseText).map(singularForm);
+  return clauseWords.length > 0 && clauseWords.every((word) => fieldWords.has(word));
+}
+
 // Resolves every routed clause into the result shape planRouting consumes - matched, ambiguous,
 // unmatched (with an optional reason) or absorbed - plus the framing and a per-clause record of
 // how the objective was understood.
 function resolveObjectiveIntent(routedClauses) {
   const units = [];
   let previous = null;
+  // Per SENTENCE, the capability platformNamedCapabilityTarget resolved in it - so a later
+  // field clause of the SAME sentence can be recognised as part of that answer. Scoped to the
+  // sentence, not the objective, so a second sentence asking for something else is unaffected.
+  const sentenceCapabilityTask = {};
   for (const clause of routedClauses) {
     if (clause.result.status === 'absorbed') {
       units.push({ clause, merged: true });
@@ -1825,6 +1913,24 @@ function resolveObjectiveIntent(routedClauses) {
       // (mutation intent, permissions, compliance, approval, verification, audit) applies.
       unit.disposition = result.status === 'matched' ? { kind: 'task', target: result.target } : { kind: 'unresolved' };
     } else {
+      // A capability named together with the platform it is named after identifies the task more
+      // precisely than word overlap can, and is checked first. A later clause of the SAME
+      // sentence that names only fields that capability already returns is part of its answer.
+      const platformCapability = platformNamedCapabilityTarget(text);
+      if (platformCapability) {
+        sentenceCapabilityTask[clause.sentence] = platformCapability.task;
+        unit.disposition = { kind: 'task', target: platformCapability.target, via: 'platform_capability' };
+        units.push(unit);
+        previous = unit;
+        continue;
+      }
+      const answerFieldsOf = sameSentence ? sentenceCapabilityTask[clause.sentence] : null;
+      if (answerFieldsOf && namesOnlyAnswerFields(text, answerFieldsOf)) {
+        unit.disposition = { kind: 'framing' };
+        units.push(unit);
+        previous = unit;
+        continue;
+      }
       const route = distinctiveRoute(text);
       if (
         route && route.status === 'matched' && route.target.type === 'shared_infrastructure' &&
@@ -2461,7 +2567,36 @@ async function buildPlanStep(
   // "Analyze ..." clause cannot. A forcedSelection from a deliberately-sequenced caller
   // is checked below against this same filtered list, so it cannot route around the gate
   // either.
-  const candidateToolIds = filterToolCandidatesByIntent(rawCandidateToolIds, currentTask);
+  const intentToolIds = filterToolCandidatesByIntent(rawCandidateToolIds, currentTask);
+
+  // THE PLATFORM THE CLAUSE ITSELF NAMES - an additional narrowing of the same candidate list,
+  // applied after the mutation-intent gate above and independent of it (it can only remove
+  // candidates, never restore one that gate took out).
+  //
+  // agent/core/toolPermissions.js's PLATFORM_GATE_RULE already refuses a tool bound to a
+  // platform the BUSINESS has not enabled. That is a different question from this one, and it
+  // cannot answer this one: a business with both platforms enabled passes the gate for every
+  // tool, so nothing stopped a clause about Etsy from being answered with a live SHOPIFY read
+  // (measured: "inspect my connected Etsy store" selected analytics_data_retrieval, platforms
+  // ['shopify']) - or, in the other direction, "Look through my Shopify data ..." from
+  // selecting etsy_shop_data_retrieval, whose description mentions Shopify only to say its
+  // records are never merged with it.
+  //
+  // So when the clause NAMES connected platforms, a tool bound to a different platform is not
+  // a candidate for it. Platform-neutral tools (platforms: []) are always kept - they compose
+  // what a caller supplies and reach no store - and a clause naming no platform filters nothing,
+  // which is every existing objective's behavior unchanged. This only ever NARROWS the list the
+  // scoring below chooses from; it can never introduce a tool outside this specialist's own
+  // required_tools, and it makes no approval, permission or execution decision of its own.
+  const namedPlatforms = connectedPlatformNamesIn(currentTask);
+  const candidateToolIds =
+    namedPlatforms.length === 0
+      ? intentToolIds
+      : intentToolIds.filter((toolId) => {
+          const tool = getToolById(toolId);
+          if (!tool || !Array.isArray(tool.platforms) || tool.platforms.length === 0) return true;
+          return tool.platforms.some((platform) => namedPlatforms.includes(platform));
+        });
 
   // Tool/capability word-overlap scoring is deliberately based on this step's OWN
   // clause (currentTask) rather than the full, possibly multi-clause `objective`.
@@ -2524,15 +2659,37 @@ async function buildPlanStep(
 
   if (!toolMatch) {
     let bestScore = 0;
+    let tied = [];
     for (const toolId of scorableToolIds) {
       const tool = getToolById(toolId);
       if (!tool) continue;
       const score = scoreWordOverlap(`${tool.id} ${tool.title} ${tool.description} ${tool.category}`, objectiveWords);
       if (score > bestScore) {
         bestScore = score;
-        toolMatch = tool;
+        tied = [tool];
+      } else if (score === bestScore && score > 0) {
+        tied.push(tool);
       }
     }
+    // A TOP-SCORE TIE PREFERS A TOOL THIS SPECIALIST ACTUALLY DECLARES A CAPABILITY FOR.
+    //
+    // required_tools is derived from the whole tool CATEGORY (buildEntry in
+    // specialistCapabilityRegistry.js), so a specialist owns tools that no capability of its
+    // own consumes - that registry names the remaining ones itself. Such an orphan can win a
+    // word-overlap tie and then leave matchedCapability null, producing a tool call with no
+    // declared capability behind it. Measured: 'inspect my connected Etsy store' tied
+    // etsy_shop_data_retrieval and etsy_listing_data_retrieval 4-4, on nothing but the words
+    // "etsy" and "connected", with the winner decided purely by tools/toolRegistry.js
+    // declaration order - so reordering that file would silently have changed which Etsy read
+    // ran. Preferring the tool with a declared capability makes that outcome structural.
+    // Ties that this does not resolve keep the existing declared-order tie-break (first wins).
+    if (tied.length > 1 && capabilityEntry) {
+      const withCapability = tied.filter((tool) =>
+        capabilityEntry.supported_tasks.some((task) => task.tool_ids.includes(tool.id))
+      );
+      if (withCapability.length > 0) tied = withCapability;
+    }
+    toolMatch = tied.length > 0 ? tied[0] : null;
   }
 
   // No tool scored against the objective's own wording, but at least one candidate

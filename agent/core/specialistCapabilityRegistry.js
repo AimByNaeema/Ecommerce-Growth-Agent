@@ -54,31 +54,42 @@
 // that no capability here references, because no Product capability consumes
 // store-wide collection data yet. Closing it needs a real new capability, not a
 // tool_ids edit, so it stays visible rather than being attached to an existing
-// capability that does not actually use it. The same is true of BOTH Etsy reads
-// ('etsy_shop_data_retrieval', 'etsy_listing_data_retrieval'): no capability task below
-// references either one. They reach the Product specialist only through
-// buildEntry()'s category-derived required_tools - which is exactly why a business with
-// no Etsy saw them reported as 'allowed', and exactly what the platform gate in
-// agent/core/toolPermissions.js now refuses.
+// capability that does not actually use it. The same is still true of ONE of the two Etsy
+// reads ('etsy_listing_data_retrieval'): no capability task below references it, so it
+// reaches the Product specialist only through buildEntry()'s category-derived
+// required_tools - which is exactly why a business with no Etsy saw it reported as
+// 'allowed', and exactly what the platform gate in agent/core/toolPermissions.js now
+// refuses.
+//
+// 'etsy_shop_data_retrieval' USED to be in that same position and no longer is: it is the
+// etsy_shop_inspection task below. Closing it needed exactly what this comment said it
+// would - a real new capability, with its own input and output contract - not a tool_ids
+// edit. It was closed because a live, read-only request ("inspect my connected Etsy store
+// and show me the shop name, shop ID and listing count") had no capability to route to at
+// all, so the Chief could only reach an unrelated specialist by ordinary word overlap. See
+// verification/testing/etsyShopInspectionRouting.test.js.
 //
 // platforms (agent/core/specialistCapabilityModel.js) - another additive,
 // backward-compatible field (default []), and the only PURELY DERIVED one: the union of
 // its tool_ids' own tools/toolRegistry.js `platforms` arrays, computed by
 // derivePlatformsFromToolIds() below. buildTask() accepts no platforms parameter, so a
 // capability cannot claim a platform its tools do not reach, and cannot hide one they do.
-// Six tasks are platform-bound today (product_discovery and the four analytics snapshot
+// Seven tasks are platform-bound today (product_discovery and the four analytics snapshot
 // tasks carrying analytics_data_retrieval -> ['shopify']; catalogue_expansion_opportunities
-// -> ['etsy', 'shopify']); every other task is [], meaning platform-neutral.
+// -> ['etsy', 'shopify']; etsy_shop_inspection -> ['etsy']); every other task is [], meaning
+// platform-neutral. This field is what lets the Chief's routing tell a request that names a
+// platform which capabilities can actually serve it - see platformNamedCapabilityTarget in
+// agent/core/orchestratorExecutionContract.js.
 //
 // live_data_tool_id (agent/core/specialistCapabilityModel.js) - a NEW, additive,
 // backward-compatible field (default null): names a tool_ids entry that can satisfy
 // this capability entirely from an already-approved read-only live source, needing no
 // caller-supplied structured evidence at all. Only set where independently verified
-// against the real tool's own behavior - product_discovery (product_data_retrieval)
-// and the 4 analytics snapshot tasks with a live counterpart (analytics_data_retrieval
-// - see ANALYTICS_DATA_RETRIEVAL_CAPABILITIES below, now also expressed via this
-// field). Every other capability leaves it null - an honest gap, not a promise no live
-// source exists to build later, just that none exists YET.
+// against the real tool's own behavior - product_discovery (product_data_retrieval),
+// etsy_shop_inspection (etsy_shop_data_retrieval) and the 4 analytics snapshot tasks with a
+// live counterpart (analytics_data_retrieval - see ANALYTICS_DATA_RETRIEVAL_CAPABILITIES
+// below, now also expressed via this field). Every other capability leaves it null - an
+// honest gap, not a promise no live source exists to build later, just that none exists YET.
 //
 // EXCLUDED entirely from supported_tasks, matching this project's existing
 // standalone-engine precedent (the same treatment agent/core/growthOpportunityEngine.js
@@ -158,6 +169,9 @@ const PRODUCT_CAPABILITY_IDS = [
   'catalogue_expansion_opportunities',
   'product_opportunity_scoring',
   'product_recommendation',
+  // The connected Etsy shop's own shop record. Last, matching PRODUCT_TASKS' own order - see
+  // that array's tail comment for why this task must not move ahead of product_discovery.
+  'etsy_shop_inspection',
 ];
 
 // researchAgent.js's own RESEARCH_TYPES enum doesn't cover
@@ -655,6 +669,45 @@ const PRODUCT_TASKS = [
     optional: ['recommendedNextStep'],
     model: 'agent/core/productRecommendationModel.js',
     fields: fieldIds(PRODUCT_RECOMMENDATION_FIELDS),
+  }),
+  // DELIBERATELY LAST IN THIS ARRAY. agent/core/orchestratorExecutionContract.js's
+  // CROSS-CAPABILITY LIVE-DATA FALLBACK picks the FIRST sibling task declaring a
+  // live_data_tool_id that is a real candidate for the step, so product_discovery must keep
+  // winning that search for every other Product capability. Placing this task after it
+  // leaves that behavior exactly as it was; placing it before would silently redirect
+  // Product's evidence-less capabilities at the Etsy shop read.
+  buildTask({
+    id: 'etsy_shop_inspection',
+    title: 'Etsy shop inspection',
+    description:
+      "Read the connected Etsy shop's own shop record - shop id, shop name, title, announcement, currency, url, active and digital listing counts, and vacation state - via tools/etsyShopDataTool.js's runEtsyShopDataTool(), which resolves integrations/adapters/adapterRegistry.js's 'etsy' read adapter and calls integrations/adapters/etsyReadClient.js's getEtsyShop(). Read-only and self-sufficient from that live source alone: it needs no caller-supplied evidence (see live_data_tool_id below). Reports every field exactly as Etsy returned it, and a field Etsy did not return stays null rather than being inferred (normalizeEtsyShop) - nothing about the shop is ever composed from anything but that response. No Etsy write exists to reach: the read client issues GET requests only (assertReadOnlyMethod) and tools/toolRegistry.js declares no Etsy tool whose operation is anything but 'read'.",
+    toolIds: ['etsy_shop_data_retrieval'],
+    liveDataToolId: 'etsy_shop_data_retrieval',
+    // Honest and verified against tools/etsyShopDataTool.js's runEtsyShopDataTool(), which
+    // reads only params.businessId - the same shape catalogue_expansion_opportunities above
+    // already has: nothing is required because the tool retrieves its own subject.
+    required: [],
+    optional: ['businessId'],
+    // No *Model.js record: the Etsy read client's normalized shop record IS the output shape.
+    model: null,
+    // EXACTLY integrations/adapters/etsyReadClient.js's normalizeEtsyShop() keys, in its own
+    // order (the 9 Etsy fields plus agent/core/channelModel.js's `channel` stamp). Written out
+    // here rather than imported because this registry is a composition layer over the *Model.js
+    // files and the two registries only - it requires no adapter, and must not start. The list
+    // is pinned to the real function by
+    // verification/testing/etsyShopInspectionRouting.test.js, so it cannot silently drift.
+    fields: [
+      'shop_id',
+      'shop_name',
+      'title',
+      'announcement',
+      'currency_code',
+      'url',
+      'listing_active_count',
+      'digital_listing_count',
+      'is_vacation',
+      'channel',
+    ],
   }),
 ];
 

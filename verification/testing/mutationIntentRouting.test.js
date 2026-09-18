@@ -458,10 +458,16 @@ function selectedByLegacyRouter(objective) {
       /selectableTools\s*=\s*maySelectMutationTool\(objective\)/.test(source),
       'gate 1 (identifyRequiredCapability) is missing'
     );
-    // Gate 2: the live routing path.
+    // Gate 2: the live routing path. Its result is named intentToolIds because buildPlanStep
+    // then narrows it again by the platform the clause names before scoring - a separate,
+    // additive filter that can only remove candidates, never restore one this gate took out.
     assert.ok(
-      /candidateToolIds\s*=\s*filterToolCandidatesByIntent\(rawCandidateToolIds, currentTask\)/.test(source),
+      /intentToolIds\s*=\s*filterToolCandidatesByIntent\(rawCandidateToolIds, currentTask\)/.test(source),
       'gate 2 (buildPlanStep candidates) is missing'
+    );
+    assert.ok(
+      /candidateToolIds\s*=[\s\S]{0,400}?intentToolIds/.test(source),
+      'gate 2 no longer feeds the candidate list buildPlanStep actually scores'
     );
     // Gate 3: the tool-level precondition.
     assert.ok(
