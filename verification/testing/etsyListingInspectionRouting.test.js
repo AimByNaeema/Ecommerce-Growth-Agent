@@ -257,6 +257,36 @@ const targetIds = (text) => (plan(text).targets || []).map((target) => target.id
     assert.strictEqual(view.platform, 'etsy');
   });
 
+  // THE STATUS-MAPPING REGRESSION. A successful read whose listings merit review used to be
+  // reported as unfinished work all the way up: tools/etsyListingDataTool.js mapped the
+  // compliance verdict onto its own tool status (REVIEW -> 'partial'),
+  // agent/core/executionState.js then set completion_state 'blocked' for the non-passed
+  // verification, and this view reported execution_state 'not_completed', verification_state
+  // 'not_verified' and an overall 'partial' - "Partly done. Some steps did not finish." - on a
+  // run that had just produced five evidenced opportunities from five real listings.
+  test('a successful read of listings that merit review is reported as finished work', () => {
+    assert.strictEqual(step.outputs.status, 'success', JSON.stringify(step.outputs.error));
+    assert.strictEqual(step.completion_state, 'complete');
+    assert.strictEqual(view.status, 'success');
+    assert.strictEqual(view.execution_state, 'completed');
+    assert.ok(!/did not finish/.test(view.status_text), view.status_text);
+  });
+
+  test('...and the compliance REVIEW is still fully visible in that same result', () => {
+    // The status changed; the verdict did not move, soften or disappear.
+    assert.strictEqual(step.outputs.result.aggregate_compliance_status, 'REVIEW');
+    for (const entry of step.outputs.result.listings) {
+      assert.ok(entry.compliance.status, 'a listing lost its compliance block');
+      assert.ok(Array.isArray(entry.compliance.findings));
+      assert.ok(Array.isArray(entry.missing_facts));
+    }
+    // And it still reaches the owner as the evidence behind the opportunities.
+    assert.ok(
+      derived.opportunities.some((entry) => entry.evidence.some((item) => /Compliance verdict/.test(item))),
+      'the REVIEW verdict no longer reaches the owner as evidence'
+    );
+  });
+
   // --- Read-only, no approval, no mutation ---------------------------------------------
 
   test('the capability and its tool are read-only and Etsy-bound', () => {

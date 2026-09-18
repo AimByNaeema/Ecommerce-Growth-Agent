@@ -187,13 +187,57 @@ const CLEAN_LISTING = {
     });
   });
 
-  await testAsync('a protected mark makes the tool status partial (REVIEW)', async () => {
+  // THE CORRECTED CONTRACT. This used to assert status 'partial', which copied
+  // tools/complianceCheckTool.js's verdict mapping into a RETRIEVAL tool - and a successful
+  // read of listings that merit review was then reported all the way up as unfinished work
+  // (agent/core/executionState.js -> completion_state 'blocked' -> agent/core/ownerRunView.js
+  // -> execution_state 'not_completed', verification_state 'not_verified', run status
+  // 'partial'). The read succeeded; the content needs review. Those are different facts, and
+  // the second one is carried by the result, not by the tool status - which is exactly what
+  // the two assertions below pin together.
+  await testAsync('a protected mark keeps the READ successful while the REVIEW verdict stays visible', async () => {
     await withEnv(CONFIGURED, async () => {
       await withMockedFetch(listingsResponse([{ ...CLEAN_LISTING, title: 'Bluey Party Design' }]), async () => {
         const outcome = await etsyListingDataTool.runEtsyListingDataTool({});
+        assert.strictEqual(outcome.status, 'success');
         assert.strictEqual(outcome.result.aggregate_compliance_status, 'REVIEW');
-        assert.strictEqual(outcome.status, 'partial');
+        // The verdict is not merely summarised - the listing still carries its own full
+        // compliance block, so nothing about the review is weakened or hidden by the status.
+        const [entry] = outcome.result.listings;
+        assert.strictEqual(entry.compliance.status, 'REVIEW');
+        assert.ok(Array.isArray(entry.compliance.review_reasons) && entry.compliance.review_reasons.length > 0);
+        assert.ok(Array.isArray(entry.compliance.findings));
+        assert.ok(entry.compliance.checked_at);
+        assert.ok(entry.compliance.checker_version);
       });
+    });
+  });
+
+  test('the status change introduced no Etsy write capability of any kind', () => {
+    // A retrieval reporting 'success' more often must never be a route to writing anything.
+    const { TOOL_REGISTRY } = require('../../tools/toolRegistry');
+    const etsyTools = TOOL_REGISTRY.filter((tool) => Array.isArray(tool.platforms) && tool.platforms.includes('etsy'));
+    assert.ok(etsyTools.length > 0, 'the Etsy tools must still be registered');
+    assert.deepStrictEqual(etsyTools.filter((tool) => tool.operation !== 'read').map((tool) => tool.id), []);
+    assert.strictEqual(require('../../integrations/adapters/etsyClient').canPublish(), false);
+    // This tool's own source reaches no publish path. Checked on what it actually IMPORTS and
+    // CALLS, not on any mention: the file's own header names etsyClient.js precisely to say it
+    // is not referenced, and a test that failed on that comment would be testing prose.
+    const source = require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '..', '..', 'tools', 'etsyListingDataTool.js'),
+      'utf8'
+    );
+    assert.ok(!/require\(['"][^'"]*\/etsyClient['"]\)/.test(source), 'the retrieval tool must not import the publish adapter');
+    assert.ok(!/publishListing\s*\(/.test(source), 'the retrieval tool must not call a publish path');
+  });
+
+  test('the retrieval status mapping deliberately differs from the compliance checker\'s', () => {
+    // complianceCheckTool's job IS the verdict, so REVIEW -> 'partial' is right there. This
+    // tool's job is the read. BLOCK stays a hard stop in both.
+    assert.deepStrictEqual(etsyListingDataTool.COMPLIANCE_STATUS_TO_TOOL_STATUS, {
+      PASS: 'success',
+      REVIEW: 'success',
+      BLOCK: 'blocked',
     });
   });
 

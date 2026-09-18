@@ -33,10 +33,31 @@ const { checkEtsyListingCompliance } = require('../compliance/etsyComplianceInpu
 
 const PLATFORM = 'etsy';
 
-// Etsy listing verdict -> this project's tool status vocabulary. Identical mapping to
-// tools/complianceCheckTool.js's, reused rather than reinvented so one verdict never means
-// two different things depending on which tool reported it.
-const COMPLIANCE_STATUS_TO_TOOL_STATUS = { PASS: 'success', REVIEW: 'partial', BLOCK: 'blocked' };
+// Etsy listing verdict -> this RETRIEVAL tool's status.
+//
+// THIS IS DELIBERATELY NOT tools/complianceCheckTool.js's MAPPING ANY MORE, and the difference
+// is the point. That tool's whole job IS the verdict, so REVIEW -> 'partial' is the honest
+// answer there: a judgment is genuinely outstanding and the tool has not finished its work.
+// THIS tool's job is the READ. Its status answers "did the Etsy request succeed and return the
+// shop's listings", and that answer does not change because the content it read needs review.
+//
+// THE DEFECT THAT CAME FROM COPYING THE OTHER MAPPING. Mirroring REVIEW -> 'partial' here made
+// a completely successful read report as unfinished work: agent/core/executionState.js sets
+// completion_state 'blocked' for any non-passed verification, and agent/core/ownerRunView.js
+// then reports execution_state 'not_completed', verification_state 'not_verified' and an
+// overall run status of 'partial' - "Partly done. Some steps did not finish." Measured against
+// a real shop: 5 active digital listings retrieved, 5 evidenced opportunities produced, and the
+// run still presented as not finished. Any shop whose listings contain a single name-shaped
+// phrase reaches REVIEW, so this was the normal outcome, not an edge case.
+//
+// NOTHING ABOUT COMPLIANCE IS WEAKENED OR HIDDEN. The verdict is not consumed here: it is
+// returned verbatim as `aggregate_compliance_status`, and every listing still carries its own
+// `compliance` block - status, review_reasons, findings, checked_at, checker_version and
+// limitations - plus its `missing_facts`. A REVIEW is as visible after this change as before;
+// it is simply reported as what it is (a fact about the content) rather than as a failure of
+// the retrieval. BLOCK is untouched: an explicit deterministic policy rule was violated, that
+// is a hard stop this project does not let a caller walk past, and it still maps to 'blocked'.
+const COMPLIANCE_STATUS_TO_TOOL_STATUS = { PASS: 'success', REVIEW: 'success', BLOCK: 'blocked' };
 
 // Bounded by default so one call cannot walk an entire catalogue and spend the day's Etsy
 // quota - the caller raises it deliberately when it means to.
