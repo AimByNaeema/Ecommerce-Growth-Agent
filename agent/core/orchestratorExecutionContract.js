@@ -1484,20 +1484,50 @@ const FILE_FORMAT_TOKENS = new Set([
 // plain-comma branch first with "and" mistaken for the next item's word.
 const AND_COMMA_LIST_REGEX = /\b[A-Za-z]+(?:\s*,\s*and\s+[A-Za-z]+|\s*,\s*(?!and\b)[A-Za-z]+|\s+and\s+[A-Za-z]+)+\b/gi;
 
-// Rewrites the objective text (never the underlying data/business meaning) so that a
-// pure list of file-format names joined by "and"/comma survives CLAUSE_SPLIT_REGEX as
-// one clause instead of being torn into separate fragments. Returns the original
-// string unchanged whenever no run is found, or whenever a found run contains even one
-// word that isn't a recognized file-format token - so this can only ever make routing
-// MORE permissive for genuine format lists, never change behavior for anything else.
-function protectFileFormatLists(objective) {
+// Rewrites the objective text (never the underlying data/business meaning) so that a run of
+// words joined by "and"/comma survives CLAUSE_SPLIT_REGEX as one clause instead of being torn
+// into separate fragments. Returns the original string unchanged whenever no run is found, or
+// whenever a found run contains even one word `recognized` does not accept - so this can only
+// ever make routing MORE permissive for a genuine list, never change behavior for anything else.
+//
+// Hyphen-joining is safe for everything downstream: tokenize() and the interpreter's own
+// tokens() both split on the hyphen, so every word in the run is still seen individually by
+// routing, by the platform detection and by the vocabulary checks.
+function protectRecognizedLists(objective, recognized) {
   return objective.replace(AND_COMMA_LIST_REGEX, (run) => {
     const words = run.split(/\s*(?:,|\band\b)\s*/i).filter((word) => word.length > 0);
     if (words.length < 2) return run;
-    const allRecognized = words.every((word) => FILE_FORMAT_TOKENS.has(word.toLowerCase()));
-    if (!allRecognized) return run;
+    if (!words.every((word) => recognized(word.toLowerCase()))) return run;
     return words.join('-');
   });
+}
+
+// A pure list of file-format names ("PNG and SVG", "PNG, SVG, and JPG").
+function protectFileFormatLists(objective) {
+  return protectRecognizedLists(objective, (word) => FILE_FORMAT_TOKENS.has(word));
+}
+
+// A PURE LIST OF CONNECTED PLATFORMS ("my Shopify and Etsy stores").
+//
+// Same shape, same treatment, and the same bug it prevents. "run today's growth cycle for my
+// Shopify and Etsy stores" was torn at the "and" into "run today's growth cycle for my Shopify"
+// and an orphan "Etsy stores" - one prepositional phrase naming two stores, cut in half. The
+// orphan then inherited the previous clause's PRODUCE act, and that branch routes by plain word
+// overlap only: "Etsy stores" scores zero against every specialist's routing text, because
+// distinctiveRoutingWords deliberately keeps connected platform names out of it. The whole
+// request stopped with 'No known capability matches "Etsy stores."' - the parser treating a
+// platform name as if it were a capability nobody had built.
+//
+// Keeping the run whole fixes it at the cause: the clause keeps both platform names, so
+// connectedPlatformNamesIn sees Shopify AND Etsy, buildPlanStep's platform filter keeps the
+// tools for both, and there is no orphan fragment left to be unmatched.
+//
+// NARROW BY CONSTRUCTION. Every word in the run must be a platform this system is actually
+// connected to, so "Shopify and Amazon" is untouched and still refused by name as an
+// unsupported platform, and "my Etsy invitation listings and my Shopify products" is untouched
+// because "listings" and "my" are not platform names.
+function protectConnectedPlatformLists(objective) {
+  return protectRecognizedLists(objective, isConnectedPlatformName);
 }
 
 // SENTENCES ARE CLAUSE BOUNDARIES. Splitting only on commas/"and" left several sentences in
@@ -1508,7 +1538,7 @@ function protectFileFormatLists(objective) {
 // so it is applied first; the instruction parser then sees every sentence. The terminator is
 // kept on the clause, which is how a list item knows its sentence has ended.
 function splitIntoClauseUnits(objective) {
-  return protectFileFormatLists(objective)
+  return protectConnectedPlatformLists(protectFileFormatLists(objective))
     .split(/(?<=[.!?])\s+/)
     .flatMap((sentence, sentenceIndex) =>
       sentence

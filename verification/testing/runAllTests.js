@@ -299,6 +299,9 @@ const TEST_FILES = [
   'etsyOwnerReadOnlyStatus.test.js',
   // The negated-prohibition regression: a "Do not invent X, Y, Z" list became three tasks.
   'negatedConstraintRouting.test.js',
+  // The platform-list regression: "my Shopify and Etsy stores" was torn at the "and" and the
+  // orphan "Etsy stores" came back as an unknown capability.
+  'platformListRouting.test.js',
   // The Etsy listing-analysis regression, which that prohibition was part of.
   'etsyListingInspectionRouting.test.js',
   'chiefSeoDataFlow.test.js',
