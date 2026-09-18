@@ -54,29 +54,28 @@
 // that no capability here references, because no Product capability consumes
 // store-wide collection data yet. Closing it needs a real new capability, not a
 // tool_ids edit, so it stays visible rather than being attached to an existing
-// capability that does not actually use it. The same is still true of ONE of the two Etsy
-// reads ('etsy_listing_data_retrieval'): no capability task below references it, so it
-// reaches the Product specialist only through buildEntry()'s category-derived
-// required_tools - which is exactly why a business with no Etsy saw it reported as
-// 'allowed', and exactly what the platform gate in agent/core/toolPermissions.js now
-// refuses.
+// capability that does not actually use it. It is now the ONLY tool in that position.
 //
-// 'etsy_shop_data_retrieval' USED to be in that same position and no longer is: it is the
-// etsy_shop_inspection task below. Closing it needed exactly what this comment said it
-// would - a real new capability, with its own input and output contract - not a tool_ids
-// edit. It was closed because a live, read-only request ("inspect my connected Etsy store
-// and show me the shop name, shop ID and listing count") had no capability to route to at
-// all, so the Chief could only reach an unrelated specialist by ordinary word overlap. See
-// verification/testing/etsyShopInspectionRouting.test.js.
+// BOTH Etsy reads used to be there too, and neither is any more: they are the
+// etsy_shop_inspection and etsy_listing_inspection tasks below. Closing each one needed
+// exactly what this comment said it would - a real new capability, with its own input and
+// output contract - not a tool_ids edit. Each was closed because a live, read-only request
+// had no capability to route to at all, so the Chief could only reach an unrelated
+// specialist by ordinary word overlap: "show me the shop name, shop ID and listing count"
+// reached Analytics and read SHOPIFY, and "analyze my current active digital listings"
+// reached the Listing specialist, which authors listing copy and cannot read Etsy at all.
+// See verification/testing/etsyShopInspectionRouting.test.js and
+// verification/testing/etsyListingInspectionRouting.test.js.
 //
 // platforms (agent/core/specialistCapabilityModel.js) - another additive,
 // backward-compatible field (default []), and the only PURELY DERIVED one: the union of
 // its tool_ids' own tools/toolRegistry.js `platforms` arrays, computed by
 // derivePlatformsFromToolIds() below. buildTask() accepts no platforms parameter, so a
 // capability cannot claim a platform its tools do not reach, and cannot hide one they do.
-// Seven tasks are platform-bound today (product_discovery and the four analytics snapshot
+// Eight tasks are platform-bound today (product_discovery and the four analytics snapshot
 // tasks carrying analytics_data_retrieval -> ['shopify']; catalogue_expansion_opportunities
-// -> ['etsy', 'shopify']; etsy_shop_inspection -> ['etsy']); every other task is [], meaning
+// -> ['etsy', 'shopify']; etsy_shop_inspection and etsy_listing_inspection -> ['etsy']);
+// every other task is [], meaning
 // platform-neutral. This field is what lets the Chief's routing tell a request that names a
 // platform which capabilities can actually serve it - see platformNamedCapabilityTarget in
 // agent/core/orchestratorExecutionContract.js.
@@ -86,7 +85,8 @@
 // this capability entirely from an already-approved read-only live source, needing no
 // caller-supplied structured evidence at all. Only set where independently verified
 // against the real tool's own behavior - product_discovery (product_data_retrieval),
-// etsy_shop_inspection (etsy_shop_data_retrieval) and the 4 analytics snapshot tasks with a
+// etsy_shop_inspection (etsy_shop_data_retrieval), etsy_listing_inspection
+// (etsy_listing_data_retrieval) and the 4 analytics snapshot tasks with a
 // live counterpart (analytics_data_retrieval - see ANALYTICS_DATA_RETRIEVAL_CAPABILITIES
 // below, now also expressed via this field). Every other capability leaves it null - an
 // honest gap, not a promise no live source exists to build later, just that none exists YET.
@@ -172,6 +172,8 @@ const PRODUCT_CAPABILITY_IDS = [
   // The connected Etsy shop's own shop record. Last, matching PRODUCT_TASKS' own order - see
   // that array's tail comment for why this task must not move ahead of product_discovery.
   'etsy_shop_inspection',
+  // The connected Etsy shop's own listings. Last, matching PRODUCT_TASKS' own order.
+  'etsy_listing_inspection',
 ];
 
 // researchAgent.js's own RESEARCH_TYPES enum doesn't cover
@@ -708,6 +710,25 @@ const PRODUCT_TASKS = [
       'is_vacation',
       'channel',
     ],
+  }),
+  // Last, for the same reason as etsy_shop_inspection above: product_discovery must keep
+  // winning the CROSS-CAPABILITY LIVE-DATA FALLBACK's first-match search for every other
+  // Product capability.
+  buildTask({
+    id: 'etsy_listing_inspection',
+    title: 'Etsy listing inspection',
+    description:
+      "Read the connected Etsy shop's own listings - listing id, title, state, url, description, tags, materials, price, quantity, taxonomy id, listing type and digital/physical nature - via tools/etsyListingDataTool.js's runEtsyListingDataTool(), which resolves integrations/adapters/adapterRegistry.js's 'etsy' read adapter and calls integrations/adapters/etsyReadClient.js's getEtsyListings(). Read-only and self-sufficient from that live source alone (see live_data_tool_id below). Each listing carries the EXISTING compliance verdict for its current content plus missing_facts - the product facts its own data does not establish, reported as NEEDS_INFORMATION rather than filled in. Etsy reports no sales, revenue, conversion, impression or search-volume data through any endpoint this client is allowed to call (integrations/adapters/etsyReadAdapter.js declares getOrders and getCustomers unsupported), so none of those is available here and none is ever composed. `state` selects which listings Etsy returns ('active' for the live catalogue); nothing filters on a field Etsy did not report. No Etsy write exists to reach: the read client issues GET requests only, and tools/toolRegistry.js declares no Etsy tool whose operation is anything but 'read'.",
+    toolIds: ['etsy_listing_data_retrieval'],
+    liveDataToolId: 'etsy_listing_data_retrieval',
+    // Honest and verified against runEtsyListingDataTool(), which reads only these.
+    required: [],
+    optional: ['businessId', 'limit', 'offset', 'state', 'businessContext'],
+    // No *Model.js record: the tool composes this envelope around the read client's own
+    // normalized listing records. Pinned to the real tool by
+    // verification/testing/etsyListingInspectionRouting.test.js.
+    model: null,
+    fields: ['channel', 'listing_count', 'aggregate_compliance_status', 'listings', 'pagination'],
   }),
 ];
 

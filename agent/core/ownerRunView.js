@@ -21,6 +21,9 @@ const { summarizeExecutionState } = require('./resultSummary');
 // module from the adapter registry and the publishing paths that genuinely exist, never
 // asserted. It is what lets this file state an access mode without writing one down.
 const { describePlatformSupport } = require('../../integrations/adapters/platformSupportRegistry');
+// Turns one etsy_listing_data_retrieval result into the ranked, evidence-carrying answer the
+// owner asked for. It judges nothing and invents nothing - see that module's own header.
+const { deriveEtsyListingOpportunities } = require('./etsyListingOpportunities');
 // The single source of truth for which tools change real store data - the same list
 // agent/core/mutationIntent.js re-exports. A store change is only ever one of these.
 const { isCorrectionTool } = require('../../integrations/approvedCorrectionDispatch');
@@ -188,6 +191,44 @@ function storeConnectionSummary(connection) {
     .map((field) => `${field.label}: ${field.available ? field.value : 'unavailable'}`)
     .join('; ');
   return `${values}. Connection: ${connection.access_mode.replace(/_/g, '-')}.`;
+}
+
+// THE ETSY LISTING ANALYSIS, AS THE OWNER ASKED FOR IT.
+//
+// Without this the step returned a page of listing records and the owner saw
+// agent/core/resultSummary.js's generic "Product completed this request successfully." - the
+// analysis was in the raw run result and nowhere in what anybody read. Limited to 5 because
+// that is what the request asks for; every field is relayed from the derivation, which relays
+// it from Etsy.
+const MAX_LISTING_OPPORTUNITIES = 5;
+
+// DELIBERATELY NOT GATED ON completion_state. tools/etsyListingDataTool.js maps the aggregate
+// compliance verdict onto its own tool status, so a page of real listings carrying REVIEW
+// findings comes back 'partial' and the step reads 'blocked' - and those very findings are the
+// evidence the owner asked for. The honest gate is whether a real result came back at all: a
+// failed or empty read returns result: null and falls through to its own error sentence.
+function listingOpportunitiesFrom(step) {
+  const inputs = isPlainObject(step) && isPlainObject(step.inputs) ? step.inputs : {};
+  if (inputs.tool_id !== 'etsy_listing_data_retrieval') return null;
+  const outputs = isPlainObject(step.outputs) ? step.outputs : {};
+  if (!isPlainObject(outputs.result)) return null;
+  const derived = deriveEtsyListingOpportunities(outputs.result, { limit: MAX_LISTING_OPPORTUNITIES });
+  return derived && derived.opportunities.length > 0 ? derived : null;
+}
+
+// One line per opportunity: the title and status Etsy returned, what the evidence supports, and
+// the evidence itself. A field Etsy did not return says "unavailable" rather than disappearing.
+function listingOpportunitiesSummary(derived) {
+  const lines = derived.opportunities.map((entry, index) => {
+    const title = entry.title === null ? 'title unavailable' : `"${entry.title}"`;
+    const state = entry.state === null ? 'status unavailable' : `status ${entry.state}`;
+    const unavailable = entry.unavailable.length > 0 ? ` Unavailable: ${entry.unavailable.map((field) => field.id).join(', ')}.` : '';
+    return `${index + 1}. ${title} (${state}) - ${entry.opportunity} Evidence: ${entry.evidence.join(' ')}${unavailable}`;
+  });
+  const scope =
+    `${derived.opportunities.length} of ${derived.considered.listings_considered} listing(s) examined` +
+    ` (${derived.considered.digital_filter_applied ? 'digital only' : 'not restricted to digital'}).`;
+  return `${scope} ${lines.join(' ')} Not retrievable from Etsy, and not estimated: ${derived.unavailable_metrics.map((metric) => metric.id).join(', ')}.`;
 }
 
 // How much is at stake if this action runs, from its approval classification alone.
@@ -446,7 +487,12 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
         // - which is all the owner used to get back from an Etsy shop inspection. A step
         // that did NOT complete keeps its own honest failure/blocked sentence.
         const connection = step.completion_state === 'complete' ? storeConnectionFrom(step) : null;
-        const summary = connection ? storeConnectionSummary(connection) : stepSummary(step);
+        const listings = listingOpportunitiesFrom(step);
+        const summary = listings
+          ? listingOpportunitiesSummary(listings)
+          : connection
+            ? storeConnectionSummary(connection)
+            : stepSummary(step);
         const reused = isPlainObject(step.reused_research) ? step.reused_research : null;
         return {
           specialist: specialistTitle(step),
@@ -459,6 +505,10 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
     // Each platform this run actually read, with the fields it returned and how much access
     // this system has to it. Empty for every run that read no such platform.
     store_connections: plan.map(storeConnectionFrom).filter(Boolean),
+    // The ranked Etsy listing opportunities this run found, each with the real title, status and
+    // evidence behind it, and the metrics Etsy does not expose named as unavailable. Empty for
+    // every run that did not read Etsy listings.
+    listing_opportunities: plan.map(listingOpportunitiesFrom).filter(Boolean),
     recommendations: (proposalRecommendations || rankedRecommendations || recommendations).slice(0, MAX_LIST_ENTRIES),
     // Where a continued run's evidence came from - null for every other run.
     research_continuity: continuity

@@ -307,7 +307,25 @@ function interpretClause(clauseText, { previousAct = null, previousNegated = fal
   // negated clause in the same sentence inherits the negation when it is a bare list item or is joined
   // by "or"/"nor". "and" is not treated this way: "Don't change prices, and write new titles" asks for
   // the titles.
-  if (previousNegated && rawWords.length > 0 && (['or', 'nor'].includes(rawWords[0].lower) || rawWords.length === 1)) {
+  // A MULTI-WORD LIST ITEM IS STILL A LIST ITEM. "Do not invent sales, demand, search volume,
+  // or performance metrics." is split at its commas, and only "demand" (one word) and "or
+  // performance metrics" (an "or") used to inherit the negation - so "search volume" was read
+  // as a request of its own and routed to SEO, which then asked for keywords. Worse, once one
+  // item lost the negation, previousNegated was false for the item after it, so the "or" item
+  // lost it too: the whole prohibition became three tasks the owner had explicitly forbidden.
+  //
+  // A fragment continues the negated list when it opens with no verb of its own - a bare noun
+  // phrase, of any length. That is what distinguishes "search volume" from "write new titles"
+  // in "Don't change prices, and write new titles", which opens with a PRODUCE verb, is a real
+  // request, and must keep routing exactly as it does today. Inheriting can only ever ADD a
+  // constraint, never grant anything: a constraint narrows the run and selects nothing.
+  const opensWithoutVerb =
+    rawWords.length > 0 && !verbClass(rawWords[0].lower) && !isConsequentialAction(rawWords[0].lower);
+  if (
+    previousNegated &&
+    rawWords.length > 0 &&
+    (['or', 'nor'].includes(rawWords[0].lower) || rawWords.length === 1 || opensWithoutVerb)
+  ) {
     return { act: 'scope', negated: true, continuation: true, safety };
   }
   let words = rawWords;

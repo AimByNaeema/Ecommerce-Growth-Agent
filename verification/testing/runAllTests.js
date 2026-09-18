@@ -297,6 +297,10 @@ const TEST_FILES = [
   // access mode reaching agent/core/ownerRunView.js's owner_view. Runs after the routing test
   // above, which is what proves the step it reads from is selected at all.
   'etsyOwnerReadOnlyStatus.test.js',
+  // The negated-prohibition regression: a "Do not invent X, Y, Z" list became three tasks.
+  'negatedConstraintRouting.test.js',
+  // The Etsy listing-analysis regression, which that prohibition was part of.
+  'etsyListingInspectionRouting.test.js',
   'chiefSeoDataFlow.test.js',
   'chiefInstructionParsing.test.js',
   'chiefObjectiveIntent.test.js',

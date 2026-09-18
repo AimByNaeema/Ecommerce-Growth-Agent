@@ -206,7 +206,7 @@ test('every Research capability is wired to a real tool - the three former gaps 
   }
 });
 
-test('every one of Product\'s 8 supported_tasks is now wrapped by a real tool - the 4 that had tool_ids: [] are wired to product_research, and the 4 exceptions each name their own', () => {
+test('every one of Product\'s 9 supported_tasks is now wrapped by a real tool - the 4 that had tool_ids: [] are wired to product_research, and the 5 exceptions each name their own', () => {
   const productEntry = getSpecialistCapabilityById('product');
   for (const task of productEntry.supported_tasks) {
     if (task.id === 'market_product_opportunity_analysis') {
@@ -221,6 +221,11 @@ test('every one of Product\'s 8 supported_tasks is now wrapped by a real tool - 
       // the orchestrator's live-data override is simply a no-op for it.
       assert.deepStrictEqual(task.tool_ids, ['etsy_shop_data_retrieval']);
       assert.strictEqual(task.live_data_tool_id, 'etsy_shop_data_retrieval');
+    } else if (task.id === 'etsy_listing_inspection') {
+      // The connected Etsy shop's own listings, same shape as the shop read above: its only
+      // tool_ids entry IS its live source, so the live-data override is a no-op for it too.
+      assert.deepStrictEqual(task.tool_ids, ['etsy_listing_data_retrieval']);
+      assert.strictEqual(task.live_data_tool_id, 'etsy_listing_data_retrieval');
     } else if (task.id === 'catalogue_expansion_opportunities') {
       // Its own dedicated tool, and live_data_tool_id deliberately null: declaring one
       // would enrol that tool in the generic CROSS-CAPABILITY LIVE-DATA FALLBACK and make
@@ -383,7 +388,7 @@ test('every task platforms is exactly the sorted union of its own tools platform
   }
 });
 
-test('exactly the 7 tool-bound capabilities are platform-bound, and they name exactly these platforms', () => {
+test('exactly the 8 tool-bound capabilities are platform-bound, and they name exactly these platforms', () => {
   const bound = {};
   for (const entry of SPECIALIST_CAPABILITY_REGISTRY) {
     for (const task of entry.supported_tasks) {
@@ -398,6 +403,9 @@ test('exactly the 7 tool-bound capabilities are platform-bound, and they name ex
     // Chief's routing reads to tell a request that names Etsy which capability can serve it
     // (platformNamedCapabilityTarget in agent/core/orchestratorExecutionContract.js).
     'product/etsy_shop_inspection': ['etsy'],
+    // The Etsy listing read. Etsy-only for the same reason, and the capability the Chief's
+    // inherited-platform routing resolves for "analyze my current active digital listings".
+    'product/etsy_listing_inspection': ['etsy'],
     'analytics_optimization/sales': ['shopify'],
     'analytics_optimization/products': ['shopify'],
     'analytics_optimization/customers': ['shopify'],
@@ -458,7 +466,7 @@ test('a platform-bound capability never names a platform this project has no ada
   }
 });
 
-test('the Etsy shop read is consumed by a real capability; the Etsy listing read is still the honest gap', () => {
+test('both Etsy reads are consumed by real capabilities; the Shopify collection read is the last honest gap', () => {
   const referenced = new Set();
   for (const entry of SPECIALIST_CAPABILITY_REGISTRY) {
     for (const task of entry.supported_tasks) {
@@ -472,16 +480,21 @@ test('the Etsy shop read is consumed by a real capability; the Etsy listing read
   // Etsy shop had nothing to route to and reached an unrelated specialist by word overlap. It
   // is now the etsy_shop_inspection capability - closed the way this registry's own header
   // said it had to be, with a real capability rather than a tool_ids edit.
-  assert.ok(referenced.has('etsy_shop_data_retrieval'), 'etsy_shop_data_retrieval must be consumed by a capability task');
-  const inspection = productEntry.supported_tasks.find((task) => task.id === 'etsy_shop_inspection');
-  assert.ok(inspection, 'etsy_shop_inspection must exist');
-  assert.deepStrictEqual(inspection.tool_ids, ['etsy_shop_data_retrieval']);
+  for (const [toolId, capabilityId] of [
+    ['etsy_shop_data_retrieval', 'etsy_shop_inspection'],
+    ['etsy_listing_data_retrieval', 'etsy_listing_inspection'],
+  ]) {
+    assert.ok(referenced.has(toolId), `${toolId} must be consumed by a capability task`);
+    const inspection = productEntry.supported_tasks.find((task) => task.id === capabilityId);
+    assert.ok(inspection, `${capabilityId} must exist`);
+    assert.deepStrictEqual(inspection.tool_ids, [toolId]);
+  }
 
-  // STILL OPEN, and deliberately still visible: no capability consumes the Etsy listing read or
-  // the Shopify collection read, so both still reach Product by category ownership alone -
-  // which is the leak the platform gate in agent/core/toolPermissions.js refuses for a business
-  // that has not enabled the platform.
-  for (const toolId of ['etsy_listing_data_retrieval', 'collection_data_retrieval']) {
+  // STILL OPEN, and deliberately still visible: no capability consumes the Shopify collection
+  // read, so it still reaches Product by category ownership alone - which is the leak the
+  // platform gate in agent/core/toolPermissions.js refuses for a business that has not enabled
+  // the platform.
+  for (const toolId of ['collection_data_retrieval']) {
     assert.ok(!referenced.has(toolId), `${toolId} is not consumed by any capability task`);
     assert.ok(
       productEntry.required_tools.includes(toolId),
