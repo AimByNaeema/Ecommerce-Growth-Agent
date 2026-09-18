@@ -302,6 +302,9 @@ const TEST_FILES = [
   // The platform-list regression: "my Shopify and Etsy stores" was torn at the "and" and the
   // orphan "Etsy stores" came back as an unknown capability.
   'platformListRouting.test.js',
+  // The combined Shopify + Etsy growth cycle: one request, one step per platform, and no
+  // live research triggered by the generic word "opportunities".
+  'etsyShopifyGrowthCycle.test.js',
   // The Etsy listing-analysis regression, which that prohibition was part of.
   'etsyListingInspectionRouting.test.js',
   'chiefSeoDataFlow.test.js',

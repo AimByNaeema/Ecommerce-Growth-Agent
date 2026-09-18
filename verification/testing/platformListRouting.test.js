@@ -84,7 +84,11 @@ const GROWTH_CYCLE =
   });
 
   test('EXACT PRODUCTION REQUEST routes to real specialists for the work it names', () => {
-    assert.deepStrictEqual(targetIds(GROWTH_CYCLE), ['product', 'analytics_optimization']);
+    // Three steps, not two: the Product specialist is planned TWICE - once scoped to the Etsy
+    // read the clause named, once unscoped for the Shopify side - because a request about two
+    // stores cannot be answered by one step on a specialist whose tools are platform-bound.
+    // See etsyShopifyGrowthCycle.test.js for the full per-platform coverage assertions.
+    assert.deepStrictEqual(targetIds(GROWTH_CYCLE), ['product', 'product', 'analytics_optimization']);
   });
 
   // --- 2. Both platforms are recognised, as platforms --------------------------------------

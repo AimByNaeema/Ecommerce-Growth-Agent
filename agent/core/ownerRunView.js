@@ -479,7 +479,14 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
     status,
     status_text: STATUS_TEXT[status],
     specialists_used: specialistsUsed,
-    platform: str(channel) || (toolPlatforms.length === 1 ? toolPlatforms[0] : null),
+    // One platform reads as one platform, exactly as before. A run that genuinely read TWO
+    // stores now says so instead of reporting nothing: before the Chief could plan a step per
+    // platform this was unreachable, and a two-store run would have shown "Not stated".
+    platform:
+      str(channel) ||
+      (toolPlatforms.length === 1 ? toolPlatforms[0] : toolPlatforms.length > 1 ? toolPlatforms.join(' + ') : null),
+    // Every platform this run actually read, unjoined, for any caller that wants the list.
+    platforms: toolPlatforms,
     findings: plan
       .map((step) => {
         // A completed platform read answers with the fields it actually returned and the

@@ -1940,6 +1940,34 @@ function inheritedPlatformCapabilityTarget(clauseText, platform) {
   return platformCapabilityOwner(clauseText, platform);
 }
 
+// ONE CLAUSE, SEVERAL STORES.
+//
+// "run today's growth cycle for my Shopify and Etsy stores" is one instruction about TWO
+// connected stores. Every rule above deliberately handles exactly one platform
+// (platformNamedCapabilityTarget returns null for two, soleObjectivePlatform returns null for
+// two), so a genuinely multi-platform request resolved no platform capability at all: the
+// clause kept its ordinary word-overlap route to Analytics, whose only live tool is
+// Shopify-bound, and nothing in the run ever read Etsy. Measured: platform reported as
+// "shopify", no Etsy step produced.
+//
+// This returns one match PER NAMED PLATFORM, so planRouting can keep them as separate steps
+// instead of deduplicating them into one. A platform that has a capability named after it
+// (Etsy today) contributes that capability; a platform that has none (Shopify today - no
+// capability is named after it) contributes nothing here and is served by the clause's own
+// ordinary route, exactly as it is now. Returns null unless at least one platform resolved AND
+// more than one platform was named, so every single-platform objective in the existing corpus
+// takes the untouched paths above.
+function multiPlatformCapabilityTargets(clauseText) {
+  const platforms = connectedPlatformNamesIn(clauseText);
+  if (platforms.length < 2) return null;
+  const matches = [];
+  for (const platform of platforms) {
+    const resolved = platformCapabilityOwner(clauseText, platform);
+    if (resolved) matches.push({ target: resolved.target, capability: resolved.task, platform });
+  }
+  return matches.length > 0 ? matches : null;
+}
+
 // The single connected platform an objective names, or null when it names none or several.
 function soleObjectivePlatform(routedClauses) {
   const named = new Set();
@@ -2036,10 +2064,57 @@ function resolveObjectiveIntent(routedClauses) {
         reason: `"${text}" asks for something no capability here can do ("${interpretation.verb}") - please clarify what you need.`,
       };
     } else if (act === 'produce' || act === 'change' || act === 'act') {
-      // Unchanged from before: the routed clause is the task, and every downstream gate
-      // (mutation intent, permissions, compliance, approval, verification, audit) applies.
-      unit.disposition = result.status === 'matched' ? { kind: 'task', target: result.target } : { kind: 'unresolved' };
+      // The routed clause is the task, and every downstream gate (mutation intent,
+      // permissions, compliance, approval, verification, audit) applies - unchanged.
+      //
+      // WHAT IS NEW: a clause that NAMES a connected platform is asked about that store here
+      // too. This branch used to route on word overlap alone, so the platform rules were
+      // reachable only through a read verb: "Inspect my Etsy store." resolved
+      // etsy_shop_inspection, while "Run the growth cycle for my Etsy store." - same subject,
+      // same store - resolved nothing and went to Analytics, which reads Shopify. An owner
+      // should not have to know which verb unlocks their own store's data.
+      const producedPlatformTargets = multiPlatformCapabilityTargets(text);
+      const producedPlatformCapability = producedPlatformTargets ? null : platformNamedCapabilityTarget(text);
+      if (producedPlatformTargets) {
+        unit.disposition = {
+          kind: 'task',
+          target: producedPlatformTargets[0].target,
+          via: 'multi_platform_capability',
+          capability: producedPlatformTargets[0].capability,
+          // The remaining platforms' matches, plus this clause's own ordinary route so a
+          // platform with no capability of its own is still covered (Shopify today).
+          additional: producedPlatformTargets.slice(1),
+          ordinaryRoute: result.status === 'matched' ? result.target : null,
+        };
+      } else if (producedPlatformCapability) {
+        sentenceCapabilityTask[clause.sentence] = producedPlatformCapability.task;
+        unit.disposition = {
+          kind: 'task',
+          target: producedPlatformCapability.target,
+          via: 'platform_capability',
+          capability: producedPlatformCapability.task,
+        };
+      } else {
+        unit.disposition = result.status === 'matched' ? { kind: 'task', target: result.target } : { kind: 'unresolved' };
+      }
     } else {
+      // A clause naming several connected stores is about all of them - checked before the
+      // single-platform rule, which deliberately declines a multi-platform clause.
+      const multiPlatform = multiPlatformCapabilityTargets(text);
+      if (multiPlatform) {
+        sentenceCapabilityTask[clause.sentence] = multiPlatform[0].capability;
+        unit.disposition = {
+          kind: 'task',
+          target: multiPlatform[0].target,
+          via: 'multi_platform_capability',
+          capability: multiPlatform[0].capability,
+          additional: multiPlatform.slice(1),
+          ordinaryRoute: result.status === 'matched' ? result.target : null,
+        };
+        units.push(unit);
+        previous = unit;
+        continue;
+      }
       // A capability named together with the platform it is named after identifies the task more
       // precisely than word overlap can, and is checked first. A later clause of the SAME
       // sentence that names only fields that capability already returns is part of its answer.
@@ -2180,10 +2255,14 @@ function resolveObjectiveIntent(routedClauses) {
             status: 'matched',
             segment: clause.text,
             target: unit.disposition.target,
-            // The capability this clause named outright, when it named one. Only the two
+            // The capability this clause named outright, when it named one. Only the
             // platform rules above set it; every other route leaves it null and the step
             // picks its tool and capability by word overlap exactly as before.
             capability: unit.disposition.capability || null,
+            // Further platform-scoped matches from the SAME clause, plus the clause's own
+            // ordinary route - set only by the multi-platform rule, null everywhere else.
+            additional: unit.disposition.additional || null,
+            ordinaryRoute: unit.disposition.ordinaryRoute || null,
           },
         };
       case 'constraint':
@@ -2443,18 +2522,34 @@ function planRouting(objective, { liveMarketGate = true } = {}) {
       };
     }
 
-    const key = `${result.target.type}:${result.target.id}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      orderedEntries.push({ target: result.target, segment: result.segment, capabilities: [] });
-    }
-    // Every capability the clauses routed to this target named outright. The segment stays the
-    // FIRST matching clause, unchanged - but a request whose later clauses all name one
-    // capability ("analyze my current active digital listings", "show the listing title")
-    // should not be answered by whichever tool the first clause's wording happened to score.
-    if (result.capability) {
-      orderedEntries.find((entry) => `${entry.target.type}:${entry.target.id}` === key).capabilities.push(result.capability);
-    }
+    // A PLATFORM-SCOPED MATCH GETS ITS OWN STEP; EVERYTHING ELSE DEDUPLICATES AS BEFORE.
+    //
+    // Two platform-scoped matches from one clause land on the SAME specialist (both Etsy reads
+    // and the Shopify reads are Product's), so the specialist-only key collapsed a two-store
+    // request into one step and silently dropped a store. Only those matches widen the key -
+    // every other route keeps the plain specialist key, so a single-platform request that names
+    // several capabilities ("inspect my Etsy store and analyze my listings ...") still produces
+    // ONE Product step whose capability is decided by mostNamedCapability, exactly as it does
+    // today. Verified against the pinned Etsy shop and listing requests.
+    const addEntry = (target, capability, platformScoped) => {
+      const key = platformScoped ? `${target.type}:${target.id}:${capability.id}` : `${target.type}:${target.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        orderedEntries.push({ target, segment: result.segment, capabilities: [], key });
+      }
+      // Every capability the clauses routed to this entry named outright. The segment stays the
+      // FIRST matching clause, unchanged - but a request whose later clauses all name one
+      // capability ("analyze my current active digital listings", "show the listing title")
+      // should not be answered by whichever tool the first clause's wording happened to score.
+      if (capability) orderedEntries.find((entry) => entry.key === key).capabilities.push(capability);
+    };
+
+    const platformScoped = Array.isArray(result.additional) || Boolean(result.ordinaryRoute);
+    addEntry(result.target, result.capability, platformScoped && Boolean(result.capability));
+    for (const extra of result.additional || []) addEntry(extra.target, extra.capability, true);
+    // A platform the clause named that has no capability of its own is served by the clause's
+    // ordinary route - the existing behaviour, kept rather than replaced.
+    if (result.ordinaryRoute) addEntry(result.ordinaryRoute, null, false);
   }
 
   orderedEntries.sort((a, b) => ROUTING_TARGETS.indexOf(a.target) - ROUTING_TARGETS.indexOf(b.target));
@@ -3052,12 +3147,38 @@ async function buildPlanStep(
   // opportunity for my ecommerce products." do not rank it at all, while "what should this
   // store sell next" does. A tie is not enough - a strict win is required, so an ambiguous
   // clause keeps its existing routing rather than being pulled into expensive research.
+  //
+  // THE SCORE IS TAKEN ON DISTINCTIVE WORDS ONLY, AND THIS IS THE THIRD TIME A GENERIC
+  // E-COMMERCE NOUN HAS DECIDED A ROUTE IT HAD NO BUSINESS DECIDING (see "product" and
+  // "listing" in this file's ROUTING_SYNONYMS history). It is the first time the consequence
+  // was money. Measured against the real store: "Find the highest-confidence opportunities" -
+  // a clause about the owner's OWN store data, in a request that also says "Use real available
+  // store data only" - scored this capability 2 to product_recommendation's 1, purely because
+  // the word "opportunities" appears twice in this capability's own title and description. It
+  // won the override, dispatched batched Claude + web_search calls, and the run died on
+  // SEARCH_QUOTA_EXCEEDED having read nothing from the store at all.
+  //
+  // "opportunities" is an ANSWER_STRUCTURE word (objectiveInterpretation.js): it describes the
+  // SHAPE of an answer, not the subject of one. Filtering the generic and instruction words out
+  // of the scored set leaves only wording that genuinely distinguishes this capability -
+  // catalogue, expansion, sell, next, adjacent, shortlist. Verified against every pinned
+  // catalogue-expansion goal: each one that fired on the score before still fires, and the two
+  // that never did ("Find products related to my existing products.", "Research related
+  // products with strong market opportunity.") still reach this capability through
+  // hasCatalogueExpansionIntent below, which is untouched.
+  //
+  // Live external research therefore now runs only on a real intent signal or a genuinely
+  // distinctive score - never on a bare generic noun. The research usage guard and the quota
+  // refusal are untouched: this reduces how often we ASK, and bypasses nothing.
   const isForcedElsewhere = Boolean(forcedSelection && forcedSelection.toolId);
   if (!isForcedElsewhere && capabilityEntry && candidateToolIds.includes('catalogue_expansion_opportunities')) {
+    const distinctiveObjectiveWords = new Set(
+      [...objectiveWords].filter((word) => !GENERIC_ROUTING_WORDS.has(word) && !isInstructionWord(word))
+    );
     let expansionScore = -1;
     let bestOtherScore = -1;
     for (const task of capabilityEntry.supported_tasks) {
-      const score = scoreWordOverlap(`${task.id} ${task.title} ${task.description}`, objectiveWords);
+      const score = scoreWordOverlap(`${task.id} ${task.title} ${task.description}`, distinctiveObjectiveWords);
       if (task.id === 'catalogue_expansion_opportunities') expansionScore = score;
       else if (score > bestOtherScore) bestOtherScore = score;
     }
