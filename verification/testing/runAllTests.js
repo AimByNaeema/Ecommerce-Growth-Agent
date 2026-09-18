@@ -305,6 +305,9 @@ const TEST_FILES = [
   // The combined Shopify + Etsy growth cycle: one request, one step per platform, and no
   // live research triggered by the generic word "opportunities".
   'etsyShopifyGrowthCycle.test.js',
+  // The Chief's final result carrying each specialist's REAL findings, evidence and
+  // limitations instead of a generic "completed this request successfully" line.
+  'chiefResultReporting.test.js',
   // The Etsy listing-analysis regression, which that prohibition was part of.
   'etsyListingInspectionRouting.test.js',
   'chiefSeoDataFlow.test.js',

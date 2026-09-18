@@ -231,6 +231,121 @@ function listingOpportunitiesSummary(derived) {
   return `${scope} ${lines.join(' ')} Not retrievable from Etsy, and not estimated: ${derived.unavailable_metrics.map((metric) => metric.id).join(', ')}.`;
 }
 
+// WHAT A SPECIALIST ACTUALLY FOUND, FROM THE ENVELOPE IT ALREADY COMPOSES.
+//
+// Six specialists (Research, SEO, Listing, Marketing, Social & Advertising, Analytics &
+// Optimization) all compose the SAME *AgentResultModel shape - findings, evidence, source,
+// limitations, recommendations, confidence, verification_status. All of it was already in the
+// run result and none of it reached the owner: agent/core/resultSummary.js has no projection
+// for that envelope, so it fell through to its generic last line and a completed growth cycle
+// read "Analytics & Optimization completed this request successfully." while its own result
+// held the order count, the evidence behind it and the limitations on it.
+//
+// NOTHING IS COMPOSED HERE. Every list below is relayed verbatim from what the specialist
+// recorded; a specialist that recorded nothing is reported as having recorded nothing rather
+// than being given a sentence. This module still derives and never decides.
+const SPECIALIST_ENVELOPE_LISTS = ['findings', 'evidence', 'source', 'limitations', 'recommendations'];
+
+// A sentence the step or its own result already composed, in the same order
+// agent/core/resultSummary.js's outputsOwnSummary prefers them. Named here so the findings
+// chain can tell "the specialist wrote its own summary" from "the generic fallback ran".
+function ownSummaryOf(step) {
+  const outputs = isPlainObject(step) && isPlainObject(step.outputs) ? step.outputs : {};
+  const result = isPlainObject(outputs.result) ? outputs.result : {};
+  return str(step && step.summary) || str(outputs.summary) || str(result.summary);
+}
+
+function specialistEnvelope(result) {
+  if (!isPlainObject(result)) return null;
+  return SPECIALIST_ENVELOPE_LISTS.some((field) => Array.isArray(result[field])) ? result : null;
+}
+
+// Plain strings only. An entry that is not a string (or an object naming one) is dropped rather
+// than stringified into something the specialist never said.
+function textList(value) {
+  return asArray(value)
+    .map((entry) => (typeof entry === 'string' ? entry : isPlainObject(entry) && typeof entry.text === 'string' ? entry.text : null))
+    .map((entry) => (entry ? entry.trim() : null))
+    .filter(Boolean)
+    .slice(0, MAX_LIST_ENTRIES);
+}
+
+// One step's real output, per specialist and per platform. Returns null for a step whose result
+// this file already describes more specifically (the Etsy reads above) or that produced no
+// structured result at all, so those keep their existing, better projections.
+function specialistResultFrom(step, pendingApprovals) {
+  const inputs = isPlainObject(step) && isPlainObject(step.inputs) ? step.inputs : {};
+  const outputs = isPlainObject(step.outputs) ? step.outputs : {};
+  const result = outputs.result;
+  const envelope = specialistEnvelope(result);
+  const records = Array.isArray(result) ? result.filter(isPlainObject) : null;
+  if (!envelope && !records) return null;
+
+  const entry = {
+    specialist: specialistTitle(step),
+    platform: platformForTool(inputs.tool_id),
+    capability: str(inputs.capability_id),
+    tool: str(inputs.tool_id),
+    state: str(step.completion_state),
+    findings: [],
+    recommendations: [],
+    evidence: [],
+    sources: [],
+    limitations: [],
+    record_count: records ? records.length : null,
+    // From this step's OWN recorded approvals - an auto-approved analysis needs nothing from
+    // the owner, anything else does. Never inferred from the tool's name.
+    requires_approval: asArray(step.approvals).some((approval) => isPlainObject(approval) && approval.status !== 'auto_approved'),
+    proposed_action: null,
+    no_findings_reason: null,
+  };
+
+  if (envelope) {
+    entry.findings = textList(envelope.findings);
+    entry.recommendations = textList(envelope.recommendations);
+    entry.evidence = textList(envelope.evidence);
+    entry.sources = textList(envelope.source);
+    entry.limitations = textList(envelope.limitations);
+  } else {
+    // A plain array of *Model records (product_discovery's productModel records). The COUNT and
+    // the records' own `source` strings are facts; nothing is concluded from them.
+    entry.findings = [`${records.length} store record(s) retrieved live from the connected store.`];
+    entry.evidence = records
+      .map((record) => str(record.product_identity) || str(record.title) || str(record.name))
+      .filter(Boolean)
+      .slice(0, MAX_LIST_ENTRIES);
+    entry.sources = [...new Set(records.flatMap((record) => textList(record.source)))].slice(0, MAX_LIST_ENTRIES);
+  }
+
+  // The real pending approval this step's tool is waiting on, if any - described by the same
+  // function the view's own proposed_actions list uses, never re-derived.
+  const match = asArray(pendingApprovals).find((request) => isPlainObject(request) && request.tool_id === inputs.tool_id);
+  if (match) entry.proposed_action = describeProposedAction(match);
+
+  if (entry.findings.length === 0 && entry.recommendations.length === 0 && entry.evidence.length === 0) {
+    entry.no_findings_reason = 'This step completed and recorded no findings, evidence or recommendations. Nothing has been composed in their place.';
+  }
+  return entry;
+}
+
+// The owner-facing sentence for such a step: what it found, what it recommends, what that rests
+// on, and what it could not establish - all of it the specialist's own words.
+function specialistResultSummary(entry) {
+  if (entry.no_findings_reason) {
+    return `${entry.platform ? `[${entry.platform}] ` : ''}${entry.no_findings_reason}`;
+  }
+  const parts = [];
+  if (entry.platform) parts.push(`[${entry.platform}]`);
+  if (entry.findings.length > 0) parts.push(`Findings: ${entry.findings.join(' ')}`);
+  if (entry.recommendations.length > 0) parts.push(`Recommended: ${entry.recommendations.join(' ')}`);
+  if (entry.evidence.length > 0) parts.push(`Evidence: ${entry.evidence.join('; ')}.`);
+  if (entry.sources.length > 0) parts.push(`Source: ${entry.sources.join('; ')}.`);
+  if (entry.limitations.length > 0) parts.push(`Limitations: ${entry.limitations.join(' ')}`);
+  if (entry.proposed_action) parts.push(`Proposed action: ${entry.proposed_action.what_changes} - needs your approval.`);
+  else if (entry.requires_approval) parts.push('This step needs your approval before anything happens.');
+  return parts.join(' ');
+}
+
 // How much is at stake if this action runs, from its approval classification alone.
 function riskFor(classification) {
   if (classification === 'externally_executable') return 'high';
@@ -495,11 +610,22 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
         // that did NOT complete keeps its own honest failure/blocked sentence.
         const connection = step.completion_state === 'complete' ? storeConnectionFrom(step) : null;
         const listings = listingOpportunitiesFrom(step);
+        // The specialist's own envelope is used only where this file has no more specific
+        // projection already (the two Etsy reads above), and only for a step that finished -
+        // a failed step keeps its own honest error sentence.
+        // A sentence the step composed ITSELF always wins - the SEO store audit writes its own
+        // ("Audited 3 of 3 ..."), and a generic envelope relay would be strictly worse than the
+        // specialist's own words. Same precedence resultSummary.js's outputsOwnSummary applies.
+        const specialistResult = !listings && !connection && !ownSummaryOf(step) && step.completion_state === 'complete'
+          ? specialistResultFrom(step, pending)
+          : null;
         const summary = listings
           ? listingOpportunitiesSummary(listings)
           : connection
             ? storeConnectionSummary(connection)
-            : stepSummary(step);
+            : specialistResult
+              ? specialistResultSummary(specialistResult)
+              : stepSummary(step);
         const reused = isPlainObject(step.reused_research) ? step.reused_research : null;
         return {
           specialist: specialistTitle(step),
@@ -516,6 +642,23 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
     // evidence behind it, and the metrics Etsy does not expose named as unavailable. Empty for
     // every run that did not read Etsy listings.
     listing_opportunities: plan.map(listingOpportunitiesFrom).filter(Boolean),
+    // What each specialist that finished actually found, kept separate per specialist and per
+    // platform, relayed from the envelope it already composed. Empty for a run whose steps
+    // recorded no structured result.
+    specialist_results: plan
+      .filter((step) => step.completion_state === 'complete')
+      .map((step) => specialistResultFrom(step, pending))
+      .filter(Boolean),
+    // "Record what worked and what did not for future cycles." A Chief run records no such
+    // evidence: agent/core/experimentLearningStore.js holds validated and cautionary lessons,
+    // but it is written by the optimization-cycle path, not by this one, and nothing on this
+    // result carries an outcome record. Reported as absent rather than composed from the run's
+    // own status, which would only restate whether the steps completed.
+    cycle_learning: {
+      recorded: false,
+      detail:
+        'No worked/did-not-work evidence is recorded for a Chief run. Outcome lessons are recorded only for executed experiments (agent/core/experimentLearningStore.js), and this run executed none.',
+    },
     recommendations: (proposalRecommendations || rankedRecommendations || recommendations).slice(0, MAX_LIST_ENTRIES),
     // Where a continued run's evidence came from - null for every other run.
     research_continuity: continuity
