@@ -308,6 +308,9 @@ const TEST_FILES = [
   // The Chief's final result carrying each specialist's REAL findings, evidence and
   // limitations instead of a generic "completed this request successfully" line.
   'chiefResultReporting.test.js',
+  // Real store records turned into specific, evidenced opportunities - and the guard that a
+  // field this project never READ can never become a finding.
+  'storeDataOpportunities.test.js',
   // The Etsy listing-analysis regression, which that prohibition was part of.
   'etsyListingInspectionRouting.test.js',
   'chiefSeoDataFlow.test.js',

@@ -24,6 +24,11 @@ const { describePlatformSupport } = require('../../integrations/adapters/platfor
 // Turns one etsy_listing_data_retrieval result into the ranked, evidence-carrying answer the
 // owner asked for. It judges nothing and invents nothing - see that module's own header.
 const { deriveEtsyListingOpportunities } = require('./etsyListingOpportunities');
+// Turns the store records a run already read into specific, evidenced opportunities. It reads
+// the plan and nothing else - no tool call, no network - and assesses only fields that were
+// genuinely retrieved; see that module's own header for why that distinction is the whole
+// difficulty.
+const { deriveStoreDataOpportunities } = require('./storeDataOpportunities');
 // The single source of truth for which tools change real store data - the same list
 // agent/core/mutationIntent.js re-exports. A store change is only ever one of these.
 const { isCorrectionTool } = require('../../integrations/approvedCorrectionDispatch');
@@ -346,6 +351,14 @@ function specialistResultSummary(entry) {
   return parts.join(' ');
 }
 
+// One evidenced store opportunity as a single owner-readable line: the platform, the issue, the
+// evidence it rests on, the action proposed, how confident that evidence makes it, and whether
+// carrying it out needs the owner. Every part is relayed from the derivation.
+function storeOpportunityLine(entry) {
+  const approval = entry.requires_approval ? 'Needs your approval to carry out.' : 'No store change required.';
+  return `[${entry.platform}] ${entry.issue} Evidence: ${entry.evidence.join(' ')} Proposed: ${entry.proposed_action} (confidence: ${entry.confidence}. ${approval})`;
+}
+
 // How much is at stake if this action runs, from its approval classification alone.
 function riskFor(classification) {
   if (classification === 'externally_executable') return 'high';
@@ -582,6 +595,9 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
   }
   if (blocked && !complianceStatuses.includes('BLOCK')) complianceStatuses.push('BLOCK');
 
+  // Derived once from the plan this run already produced - no tool call, no second read.
+  const storeOpportunities = deriveStoreDataOpportunities(plan);
+
   const proposedActions = pending.map(describeProposedAction).filter(Boolean);
   const risk = proposedActions.some((action) => action.risk === 'high') || executedStoreChanges.length > 0
     ? 'high'
@@ -649,6 +665,14 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
       .filter((step) => step.completion_state === 'complete')
       .map((step) => specialistResultFrom(step, pending))
       .filter(Boolean),
+    // The specific, evidenced opportunities this run's own store reads support - per platform,
+    // each with the real field state behind it, a proposed action, a confidence grounded in
+    // that evidence, whether acting on it needs approval, and what could not be assessed.
+    // Empty is a legitimate outcome: it means the records read supported none.
+    store_opportunities: storeOpportunities.opportunities,
+    // Limits a step declared about its OWN evidence (a capped read, for example), relayed
+    // rather than reasoned past, so a count never reads as the whole truth.
+    evidence_limits: storeOpportunities.evidence_limits,
     // "Record what worked and what did not for future cycles." A Chief run records no such
     // evidence: agent/core/experimentLearningStore.js holds validated and cautionary lessons,
     // but it is written by the optimization-cycle path, not by this one, and nothing on this
@@ -659,7 +683,16 @@ function describeChiefResultForOwner({ result, runId = null, objective = null, c
       detail:
         'No worked/did-not-work evidence is recorded for a Chief run. Outcome lessons are recorded only for executed experiments (agent/core/experimentLearningStore.js), and this run executed none.',
     },
-    recommendations: (proposalRecommendations || rankedRecommendations || recommendations).slice(0, MAX_LIST_ENTRIES),
+    // Unchanged precedence: a change proposal's own lines, then the Chief's ranked store
+    // opportunities, then whatever the specialists themselves recommended. Only when all three
+    // are empty - which is what a growth cycle over plain store reads produces - do the
+    // evidenced store-data opportunities fill it, so the owner sees them in the list the
+    // dashboard already renders rather than nothing at all.
+    recommendations: (
+      proposalRecommendations ||
+      rankedRecommendations ||
+      (recommendations.length > 0 ? recommendations : storeOpportunities.opportunities.map(storeOpportunityLine))
+    ).slice(0, MAX_LIST_ENTRIES),
     // Where a continued run's evidence came from - null for every other run.
     research_continuity: continuity
       ? {
